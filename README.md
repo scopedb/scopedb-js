@@ -27,6 +27,32 @@ const result = await client.statement("SELECT 1").execute();
 console.log(result.intoValues());
 ```
 
+## Integer Representation
+
+`int` and `uint` cells default to JS `bigint` to preserve full I64 precision.
+This is the safe default but is **not** directly JSON-serializable —
+`JSON.stringify(rowWithBigInt)` throws `TypeError: Do not know how to serialize
+a BigInt`.
+
+`intoValues()`, `intoObjects()`, and `first()` accept an optional
+`{ integerMode }` to opt in to a different representation:
+
+```ts
+// Default: bigint (lossless, NOT JSON-safe)
+const rows = result.intoObjects();
+
+// JSON-safe number. Loses precision for |x| > 2^53 - 1.
+// Safe for typical count() / bounded counters.
+const rows = result.intoObjects({ integerMode: "number" });
+JSON.stringify(rows); // ok
+
+// Decimal string. Always safe, always JSON-safe.
+// Recommended for unbounded I64 identifiers.
+const rows = result.intoObjects({ integerMode: "string" });
+```
+
+The option only affects `int` / `uint` columns; other types are unchanged.
+
 ## Table Helper
 
 ```ts

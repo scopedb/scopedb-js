@@ -33,7 +33,7 @@ export type {
   StatementStatusRunning,
 } from "./protocol.js";
 export { FieldSchema, ResultSet, Schema } from "./result.js";
-export type { Value } from "./result.js";
+export type { IntegerMode, IntoOptions, Value } from "./result.js";
 export { Statement, StatementHandle } from "./statement.js";
 export type { FetchOptions } from "./statement.js";
 export { Table } from "./table.js";

@@ -19,6 +19,24 @@ import type { DataType, StatementResultSet } from "./protocol.js";
 
 export type Value = bigint | number | boolean | string | Date | null;
 
+/**
+ * How to represent integer values returned from `int` / `uint` columns.
+ *
+ * - `'bigint'` (default): native JS `bigint`, preserves I64 precision but is
+ *   NOT directly JSON-serializable (`JSON.stringify` will throw
+ *   `TypeError: Do not know how to serialize a BigInt`).
+ * - `'number'`: JS `number`. Fast and JSON-safe, but loses precision for
+ *   values outside `[-(2^53 - 1), 2^53 - 1]`. Safe for typical `count(...)`
+ *   results and bounded counters; not safe for unbounded I64 identifiers.
+ * - `'string'`: decimal string. Always safe; callers can `BigInt(s)` on read.
+ */
+export type IntegerMode = "bigint" | "number" | "string";
+
+export interface IntoOptions {
+  /** How to represent `int` / `uint` cell values. Defaults to `'bigint'`. */
+  integerMode?: IntegerMode;
+}
+
 export class FieldSchema {
   constructor(
     private readonly fieldName: string,
@@ -61,7 +79,8 @@ export class ResultSet {
     return this.rows;
   }
 
-  intoValues(): Value[][] {
+  intoValues(options: IntoOptions = {}): Value[][] {
+    const integerMode = options.integerMode ?? "bigint";
     return this.rows.map((row) => {
       const fields = this.resultSchema.fields();
       if (row.length !== fields.length) {
@@ -70,7 +89,9 @@ export class ResultSet {
           `row field count mismatch: expected ${fields.length}, got ${row.length}`,
         );
       }
-      return row.map((cell, index) => parseCell(cell, fields[index]!.dataType()));
+      return row.map((cell, index) =>
+        parseCell(cell, fields[index]!.dataType(), integerMode),
+      );
     });
   }
 
@@ -81,10 +102,18 @@ export class ResultSet {
    * instead of `intoValues()` when you need to access columns by name.
    *
    * @example
+   * // Default: integer cells come back as bigint (preserves I64 precision,
+   * // NOT directly JSON-serializable).
    * const rows = result.intoObjects();
    * console.log(rows[0]?.["user_id"]); // bigint
+   *
+   * @example
+   * // Opt in to JSON-safe representation for integer cells.
+   * const rows = result.intoObjects({ integerMode: "number" });
+   * JSON.stringify(rows[0]); // safe
    */
-  intoObjects(): Record<string, Value>[] {
+  intoObjects(options: IntoOptions = {}): Record<string, Value>[] {
+    const integerMode = options.integerMode ?? "bigint";
     const fields = this.resultSchema.fields();
     return this.rows.map((row) => {
       if (row.length !== fields.length) {
@@ -95,7 +124,7 @@ export class ResultSet {
       }
       const obj: Record<string, Value> = {};
       row.forEach((cell, i) => {
-        obj[fields[i]!.name()] = parseCell(cell, fields[i]!.dataType());
+        obj[fields[i]!.name()] = parseCell(cell, fields[i]!.dataType(), integerMode);
       });
       return obj;
     });
@@ -112,8 +141,14 @@ export class ResultSet {
    * if (row !== null) {
    *   console.log(row["count"]); // bigint
    * }
+   *
+   * @example
+   * // JSON-safe integer cells.
+   * const row = result.first({ integerMode: "number" });
+   * JSON.stringify(row); // safe
    */
-  first(): Record<string, Value> | null {
+  first(options: IntoOptions = {}): Record<string, Value> | null {
+    const integerMode = options.integerMode ?? "bigint";
     const row = this.rows[0];
     if (row === undefined) {
       return null;
@@ -127,7 +162,7 @@ export class ResultSet {
     }
     const obj: Record<string, Value> = {};
     row.forEach((cell, i) => {
-      obj[fields[i]!.name()] = parseCell(cell, fields[i]!.dataType());
+      obj[fields[i]!.name()] = parseCell(cell, fields[i]!.dataType(), integerMode);
     });
     return obj;
   }
@@ -145,7 +180,11 @@ export class ResultSet {
   }
 }
 
-function parseCell(cell: string | null, dataType: DataType): Value {
+function parseCell(
+  cell: string | null,
+  dataType: DataType,
+  integerMode: IntegerMode = "bigint",
+): Value {
   if (cell === null) {
     return null;
   }
@@ -154,13 +193,7 @@ function parseCell(cell: string | null, dataType: DataType): Value {
     case "int":
     case "uint":
     case "u_int": // backward-compat alias
-      try {
-        return BigInt(cell);
-      } catch (cause) {
-        throw new ScopeDBError("Unexpected", `failed to parse integer value: ${cell}`, {
-          cause,
-        });
-      }
+      return parseInteger(cell, integerMode);
     case "float": {
       const value = Number(cell);
       if (Number.isNaN(value)) {
@@ -190,6 +223,28 @@ function parseCell(cell: string | null, dataType: DataType): Value {
     case "object":
     case "any":
     case "null":
+      return cell;
+  }
+}
+
+function parseInteger(cell: string, integerMode: IntegerMode): Value {
+  switch (integerMode) {
+    case "bigint":
+      try {
+        return BigInt(cell);
+      } catch (cause) {
+        throw new ScopeDBError("Unexpected", `failed to parse integer value: ${cell}`, {
+          cause,
+        });
+      }
+    case "number": {
+      const value = Number(cell);
+      if (!Number.isFinite(value)) {
+        throw new ScopeDBError("Unexpected", `failed to parse integer value: ${cell}`);
+      }
+      return value;
+    }
+    case "string":
       return cell;
   }
 }
