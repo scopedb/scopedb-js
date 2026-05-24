@@ -41,8 +41,8 @@ a BigInt`.
 // Default: bigint (lossless, NOT JSON-safe)
 const rows = result.intoObjects();
 
-// JSON-safe number. Loses precision for |x| > 2^53 - 1.
-// Safe for typical count() / bounded counters.
+// JSON-safe number. Loses precision for |x| > Number.MAX_SAFE_INTEGER
+// (i.e. 2**53 - 1). Safe for typical count() / bounded counters.
 const rows = result.intoObjects({ integerMode: "number" });
 JSON.stringify(rows); // ok
 

@@ -26,8 +26,10 @@ export type Value = bigint | number | boolean | string | Date | null;
  *   NOT directly JSON-serializable (`JSON.stringify` will throw
  *   `TypeError: Do not know how to serialize a BigInt`).
  * - `'number'`: JS `number`. Fast and JSON-safe, but loses precision for
- *   values outside `[-(2^53 - 1), 2^53 - 1]`. Safe for typical `count(...)`
- *   results and bounded counters; not safe for unbounded I64 identifiers.
+ *   values outside the safe integer range (`Number.MIN_SAFE_INTEGER` to
+ *   `Number.MAX_SAFE_INTEGER`, i.e. `±(2**53 - 1)`). Safe for typical
+ *   `count(...)` results and bounded counters; not safe for unbounded I64
+ *   identifiers. Throws if the cell is not a base-10 integer string.
  * - `'string'`: decimal string. Always safe; callers can `BigInt(s)` on read.
  */
 export type IntegerMode = "bigint" | "number" | "string";
@@ -227,6 +229,8 @@ function parseCell(
   }
 }
 
+const INTEGER_CELL_RE = /^-?\d+$/;
+
 function parseInteger(cell: string, integerMode: IntegerMode): Value {
   switch (integerMode) {
     case "bigint":
@@ -238,6 +242,14 @@ function parseInteger(cell: string, integerMode: IntegerMode): Value {
         });
       }
     case "number": {
+      // Constrain to base-10 integer strings so non-integer forms accepted by
+      // `Number()` (e.g. "1.5", "1e3", " ", "") cannot silently slip through
+      // for `int` / `uint` columns. Precision loss for values outside the
+      // safe-integer range is the user's explicit opt-in and is intentionally
+      // NOT validated here.
+      if (!INTEGER_CELL_RE.test(cell)) {
+        throw new ScopeDBError("Unexpected", `failed to parse integer value: ${cell}`);
+      }
       const value = Number(cell);
       if (!Number.isFinite(value)) {
         throw new ScopeDBError("Unexpected", `failed to parse integer value: ${cell}`);

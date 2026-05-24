@@ -304,6 +304,21 @@ describe("ResultSet integerMode option", () => {
     assert.throws(() => rs.intoValues({ integerMode: "number" }), ScopeDBError);
   });
 
+  it("'number' mode rejects non-integer numeric forms (1.5, 1e3, empty, whitespace)", () => {
+    for (const bad of ["1.5", "1e3", "", " ", " 42", "42 ", "+42"]) {
+      assert.throws(
+        () => intRow(bad).intoValues({ integerMode: "number" }),
+        ScopeDBError,
+        `expected ScopeDBError for cell ${JSON.stringify(bad)}`,
+      );
+    }
+  });
+
+  it("'number' mode accepts negative and zero", () => {
+    assert.equal(intRow("-7").intoValues({ integerMode: "number" })[0]![0], -7);
+    assert.equal(intRow("0").intoValues({ integerMode: "number" })[0]![0], 0);
+  });
+
   it("'string' mode does not validate cell content (passthrough)", () => {
     // Server is the source of truth — wrapper preserves raw decimal string.
     const rs = intRow("12345");
