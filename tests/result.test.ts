@@ -324,4 +324,13 @@ describe("ResultSet integerMode option", () => {
     const rs = intRow("12345");
     assert.equal(rs.intoValues({ integerMode: "string" })[0]![0], "12345");
   });
+
+  it("throws ScopeDBError for unknown integerMode passed from plain JS", () => {
+    const rs = intRow("42");
+    // Simulate a plain-JS caller passing an invalid string at runtime.
+    const badOptions = { integerMode: "decimal" } as unknown as { integerMode: "bigint" };
+    assert.throws(() => rs.intoValues(badOptions), ScopeDBError);
+    assert.throws(() => rs.intoObjects(badOptions), ScopeDBError);
+    assert.throws(() => rs.first(badOptions), ScopeDBError);
+  });
 });

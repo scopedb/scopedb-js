@@ -258,5 +258,12 @@ function parseInteger(cell: string, integerMode: IntegerMode): Value {
     }
     case "string":
       return cell;
+    default: {
+      const exhaustive: never = integerMode;
+      throw new ScopeDBError(
+        "Unexpected",
+        `unknown integerMode: ${String(exhaustive)}`,
+      );
+    }
   }
 }

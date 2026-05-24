@@ -39,16 +39,16 @@ a BigInt`.
 
 ```ts
 // Default: bigint (lossless, NOT JSON-safe)
-const rows = result.intoObjects();
+const rowsBigint = result.intoObjects();
 
 // JSON-safe number. Loses precision for |x| > Number.MAX_SAFE_INTEGER
 // (i.e. 2**53 - 1). Safe for typical count() / bounded counters.
-const rows = result.intoObjects({ integerMode: "number" });
-JSON.stringify(rows); // ok
+const rowsNumber = result.intoObjects({ integerMode: "number" });
+JSON.stringify(rowsNumber); // ok
 
 // Decimal string. Always safe, always JSON-safe.
 // Recommended for unbounded I64 identifiers.
-const rows = result.intoObjects({ integerMode: "string" });
+const rowsString = result.intoObjects({ integerMode: "string" });
 ```
 
 The option only affects `int` / `uint` columns; other types are unchanged.
