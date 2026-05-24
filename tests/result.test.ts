@@ -233,3 +233,104 @@ describe("ResultSet.first", () => {
     assert.equal(rs.first(), null);
   });
 });
+
+describe("ResultSet integerMode option", () => {
+  const intRow = (cell: string) =>
+    makeResultSet([{ name: "n", data_type: "int" }], [[cell]]);
+
+  it("defaults to bigint mode (back-compat)", () => {
+    assert.equal(intRow("42").intoValues()[0]![0], 42n);
+    assert.equal(intRow("42").intoObjects()[0]!["n"], 42n);
+    assert.equal(intRow("42").first()!["n"], 42n);
+  });
+
+  it("returns JS number when integerMode is 'number'", () => {
+    const opts = { integerMode: "number" as const };
+    assert.equal(intRow("42").intoValues(opts)[0]![0], 42);
+    assert.equal(intRow("42").intoObjects(opts)[0]!["n"], 42);
+    assert.equal(intRow("42").first(opts)!["n"], 42);
+  });
+
+  it("'number' mode keeps precision for safe integers", () => {
+    const safe = String(Number.MAX_SAFE_INTEGER); // 9007199254740991
+    const val = intRow(safe).intoValues({ integerMode: "number" })[0]![0];
+    assert.equal(val, Number.MAX_SAFE_INTEGER);
+  });
+
+  it("'number' mode is JSON-serializable", () => {
+    const rows = intRow("123").intoObjects({ integerMode: "number" });
+    assert.equal(JSON.stringify(rows), '[{"n":123}]');
+  });
+
+  it("returns decimal string when integerMode is 'string'", () => {
+    const opts = { integerMode: "string" as const };
+    assert.equal(intRow("42").intoValues(opts)[0]![0], "42");
+    assert.equal(intRow("42").intoObjects(opts)[0]!["n"], "42");
+    assert.equal(intRow("42").first(opts)!["n"], "42");
+  });
+
+  it("'string' mode preserves I64 values losslessly", () => {
+    const big = "9223372036854775807"; // I64 max
+    const val = intRow(big).intoValues({ integerMode: "string" })[0]![0];
+    assert.equal(val, big);
+    assert.equal(BigInt(val as string), 9223372036854775807n);
+  });
+
+  it("'string' mode is JSON-serializable for any I64", () => {
+    const big = "9223372036854775807";
+    const rows = intRow(big).intoObjects({ integerMode: "string" });
+    assert.equal(JSON.stringify(rows), `[{"n":"${big}"}]`);
+  });
+
+  it("applies to uint and u_int alike", () => {
+    const rsu = makeResultSet([{ name: "n", data_type: "uint" }], [["7"]]);
+    const rsua = makeResultSet([{ name: "n", data_type: "u_int" }], [["7"]]);
+    assert.equal(rsu.intoValues({ integerMode: "number" })[0]![0], 7);
+    assert.equal(rsua.intoValues({ integerMode: "string" })[0]![0], "7");
+  });
+
+  it("does not affect non-integer columns", () => {
+    const rs = makeResultSet(
+      [{ name: "n", data_type: "int" }, { name: "f", data_type: "float" }],
+      [["3", "1.5"]],
+    );
+    const row = rs.intoObjects({ integerMode: "number" })[0]!;
+    assert.equal(row["n"], 3);
+    assert.equal(row["f"], 1.5);
+  });
+
+  it("throws ScopeDBError on invalid integer in 'number' mode", () => {
+    const rs = intRow("not-a-number");
+    assert.throws(() => rs.intoValues({ integerMode: "number" }), ScopeDBError);
+  });
+
+  it("'number' mode rejects non-integer numeric forms (1.5, 1e3, empty, whitespace)", () => {
+    for (const bad of ["1.5", "1e3", "", " ", " 42", "42 ", "+42"]) {
+      assert.throws(
+        () => intRow(bad).intoValues({ integerMode: "number" }),
+        ScopeDBError,
+        `expected ScopeDBError for cell ${JSON.stringify(bad)}`,
+      );
+    }
+  });
+
+  it("'number' mode accepts negative and zero", () => {
+    assert.equal(intRow("-7").intoValues({ integerMode: "number" })[0]![0], -7);
+    assert.equal(intRow("0").intoValues({ integerMode: "number" })[0]![0], 0);
+  });
+
+  it("'string' mode does not validate cell content (passthrough)", () => {
+    // Server is the source of truth — wrapper preserves raw decimal string.
+    const rs = intRow("12345");
+    assert.equal(rs.intoValues({ integerMode: "string" })[0]![0], "12345");
+  });
+
+  it("throws ScopeDBError for unknown integerMode passed from plain JS", () => {
+    const rs = intRow("42");
+    // Simulate a plain-JS caller passing an invalid string at runtime.
+    const badOptions = { integerMode: "decimal" } as unknown as { integerMode: "bigint" };
+    assert.throws(() => rs.intoValues(badOptions), ScopeDBError);
+    assert.throws(() => rs.intoObjects(badOptions), ScopeDBError);
+    assert.throws(() => rs.first(badOptions), ScopeDBError);
+  });
+});
