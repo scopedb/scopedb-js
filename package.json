@@ -1,6 +1,6 @@
 {
   "name": "scopedb",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "description": "A Node.js client for ScopeDB",
   "license": "Apache-2.0",
   "type": "module",
