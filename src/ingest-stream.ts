@@ -305,7 +305,8 @@ export class IngestStream {
       return null;
     }
 
-    const payload = rows.map((row) => row.payload).join("\n");
+    let payload = rows.map((row) => row.payload).join("\n");
+    let payloadBytes = byteLength(payload);
     let retries = 0;
     let backoffMs = this.retry.initialBackoffMs;
 
@@ -323,6 +324,11 @@ export class IngestStream {
           if (backoffMs > 0) {
             await sleep(backoffMs);
           }
+          const merged = this.mergeQueuedRecords(rows, payloadBytes);
+          if (merged > 0) {
+            payload = rows.map((row) => row.payload).join("\n");
+            payloadBytes = byteLength(payload);
+          }
           backoffMs = nextBackoff(backoffMs, this.retry.maxBackoffMs);
           continue;
         }
@@ -331,6 +337,30 @@ export class IngestStream {
         }
         throw error;
       }
+    }
+  }
+
+  private mergeQueuedRecords(rows: BufferedRecord[], payloadBytes: number): number {
+    let merged = 0;
+
+    for (;;) {
+      const separatorBytes = rows.length === 0 ? 0 : 1;
+      // Keep control commands and records that do not fit at the head so retries
+      // cannot reorder the stream or grow the NDJSON payload past batchBytes.
+      const command = this.queue.tryReceiveHeadIf((head) =>
+        head.type === "record" &&
+        payloadBytes + separatorBytes + head.record.bytes <= this.batchBytes
+      );
+      if (command === QUEUE_HEAD_UNAVAILABLE) {
+        return merged;
+      }
+      if (command.type !== "record") {
+        throw new Error("ingest queue returned a non-record command after record filtering");
+      }
+
+      rows.push(command.record);
+      payloadBytes += separatorBytes + command.record.bytes;
+      merged += 1;
     }
   }
 
@@ -384,6 +414,7 @@ class QueueClosedError extends Error {}
 
 const QUEUE_TIMEOUT = Symbol("QUEUE_TIMEOUT");
 const QUEUE_CLOSED = Symbol("QUEUE_CLOSED");
+const QUEUE_HEAD_UNAVAILABLE = Symbol("QUEUE_HEAD_UNAVAILABLE");
 
 type QueueReceiveResult<T> = T | typeof QUEUE_TIMEOUT | typeof QUEUE_CLOSED;
 
@@ -455,6 +486,30 @@ class AsyncBoundedQueue<T> {
     }
     this.recvWaiters.push(waiter);
     return deferred.promise;
+  }
+
+  tryReceiveHeadIf(predicate: (item: T) => boolean): T | typeof QUEUE_HEAD_UNAVAILABLE {
+    if (this.items.length > 0) {
+      const item = this.items[0]!;
+      if (!predicate(item)) {
+        return QUEUE_HEAD_UNAVAILABLE;
+      }
+      this.items.shift();
+      this.drainSenders();
+      return item;
+    }
+
+    if (this.sendWaiters.length > 0) {
+      const waiter = this.sendWaiters[0]!;
+      if (!predicate(waiter.item)) {
+        return QUEUE_HEAD_UNAVAILABLE;
+      }
+      this.sendWaiters.shift();
+      waiter.ack.resolve();
+      return waiter.item;
+    }
+
+    return QUEUE_HEAD_UNAVAILABLE;
   }
 
   close(): void {
