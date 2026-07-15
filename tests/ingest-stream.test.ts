@@ -35,6 +35,10 @@ function ingestTemp(): Response {
   return jsonResponse(503, { message: "service unavailable" });
 }
 
+function ingestRateLimited(): Response {
+  return jsonResponse(429, { message: "rate limited" });
+}
+
 function ingestPerm(): Response {
   return jsonResponse(400, { message: "bad request" });
 }
@@ -175,6 +179,93 @@ describe("IngestStream retry / backoff", () => {
     assert.equal(result.num_rows_inserted, 1);
   });
 
+  it("merges queued records into a rate-limited batch before retrying", async () => {
+    const { client, calls } = makeClient([ingestRateLimited(), ingestOk(2)]);
+    const stream = client.ingestStream(TRANSFORM)
+      .batchBytes(1024 * 1024)
+      .maxRetries(1)
+      .initialBackoff(50)
+      .maxBackoff(50)
+      .build();
+
+    await stream.send({ v: 1 });
+    const flushing = stream.flush();
+    await waitForCallCount(calls, 1);
+    await stream.send({ v: 2 });
+
+    const result = await flushing;
+    await stream.shutdown();
+
+    assert.ok(result !== null);
+    assert.equal(calls.length, 2);
+    assert.deepEqual(parseIngestRows(calls[0]!.init), [{ v: 1 }]);
+    assert.deepEqual(parseIngestRows(calls[1]!.init), [{ v: 1 }, { v: 2 }]);
+  });
+
+  it("leaves queue-head records for the next batch when the retry batch is full", async () => {
+    const first = { v: 1 };
+    const second = { v: 2 };
+    const third = { v: 3 };
+    const batchBytes = Buffer.byteLength(JSON.stringify(first), "utf8") +
+      1 + Buffer.byteLength(JSON.stringify(second), "utf8");
+    const { client, calls } = makeClient([
+      ingestRateLimited(),
+      ingestOk(2),
+      ingestOk(1),
+    ]);
+    const stream = client.ingestStream(TRANSFORM)
+      .batchBytes(batchBytes)
+      .maxRetries(1)
+      .initialBackoff(50)
+      .maxBackoff(50)
+      .build();
+
+    await stream.send(first);
+    const flushing = stream.flush();
+    await waitForCallCount(calls, 1);
+    await stream.send(second);
+    await stream.send(third);
+
+    await flushing;
+    await stream.shutdown();
+
+    assert.equal(calls.length, 3);
+    assert.deepEqual(parseIngestRows(calls[1]!.init), [first, second]);
+    assert.deepEqual(parseIngestRows(calls[2]!.init), [third]);
+    const retryRows = JSON.parse(calls[1]!.init!.body as string) as {
+      data: { rows: string };
+    };
+    assert.ok(Buffer.byteLength(retryRows.data.rows, "utf8") <= batchBytes);
+  });
+
+  it("does not merge records across a queued flush command", async () => {
+    const { client, calls } = makeClient([
+      ingestRateLimited(),
+      ingestOk(1),
+      ingestOk(1),
+    ]);
+    const stream = client.ingestStream(TRANSFORM)
+      .batchBytes(1024 * 1024)
+      .maxRetries(1)
+      .initialBackoff(50)
+      .maxBackoff(50)
+      .build();
+
+    await stream.send({ v: 1 });
+    const firstFlush = stream.flush();
+    await waitForCallCount(calls, 1);
+    const flushBarrier = stream.flush();
+    await stream.send({ v: 2 });
+
+    await firstFlush;
+    assert.equal(await flushBarrier, null);
+    await stream.shutdown();
+
+    assert.equal(calls.length, 3);
+    assert.deepEqual(parseIngestRows(calls[1]!.init), [{ v: 1 }]);
+    assert.deepEqual(parseIngestRows(calls[2]!.init), [{ v: 2 }]);
+  });
+
   it("marks stream fatal after retry budget exhausted", async () => {
     // 3 temporary errors, maxRetries=2 → exhausted after 3 tries (initial + 2 retries)
     const { client } = makeClient([ingestTemp(), ingestTemp(), ingestTemp()]);
@@ -219,6 +310,19 @@ describe("IngestStream retry / backoff", () => {
     assert.equal(calls.length, 1);
   });
 });
+
+async function waitForCallCount(
+  calls: Array<{ url: string; init?: RequestInit }>,
+  expected: number,
+): Promise<void> {
+  const deadline = Date.now() + 1_000;
+  while (calls.length < expected) {
+    if (Date.now() >= deadline) {
+      assert.fail(`timed out waiting for ${expected} fetch call(s), got ${calls.length}`);
+    }
+    await new Promise<void>((resolve) => setTimeout(resolve, 1));
+  }
+}
 
 describe("IngestStream fatal error propagation", () => {
   it("send() throws after stream becomes fatal", async () => {
