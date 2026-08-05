@@ -17,7 +17,11 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { Client } from "../src/client.js";
-import type { TableResource } from "../src/protocol.js";
+import type {
+  CatalogPage,
+  DatabaseResource,
+  TableResource,
+} from "../src/protocol.js";
 import { jsonResponse, makeFetchStub } from "./helpers.js";
 
 const tableResource: TableResource = {
@@ -37,7 +41,7 @@ const tableResource: TableResource = {
 
 describe("Client catalog API", () => {
   it("lists databases with pagination", async () => {
-    const page = {
+    const page: CatalogPage<DatabaseResource> = {
       items: [{ name: "analytics", comment: "analytics database" }],
       next_page_token: "next+/=token",
     };

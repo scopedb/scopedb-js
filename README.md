@@ -102,7 +102,7 @@ const stream = table
   .appendStream()
   .batchBytes(4 * 1024 * 1024)
   .flushInterval(1_000)
-  .concurrency(4)
+  .maxInFlightRequests(4)
   .maxPendingBytes(64 * 1024 * 1024)
   .build();
 
@@ -120,23 +120,27 @@ await stream.flush();
 await stream.shutdown();
 ```
 
-`send()` waits for local capacity, while `sendAll()` consumes an iterable or
-async iterable one row at a time with the same backpressure. Avoid creating one
-promise per row with `Promise.all()`: those promises and their serialized rows
-can outgrow the stream's bounded buffer. A successful send means local
-acceptance; `flush()` and `shutdown()` are the delivery barriers.
+`send()` waits only for local admission capacity; it does not wait for a remote
+commit. `sendAll()` consumes an iterable or async iterable one row at a time
+with the same admission backpressure. Avoid creating one promise per row with
+`Promise.all()`: those promises and their serialized rows can outgrow the
+stream's bounded buffer. `flush()` and `shutdown()` are the remote delivery
+barriers.
 
 More precisely, a successful barrier in the default `"stop"` mode confirms
 that its accepted prefix committed. In `"continue"` mode it is a settlement
 barrier: inspect its report because some batches may be rejected, unknown, or
 dropped while later batches continue.
 
-The default failure policy is `"stop"`, which preserves fail-fast behavior and
-returns the existing `AppendRowsResult | null` from barriers. Best-effort
-telemetry must opt in to `.failurePolicy("continue")`. Its barriers return a
-`FlushReport` with committed, explicitly failed, unknown, and locally dropped
-row counts. `outcome` is `"ok"` only when none of those rows were lost or
-unknown. In every completed report:
+The default `onFailure` behavior is `"stop"`, which preserves fail-fast behavior
+and returns the existing `AppendRowsResult | null` from barriers. Best-effort
+telemetry must opt in when creating the stream with
+`.appendStream({ onFailure: "continue" })`. Its barriers return an
+`AppendDeliveryReport` with committed, failed, unknown, and locally dropped row
+counts. `failedRows` includes explicitly rejected rows and rows that a local
+fatal stream failure prevented from being delivered; ambiguous outcomes remain
+separate in `unknownRows`. `outcome` is `"ok"` only when none of those rows were
+lost or unknown. In every completed report:
 
 ```text
 acceptedRows = committedRows + failedRows + unknownRows
@@ -145,7 +149,7 @@ acceptedRows = committedRows + failedRows + unknownRows
 The stream automatically retries only the exact HTTP batch when its temporary
 error is explicitly marked `append_state: "rejected"`. That does not make the
 whole stream or source safe to replay: other concurrent batches may already be
-committed. A transport error or request timeout is `unknown`; the SDK reports
+committed. A transport error or attempt timeout is `unknown`; the SDK reports
 that batch without retrying it, then continue mode can process later batches.
 Continue mode releases a failed batch after reporting it; it is not an in-memory
 retry queue. Use an external spool/outbox when the payload must remain available
@@ -162,16 +166,15 @@ for replay or reconciliation.
 | Node 20 Fetch-style Serverless | Warm stream settled through a lifecycle hook | [`serverless.ts`](examples/templates/serverless.ts) |
 | Durable audit records | One durable attempt per request; ambiguous commits require reconciliation | [`audit-outbox.ts`](examples/templates/audit-outbox.ts) |
 
-For long-running telemetry, `trySend()` never waits for capacity. A `false`
-result can mean a full buffer, open circuit, invalid or oversized input, or a
-closed stream; `stats().droppedByReason` separates those causes. Continue mode's
+For long-running telemetry, `trySend()` attempts local admission without
+waiting; a `true` result still does not mean a remote commit. A `false` result
+can mean a full buffer, open circuit, invalid or oversized input, or a closed
+stream; `stats().droppedByReason` separates those causes. Continue mode's
 default circuit opens after five consecutive availability failures and probes
-again after 30 seconds. Its default request timeout is also 30 seconds per
-attempt. `failurePolicy()` returns a policy-typed builder clone, so retain its
-return value or use it in a chain as the example does.
+again after 30 seconds. Its default attempt timeout is also 30 seconds.
 
 For Serverless, register the real `flush()` promise with a lifecycle hook such
-as `waitUntil()`; a per-attempt `requestTimeout()` does not bound the whole
+as `waitUntil()`; a per-attempt `attemptTimeoutMs()` does not bound the whole
 barrier or a shared backlog. A report from a module-level stream can cover
 concurrent invocations, so it is not an attribution receipt for one event.
 
@@ -195,10 +198,11 @@ rows are not rolled back and may already have been dispatched. Call
 `shutdown()` when the accepted prefix should still commit; there is no
 transactional stream-wide abort or rollback.
 
-The default append concurrency is 4. Set `.concurrency(1)` when batches must be
-submitted serially; concurrent batches do not have a defined commit order. A
-single NDJSON request is capped at 16 MiB and 200,000 rows; the stream splits
-automatically at either protocol limit.
+The default number of in-flight append requests is 4. Set
+`.maxInFlightRequests(1)` when batches must be submitted serially; concurrent
+batches do not have a defined commit order. A single NDJSON request is capped at
+16 MiB and 200,000 rows; the stream splits automatically at either protocol
+limit.
 
 Remote append failures and ambiguous commit outcomes throw `AppendRowsError`.
 Its `appendState`, `rowErrors`, and `rowErrorsTruncated` fields preserve the

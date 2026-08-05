@@ -15,7 +15,11 @@
  */
 
 import type { Client, RequestOptions } from "./client.js";
-import { AppendStreamBuilder } from "./append-stream.js";
+import {
+  AppendStreamBuilder,
+  type AppendFailurePolicy,
+  type AppendStreamOptions,
+} from "./append-stream.js";
 import type { AppendRowsResult } from "./protocol.js";
 import { FieldSchema, Schema } from "./result.js";
 
@@ -66,13 +70,25 @@ export class Table {
   }
 
   /** Builds an asynchronous, concurrent NDJSON append stream for this table. */
-  appendStream(): AppendStreamBuilder {
-    return new AppendStreamBuilder(
+  appendStream(): AppendStreamBuilder<"stop">;
+  appendStream(options: undefined): AppendStreamBuilder<"stop">;
+  /** Builds an append stream with an explicit batch-failure policy. */
+  appendStream<Policy extends AppendFailurePolicy>(
+    options: AppendStreamOptions<Policy>,
+  ): AppendStreamBuilder<Policy>;
+  appendStream<Policy extends AppendFailurePolicy>(
+    options: AppendStreamOptions<Policy> | undefined,
+  ): AppendStreamBuilder<Policy | "stop">;
+  appendStream(
+    options?: AppendStreamOptions<AppendFailurePolicy>,
+  ): AppendStreamBuilder<AppendFailurePolicy> {
+    const onFailure = options === undefined ? "stop" : options?.onFailure;
+    return AppendStreamBuilder.create(
       this.client,
       this.databaseName ?? "scopedb",
       this.schemaName ?? "public",
       this.tableName,
-      "stop",
+      onFailure as AppendFailurePolicy,
     );
   }
 

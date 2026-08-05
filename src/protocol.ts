@@ -156,7 +156,7 @@ export interface AppendRowsErrorPayload {
   row_errors_truncated: boolean;
 }
 
-export interface ResourceCollection<T> {
+export interface CatalogPage<T> {
   items: T[];
   next_page_token?: string;
 }

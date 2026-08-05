@@ -66,8 +66,9 @@ Use these to learn the two basic write paths before copying a tuned pattern.
 | [`append-stream.ts`](append-stream.ts) | The SDK should asynchronously batch object rows | `pnpm run example:append-stream` |
 
 `append.ts` sends exactly one request. `append-stream.ts` uses the default strict
-policy without tuning knobs: `sendAll()` confirms local admission, while a
-successful `shutdown()` confirms its accepted prefix committed.
+policy without tuning knobs: `sendAll()` waits only for local admission and
+does not confirm a remote commit, while a successful `shutdown()` confirms its
+accepted prefix committed.
 
 ## Runnable production patterns
 
@@ -96,10 +97,11 @@ not make the destination automatically idempotent.
 
 ## Delivery contract
 
-- `send()`, `sendAll()`, and a `true` result from `trySend()` mean local memory
-  accepted the row.
+- `send()`, `sendAll()`, and a `true` result from `trySend()` mean only that
+  local memory admitted the row; they do not mean the row committed remotely.
 - A successful strict barrier confirms its accepted prefix committed.
-- A continue-mode barrier is settlement; always inspect its `FlushReport`.
+- A continue-mode barrier is settlement; always inspect its
+  `AppendDeliveryReport`.
 - The stream retries only the exact temporary HTTP batch explicitly marked
   `rejected`; never infer that an entire stream or source is safe to rerun.
 - A timeout or transport failure is `unknown`; do not blindly replay it.

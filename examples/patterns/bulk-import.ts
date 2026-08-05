@@ -53,9 +53,9 @@ const stream = table
   // Small enough for this sample to exercise several concurrent HTTP batches.
   .batchBytes(32 * 1024)
   .flushInterval(1_000)
-  .concurrency(4)
+  .maxInFlightRequests(4)
   .maxPendingBytes(1024 * 1024)
-  .requestTimeout(30_000)
+  .attemptTimeoutMs(30_000)
   .build();
 
 let admissionError: unknown;

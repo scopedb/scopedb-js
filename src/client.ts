@@ -20,11 +20,11 @@ import type {
   AppendRowError,
   AppendRowsErrorPayload,
   AppendRowsResult,
+  CatalogPage,
   DatabaseResource,
   ErrorPayload,
   IngestRequest,
   IngestResult,
-  ResourceCollection,
   SchemaResource,
   StatementCancelResult,
   StatementRequest,
@@ -119,7 +119,7 @@ export class Client {
 
   async listDatabases(
     options: CatalogListOptions = {},
-  ): Promise<ResourceCollection<DatabaseResource>> {
+  ): Promise<CatalogPage<DatabaseResource>> {
     return this.requestJson(this.catalogUrl(["databases"], options), {
       method: "GET",
       signal: options.signal,
@@ -139,7 +139,7 @@ export class Client {
   async listSchemas(
     database: string,
     options: CatalogListOptions = {},
-  ): Promise<ResourceCollection<SchemaResource>> {
+  ): Promise<CatalogPage<SchemaResource>> {
     return this.requestJson(
       this.catalogUrl(["databases", database, "schemas"], options),
       {
@@ -167,7 +167,7 @@ export class Client {
     database: string,
     schema: string,
     options: CatalogListOptions = {},
-  ): Promise<ResourceCollection<TableResourceSummary>> {
+  ): Promise<CatalogPage<TableResourceSummary>> {
     return this.requestJson(
       this.catalogUrl(
         ["databases", database, "schemas", schema, "tables"],

@@ -37,16 +37,14 @@ const table = client
   .withDatabase(process.env["SCOPEDB_DATABASE"] ?? "scopedb")
   .withSchema(process.env["SCOPEDB_SCHEMA"] ?? "public");
 
-// failurePolicy() returns a policy-typed clone, so keep it in the chain.
 const telemetry = table
-  .appendStream()
-  .failurePolicy("continue")
+  .appendStream({ onFailure: "continue" })
   .batchBytes(1024 * 1024)
   .flushInterval(1_000)
-  .concurrency(2)
+  .maxInFlightRequests(2)
   .maxPendingBytes(32 * 1024 * 1024)
-  .requestTimeout(10_000)
-  .onBackgroundError(({ error, action }) => {
+  .attemptTimeoutMs(10_000)
+  .onBatchFailure(({ error, action }) => {
     // Use a different diagnostics sink, never this same telemetry stream.
     console.error("telemetry append error", action, error);
   })

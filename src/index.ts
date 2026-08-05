@@ -18,17 +18,18 @@ export { Client } from "./client.js";
 export type { CatalogListOptions, ClientOptions, RequestOptions } from "./client.js";
 export { AppendStream, AppendStreamBuilder } from "./append-stream.js";
 export type {
-  AppendBackgroundError,
+  AppendAdmissionResult,
   AppendBarrierResult,
+  AppendBatchFailureEvent,
+  AppendCircuitBreakerOptions,
   AppendCircuitState,
+  AppendDeliveryReport,
   AppendFailurePolicy,
   AnyAppendStream,
+  AppendStreamOptions,
   AppendStreamState,
   AppendStreamStats,
   AppendWaitOptions,
-  CircuitBreakerOptions,
-  FlushReport,
-  SendAllReport,
 } from "./append-stream.js";
 export { AppendRowsError, ScopeDBError } from "./errors.js";
 export type { ErrorKind, ErrorStatus } from "./errors.js";
@@ -38,10 +39,10 @@ export type {
   AppendRowsErrorPayload,
   AppendRowsResult,
   AppendState,
+  CatalogPage,
   DataType,
   DatabaseResource,
   IngestResult,
-  ResourceCollection,
   SchemaResource,
   StatementCancelResult,
   StatementEstimatedProgress,
