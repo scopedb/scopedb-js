@@ -14,15 +14,23 @@
  * limitations under the License.
  */
 
-import { ScopeDBError, asScopeDBError } from "./errors.js";
+import { AppendRowsError, ScopeDBError, asScopeDBError } from "./errors.js";
 import { IngestStreamBuilder } from "./ingest-stream.js";
 import type {
+  AppendRowError,
+  AppendRowsErrorPayload,
+  AppendRowsResult,
+  CatalogPage,
+  DatabaseResource,
   ErrorPayload,
   IngestRequest,
   IngestResult,
+  SchemaResource,
   StatementCancelResult,
   StatementRequest,
   StatementStatus,
+  TableResource,
+  TableResourceSummary,
 } from "./protocol.js";
 import type { ResultSet } from "./result.js";
 import { Statement, StatementHandle } from "./statement.js";
@@ -31,6 +39,13 @@ import { Table } from "./table.js";
 
 export interface RequestOptions {
   signal?: AbortSignal;
+}
+
+export interface CatalogListOptions extends RequestOptions {
+  /** Number of resources to return. The server accepts values from 1 to 1000. */
+  pageSize?: number;
+  /** Opaque token returned as `next_page_token` by the previous page. */
+  pageToken?: string;
 }
 
 export interface ClientOptions {
@@ -100,6 +115,151 @@ export class Client {
       method: "GET",
       signal: options.signal,
     });
+  }
+
+  async listDatabases(
+    options: CatalogListOptions = {},
+  ): Promise<CatalogPage<DatabaseResource>> {
+    return this.requestJson(this.catalogUrl(["databases"], options), {
+      method: "GET",
+      signal: options.signal,
+    });
+  }
+
+  async fetchDatabase(
+    database: string,
+    options: RequestOptions = {},
+  ): Promise<DatabaseResource> {
+    return this.requestJson(this.resourceUrl(["databases", database]), {
+      method: "GET",
+      signal: options.signal,
+    });
+  }
+
+  async listSchemas(
+    database: string,
+    options: CatalogListOptions = {},
+  ): Promise<CatalogPage<SchemaResource>> {
+    return this.requestJson(
+      this.catalogUrl(["databases", database, "schemas"], options),
+      {
+        method: "GET",
+        signal: options.signal,
+      },
+    );
+  }
+
+  async fetchSchema(
+    database: string,
+    schema: string,
+    options: RequestOptions = {},
+  ): Promise<SchemaResource> {
+    return this.requestJson(
+      this.resourceUrl(["databases", database, "schemas", schema]),
+      {
+        method: "GET",
+        signal: options.signal,
+      },
+    );
+  }
+
+  async listTables(
+    database: string,
+    schema: string,
+    options: CatalogListOptions = {},
+  ): Promise<CatalogPage<TableResourceSummary>> {
+    return this.requestJson(
+      this.catalogUrl(
+        ["databases", database, "schemas", schema, "tables"],
+        options,
+      ),
+      {
+        method: "GET",
+        signal: options.signal,
+      },
+    );
+  }
+
+  async fetchTable(
+    database: string,
+    schema: string,
+    table: string,
+    options: RequestOptions = {},
+  ): Promise<TableResource> {
+    return this.requestJson(
+      this.resourceUrl([
+        "databases",
+        database,
+        "schemas",
+        schema,
+        "tables",
+        table,
+      ]),
+      {
+        method: "GET",
+        signal: options.signal,
+      },
+    );
+  }
+
+  async appendRows(
+    database: string,
+    schema: string,
+    table: string,
+    ndjson: string,
+    options: RequestOptions = {},
+  ): Promise<AppendRowsResult> {
+    // A request that has not started cannot have an ambiguous commit outcome.
+    // Keep this check outside the catch block below so the caller's abort reason
+    // is preserved instead of being wrapped as AppendRowsError("unknown").
+    options.signal?.throwIfAborted();
+    const url = this.resourceUrl([
+      "databases",
+      database,
+      "schemas",
+      schema,
+      "tables",
+      table,
+      "rows",
+    ]);
+    try {
+      const result: unknown = await this.requestJson(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/x-ndjson" },
+        body: ndjson,
+        signal: options.signal,
+      });
+      if (!isAppendRowsResult(result)) {
+        throw new ScopeDBError(
+          "Unexpected",
+          "append response has an invalid body",
+        );
+      }
+      return result;
+    } catch (cause) {
+      if (cause instanceof AppendRowsError) {
+        throw cause;
+      }
+      const error = asScopeDBError(
+        "Unexpected",
+        "failed to append rows",
+        cause,
+      );
+
+      // Once the request leaves the client, a transport or intermediary failure
+      // (including an invalid success response) cannot prove whether the append
+      // committed. Retrying could duplicate rows.
+      throw new AppendRowsError(
+        {
+          message: error.message,
+          append_state: "unknown",
+          row_errors: [],
+          row_errors_truncated: false,
+        },
+        error.message,
+        { cause: error },
+      ).setPersistent();
+    }
   }
 
   async insert(
@@ -203,6 +363,24 @@ export class Client {
   private makeUrl(path: string): URL {
     return new URL(path, this.endpoint);
   }
+
+  private resourceUrl(segments: readonly string[]): URL {
+    return this.makeUrl(["v1", ...segments].map(encodeURIComponent).join("/"));
+  }
+
+  private catalogUrl(
+    segments: readonly string[],
+    options: CatalogListOptions,
+  ): URL {
+    const url = this.resourceUrl(segments);
+    if (options.pageSize !== undefined) {
+      url.searchParams.set("page_size", String(options.pageSize));
+    }
+    if (options.pageToken !== undefined) {
+      url.searchParams.set("page_token", options.pageToken);
+    }
+    return url;
+  }
 }
 
 function normalizeEndpoint(endpoint: string | URL): URL {
@@ -216,21 +394,79 @@ function normalizeEndpoint(endpoint: string | URL): URL {
 async function responseToError(response: Response): Promise<ScopeDBError> {
   const body = await response.text();
   let message = body;
+  let appendPayload: AppendRowsErrorPayload | undefined;
   try {
-    const payload = JSON.parse(body) as Partial<ErrorPayload>;
-    if (typeof payload.message === "string" && payload.message.length > 0) {
-      message = payload.message;
+    const payload: unknown = JSON.parse(body);
+    if (isErrorPayload(payload)) {
+      if (payload.message.length > 0) {
+        message = payload.message;
+      }
+      appendPayload = asAppendRowsErrorPayload(payload);
     }
   } catch {
     // Fall back to the raw response body.
   }
 
-  const error = new ScopeDBError(
-    "Unexpected",
-    `${response.status} ${response.statusText}: ${message}`,
-  );
-  if (response.status === 429 || response.status >= 500) {
+  const errorMessage = `${response.status} ${response.statusText}: ${message}`;
+  const error = appendPayload === undefined
+    ? new ScopeDBError("Unexpected", errorMessage)
+    : new AppendRowsError(appendPayload, errorMessage);
+  if (error instanceof AppendRowsError && error.appendState === "unknown") {
+    // Retrying an append with an unknown commit outcome can insert duplicates.
+    return error.setPersistent();
+  }
+  if (response.status === 408 || response.status === 429 || response.status >= 500) {
     return error.setTemporary();
   }
   return error.setPermanent();
+}
+
+function isErrorPayload(value: unknown): value is ErrorPayload & Record<string, unknown> {
+  return isRecord(value) && typeof value["message"] === "string";
+}
+
+function asAppendRowsErrorPayload(
+  value: ErrorPayload & Record<string, unknown>,
+): AppendRowsErrorPayload | undefined {
+  const appendState = value["append_state"];
+  if (appendState !== "rejected" && appendState !== "unknown") {
+    return undefined;
+  }
+
+  const rowErrors = value["row_errors"];
+  if (rowErrors !== undefined && !isAppendRowErrors(rowErrors)) {
+    return undefined;
+  }
+  const rowErrorsTruncated = value["row_errors_truncated"];
+  if (rowErrorsTruncated !== undefined && typeof rowErrorsTruncated !== "boolean") {
+    return undefined;
+  }
+
+  return {
+    message: value.message,
+    append_state: appendState,
+    row_errors: rowErrors ?? [],
+    row_errors_truncated: rowErrorsTruncated ?? false,
+  };
+}
+
+function isAppendRowErrors(value: unknown): value is AppendRowError[] {
+  return Array.isArray(value) && value.every((row) =>
+    isRecord(row) &&
+    typeof row["row_index"] === "number" &&
+    typeof row["column"] === "string" &&
+    typeof row["message"] === "string"
+  );
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
+function isAppendRowsResult(value: unknown): value is AppendRowsResult {
+  return isRecord(value) &&
+    value["append_state"] === "committed" &&
+    typeof value["num_rows_inserted"] === "number" &&
+    Number.isSafeInteger(value["num_rows_inserted"]) &&
+    value["num_rows_inserted"] >= 0;
 }

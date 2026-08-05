@@ -368,9 +368,49 @@ describe("IngestStream fatal error propagation", () => {
       },
     );
   });
+
+  it("rejects a shutdown barrier queued behind a failing flush", async () => {
+    const calls: Array<{ url: string; init?: RequestInit }> = [];
+    let releaseResponse!: () => void;
+    const responseGate = new Promise<void>((resolve) => {
+      releaseResponse = resolve;
+    });
+    const fetch: typeof globalThis.fetch = async (input, init) => {
+      calls.push({ url: input.toString(), init });
+      await responseGate;
+      return ingestPerm();
+    };
+    const client = new Client("http://localhost:8080", { fetch });
+    const stream = client.ingestStream(TRANSFORM).build();
+
+    await stream.send({ v: 1 });
+    const flushing = stream.flush();
+    await waitForCallCount(calls, 1);
+    const shutdown = stream.shutdown();
+    const settling = Promise.allSettled([flushing, shutdown]);
+
+    releaseResponse();
+    const results = await settling;
+
+    assert.equal(results[0]!.status, "rejected");
+    assert.equal(results[1]!.status, "rejected");
+    assert.ok(results[1]!.reason instanceof ScopeDBError);
+  });
 });
 
 describe("IngestStream backpressure", () => {
+  it("rejects non-finite builder configuration", () => {
+    const { client } = makeClient([]);
+    assert.throws(
+      () => client.ingestStream(TRANSFORM).maxPendingBytes(Number.NaN),
+      (error: unknown) => {
+        assert.ok(error instanceof ScopeDBError);
+        assert.equal(error.kind, "ConfigInvalid");
+        return true;
+      },
+    );
+  });
+
   it("throws permanent ScopeDBError when single record exceeds maxPendingBytes", async () => {
     const { client } = makeClient([]);
     // Set maxPendingBytes very small — 1 byte — so any real record exceeds it

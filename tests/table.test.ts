@@ -17,6 +17,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { Client } from "../src/client.js";
+import { AppendRowsError } from "../src/errors.js";
 import { Table } from "../src/table.js";
 import { emptyResultSet, finishedStatus, jsonResponse, makeFetchStub } from "./helpers.js";
 
@@ -97,6 +98,157 @@ describe("Table.drop", () => {
     assert.ok(
       (body["statement"] as string).toLowerCase().includes("drop table"),
       `statement was: ${body["statement"]}`,
+    );
+  });
+});
+
+describe("Table.append", () => {
+  it("posts the NDJSON payload to the fully qualified rows endpoint", async () => {
+    const appendResult = { append_state: "committed", num_rows_inserted: 2 };
+    const { fn, calls } = makeFetchStub([jsonResponse(200, appendResult)]);
+    const client = new Client("http://localhost:8080", { fetch: fn });
+    const table = client
+      .table("page views?#")
+      .withDatabase("analytics/raw")
+      .withSchema("events 2026");
+    const ndjson = '{"id":1}\n{"id":2}\n';
+
+    assert.deepEqual(await table.append(ndjson), appendResult);
+
+    assert.equal(calls.length, 1);
+    const call = calls[0]!;
+    assert.equal(
+      call.url,
+      "http://localhost:8080/v1/databases/analytics%2Fraw/schemas/events%202026/tables/page%20views%3F%23/rows",
+    );
+    const init = call.init as RequestInit;
+    assert.equal(init.method, "POST");
+    assert.equal(init.body, ndjson);
+    const headers = init.headers as Headers;
+    assert.equal(headers.get("Content-Type"), "application/x-ndjson");
+    assert.equal(headers.get("Accept"), "application/json");
+  });
+
+  it("uses the default database and schema", async () => {
+    const { fn, calls } = makeFetchStub([
+      jsonResponse(200, { append_state: "committed", num_rows_inserted: 1 }),
+    ]);
+    const client = new Client("http://localhost:8080", { fetch: fn });
+
+    await client.table("events").append('{"id":1}');
+
+    assert.equal(
+      calls[0]!.url,
+      "http://localhost:8080/v1/databases/scopedb/schemas/public/tables/events/rows",
+    );
+  });
+
+  it("does not start an append when the signal is already aborted", async () => {
+    const { fn, calls } = makeFetchStub([
+      jsonResponse(200, { append_state: "committed", num_rows_inserted: 1 }),
+    ]);
+    const client = new Client("http://localhost:8080", { fetch: fn });
+    const controller = new AbortController();
+    const reason = new DOMException("cancelled", "AbortError");
+    controller.abort(reason);
+
+    await assert.rejects(
+      () => client.table("events").append('{"id":1}', {
+        signal: controller.signal,
+      }),
+      (error: unknown) => error === reason,
+    );
+    assert.equal(calls.length, 0);
+  });
+
+  it("preserves row-level rejection details", async () => {
+    const { fn } = makeFetchStub([
+      jsonResponse(422, {
+        message: "row validation failed",
+        append_state: "rejected",
+        row_errors: [
+          { row_index: 1, column: "id", message: "expected int, got string" },
+        ],
+        row_errors_truncated: false,
+      }),
+    ]);
+    const client = new Client("http://localhost:8080", { fetch: fn });
+
+    await assert.rejects(
+      () => client.table("events").append('{"id":"bad"}'),
+      (error: unknown) => {
+        assert.ok(error instanceof AppendRowsError);
+        assert.equal(error.appendState, "rejected");
+        assert.deepEqual(error.rowErrors, [
+          { row_index: 1, column: "id", message: "expected int, got string" },
+        ]);
+        assert.equal(error.rowErrorsTruncated, false);
+        assert.ok(error.isPermanent());
+        return true;
+      },
+    );
+  });
+
+  it("does not mark an unknown commit outcome as automatically retryable", async () => {
+    const { fn } = makeFetchStub([
+      jsonResponse(503, {
+        message: "append commit outcome is unknown",
+        append_state: "unknown",
+        row_errors: [],
+        row_errors_truncated: false,
+      }),
+    ]);
+    const client = new Client("http://localhost:8080", { fetch: fn });
+
+    await assert.rejects(
+      () => client.table("events").append('{"id":1}'),
+      (error: unknown) => {
+        assert.ok(error instanceof AppendRowsError);
+        assert.equal(error.appendState, "unknown");
+        assert.ok(error.isPersistent());
+        return true;
+      },
+    );
+  });
+});
+
+describe("Table.tableSchema", () => {
+  it("uses the RESTful table resource", async () => {
+    const resource = {
+      database: "analytics",
+      schema: "events",
+      name: "page_views",
+      columns: [
+        { name: "id", data_type: "int", comment: "identifier" },
+        { name: "occurred_at", data_type: "timestamp", comment: null },
+      ],
+      partition_by: [],
+      cluster_by: [],
+      distinct_on: { on: [], by: [] },
+      data_retention_days: null,
+      comment: null,
+    };
+    const { fn, calls } = makeFetchStub([jsonResponse(200, resource)]);
+    const client = new Client("http://localhost:8080", { fetch: fn });
+    const table = client
+      .table("page_views")
+      .withDatabase("analytics")
+      .withSchema("events");
+
+    const schema = await table.tableSchema();
+
+    assert.deepEqual(
+      schema.fields().map((field) => [field.name(), field.dataType()]),
+      [
+        ["id", "int"],
+        ["occurred_at", "timestamp"],
+      ],
+    );
+    assert.equal(calls.length, 1);
+    assert.equal((calls[0]!.init as RequestInit).method, "GET");
+    assert.equal(
+      calls[0]!.url,
+      "http://localhost:8080/v1/databases/analytics/schemas/events/tables/page_views",
     );
   });
 });

@@ -136,6 +136,71 @@ export interface IngestResult {
   num_rows_inserted: number;
 }
 
+export type AppendState = "committed" | "rejected" | "unknown";
+
+export interface AppendRowsResult {
+  append_state: "committed";
+  num_rows_inserted: number;
+}
+
+export interface AppendRowError {
+  row_index: number;
+  column: string;
+  message: string;
+}
+
+export interface AppendRowsErrorPayload {
+  message: string;
+  append_state: Exclude<AppendState, "committed">;
+  row_errors: AppendRowError[];
+  row_errors_truncated: boolean;
+}
+
+export interface CatalogPage<T> {
+  items: T[];
+  next_page_token?: string;
+}
+
+export interface DatabaseResource {
+  name: string;
+  comment: string | null;
+}
+
+export interface SchemaResource {
+  database: string;
+  name: string;
+  comment: string | null;
+}
+
+export interface TableResourceSummary {
+  database: string;
+  schema: string;
+  name: string;
+  comment: string | null;
+}
+
+export interface TableColumnSpec {
+  name: string;
+  data_type: Exclude<DataType, "u_int">;
+  comment: string | null;
+}
+
+export interface TableDistinctSpec {
+  on: string[];
+  by: string[];
+}
+
+export interface TableSpec {
+  columns: TableColumnSpec[];
+  partition_by: string[];
+  cluster_by: string[];
+  distinct_on: TableDistinctSpec;
+  data_retention_days: number | null;
+  comment: string | null;
+}
+
+export interface TableResource extends TableResourceSummary, TableSpec {}
+
 export interface ErrorPayload {
   message: string;
 }

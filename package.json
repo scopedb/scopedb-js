@@ -14,15 +14,32 @@
     "./package.json": "./package.json"
   },
   "files": [
-    "dist"
+    "dist",
+    "examples/**/*.ts",
+    "examples/README.md"
   ],
   "engines": {
     "node": ">=20"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json",
-    "check": "tsc -p tsconfig.json --noEmit",
-    "prepack": "pnpm run build",
+    "build": "pnpm run clean:dist && tsc -p tsconfig.json",
+    "build:examples": "pnpm run build && pnpm run clean:examples && tsc -p tsconfig.examples.json",
+    "check": "pnpm run build && pnpm run check:examples:built",
+    "check:examples": "pnpm run build && pnpm run check:examples:built",
+    "check:examples:built": "tsc -p tsconfig.examples.json --noEmit && pnpm run check:package",
+    "check:package": "node --input-type=module -e \"const sdk = await import('scopedb'); if (typeof sdk.Client !== 'function' || typeof sdk.AppendStream !== 'function' || typeof sdk.AppendRowsError !== 'function') throw new Error('public package entry is incomplete')\"",
+    "clean:dist": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\"",
+    "clean:examples": "node -e \"require('node:fs').rmSync('dist-test/examples-build', { recursive: true, force: true })\"",
+    "example": "pnpm run build:examples && node scripts/run-example.mjs",
+    "example:list": "node scripts/run-example.mjs --list",
+    "example:append": "pnpm run example -- append",
+    "example:append-stream": "pnpm run example -- append-stream",
+    "example:append-bulk": "pnpm run example -- append-bulk",
+    "example:append-telemetry": "pnpm run example -- append-telemetry",
+    "example:catalog": "pnpm run example -- catalog",
+    "example:ingest-transform": "pnpm run example -- ingest-transform",
+    "example:statement": "pnpm run example -- statement",
+    "prepack": "pnpm run check",
     "test": "tsc -p tsconfig.test.json --noEmit && tsc -p tsconfig.test.json && node --test dist-test/tests/*.test.js"
   },
   "devDependencies": {

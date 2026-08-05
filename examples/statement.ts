@@ -14,13 +14,21 @@
  * limitations under the License.
  */
 
-import { Client } from "../src/index.js";
+import { Client } from "scopedb";
 
-const client = new Client("http://127.0.0.1:6543");
+// Layer: quickstart (read-only and runnable).
+// Run: pnpm run example:statement
+
+const client = new Client(
+  process.env["SCOPEDB_ENDPOINT"] ?? "http://127.0.0.1:6543",
+  { token: process.env["SCOPEDB_TOKEN"] },
+);
 
 const result = await client
-  .statement("SELECT 1")
+  .statement("SELECT 42 AS answer")
   .withMaxParallelism(4)
   .execute();
 
-console.log(result.intoValues());
+// `number` is JSON-safe. Keep the default bigint mode when full i64 precision
+// matters and the result does not need to pass through JSON.stringify().
+console.log(result.intoObjects({ integerMode: "number" }));

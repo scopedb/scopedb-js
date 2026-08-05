@@ -8,6 +8,7 @@
     "noEmitOnError": true,
     "declaration": true,
     "declarationMap": true,
+    "stripInternal": true,
     "sourceMap": true,
     "outDir": "dist",
     "rootDir": "src",
