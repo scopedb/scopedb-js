@@ -61,6 +61,7 @@ describe("ResultSet.fromStatementResultSet", () => {
     const rows = rs.jsonRows();
     assert.deepEqual(rows[0], ["1", "hello"]);
     assert.deepEqual(rows[1], ["2", null]);
+    assert.deepEqual(rs.rawRows(), rows);
   });
 });
 
@@ -68,6 +69,7 @@ describe("ResultSet.intoValues — type parsing", () => {
   it("parses int as BigInt", () => {
     const rs = makeResultSet([{ name: "n", data_type: "int" }], [["42"]]);
     assert.equal(rs.intoValues()[0]![0], 42n);
+    assert.equal(rs.toValues()[0]![0], 42n);
   });
 
   it("parses uint as BigInt", () => {
@@ -196,6 +198,7 @@ describe("ResultSet.intoObjects", () => {
     assert.equal(rows[0]!["label"], "alpha");
     assert.equal(rows[1]!["id"], 2n);
     assert.equal(rows[1]!["label"], "beta");
+    assert.deepEqual(rs.toObjects(), rows);
   });
 
   it("returns empty array for empty result set", () => {

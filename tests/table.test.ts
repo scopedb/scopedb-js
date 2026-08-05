@@ -143,6 +143,23 @@ describe("Table.append", () => {
     );
   });
 
+  it("accepts the table location when the handle is created", async () => {
+    const { fn, calls } = makeFetchStub([
+      jsonResponse(200, { append_state: "committed", num_rows_inserted: 1 }),
+    ]);
+    const client = new Client("http://localhost:8080", { fetch: fn });
+
+    await client.table("events", {
+      database: "analytics",
+      schema: "logs",
+    }).append('{"id":1}');
+
+    assert.equal(
+      calls[0]!.url,
+      "http://localhost:8080/v1/databases/analytics/schemas/logs/tables/events/rows",
+    );
+  });
+
   it("does not start an append when the signal is already aborted", async () => {
     const { fn, calls } = makeFetchStub([
       jsonResponse(200, { append_state: "committed", num_rows_inserted: 1 }),
@@ -210,6 +227,37 @@ describe("Table.append", () => {
       },
     );
   });
+
+  it("preserves response metadata when a successful append body is malformed", async () => {
+    const responses = [
+      new Response("not-json", {
+        status: 200,
+        headers: { "X-Request-Id": "req-malformed-json" },
+      }),
+      new Response("{}", {
+        status: 200,
+        headers: {
+          "Content-Type": "application/json",
+          "X-Request-Id": "req-invalid-shape",
+        },
+      }),
+    ];
+    const { fn } = makeFetchStub(responses);
+    const client = new Client("http://localhost:8080", { fetch: fn });
+
+    for (const requestId of ["req-malformed-json", "req-invalid-shape"]) {
+      await assert.rejects(
+        () => client.table("events").append('{"id":1}'),
+        (error: unknown) => {
+          assert.ok(error instanceof AppendRowsError);
+          assert.equal(error.appendState, "unknown");
+          assert.equal(error.httpStatus, 200);
+          assert.equal(error.requestId, requestId);
+          return true;
+        },
+      );
+    }
+  });
 });
 
 describe("Table.tableSchema", () => {
@@ -246,6 +294,72 @@ describe("Table.tableSchema", () => {
     );
     assert.equal(calls.length, 1);
     assert.equal((calls[0]!.init as RequestInit).method, "GET");
+    assert.equal(
+      calls[0]!.url,
+      "http://localhost:8080/v1/databases/analytics/schemas/events/tables/page_views",
+    );
+  });
+
+  it("describes the complete table with JS-style field names", async () => {
+    const resource = {
+      database: "analytics",
+      schema: "events",
+      name: "page_views",
+      columns: [
+        { name: "id", data_type: "int", comment: "identifier" },
+      ],
+      partition_by: ["day"],
+      cluster_by: ["id"],
+      distinct_on: { on: ["id"], by: ["occurred_at DESC"] },
+      data_retention_days: 30,
+      comment: "page views",
+    };
+    const { fn } = makeFetchStub([jsonResponse(200, resource)]);
+    const client = new Client("http://localhost:8080", { fetch: fn });
+
+    const description = await client.table("page_views", {
+      database: "analytics",
+      schema: "events",
+    }).describe();
+
+    assert.deepEqual(description, {
+      database: "analytics",
+      schema: "events",
+      name: "page_views",
+      columns: [{ name: "id", dataType: "int", comment: "identifier" }],
+      partitionBy: ["day"],
+      clusterBy: ["id"],
+      distinctOn: { on: ["id"], by: ["occurred_at DESC"] },
+      dataRetentionDays: 30,
+      comment: "page views",
+    });
+  });
+
+  it("does not let request options override the table handle identity", async () => {
+    const resource = {
+      database: "analytics",
+      schema: "events",
+      name: "page_views",
+      columns: [],
+      partition_by: [],
+      cluster_by: [],
+      distinct_on: { on: [], by: [] },
+      data_retention_days: null,
+      comment: null,
+    };
+    const { fn, calls } = makeFetchStub([jsonResponse(200, resource)]);
+    const client = new Client("http://localhost:8080", { fetch: fn });
+    const widerOptions = {
+      database: "other",
+      schema: "other",
+      table: "other",
+    } as unknown as { signal?: AbortSignal };
+
+    await client.table("page_views", {
+      database: "analytics",
+      schema: "events",
+    }).describe(widerOptions);
+
     assert.equal(
       calls[0]!.url,
       "http://localhost:8080/v1/databases/analytics/schemas/events/tables/page_views",

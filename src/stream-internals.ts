@@ -430,8 +430,17 @@ export function throwIfAborted(signal?: AbortSignal): void {
   }
 }
 
+const UTF8_ENCODER = new TextEncoder();
+
 export function byteLength(payload: string): number {
-  return Buffer.byteLength(payload, "utf8");
+  const buffer = (
+    globalThis as typeof globalThis & {
+      Buffer?: { byteLength(value: string, encoding: "utf8"): number };
+    }
+  ).Buffer;
+  return buffer === undefined
+    ? UTF8_ENCODER.encode(payload).byteLength
+    : buffer.byteLength(payload, "utf8");
 }
 
 export function nextBackoff(currentMs: number, maxBackoffMs: number): number {

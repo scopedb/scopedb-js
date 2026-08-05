@@ -39,6 +39,9 @@ export interface IntoOptions {
   integerMode?: IntegerMode;
 }
 
+/** Options used by typed result conversion helpers. */
+export type ResultOptions = IntoOptions;
+
 export class FieldSchema {
   constructor(
     private readonly fieldName: string,
@@ -77,11 +80,25 @@ export class ResultSet {
     return this.resultSchema;
   }
 
-  jsonRows(): ReadonlyArray<ReadonlyArray<string | null>> {
+  rawRows(): ReadonlyArray<ReadonlyArray<string | null>> {
     return this.rows;
   }
 
+  /** @deprecated Use `rawRows()`. */
+  jsonRows(): ReadonlyArray<ReadonlyArray<string | null>> {
+    return this.rawRows();
+  }
+
+  toValues(options: IntoOptions = {}): Value[][] {
+    return this.parseValues(options);
+  }
+
+  /** @deprecated Use `toValues()`. */
   intoValues(options: IntoOptions = {}): Value[][] {
+    return this.toValues(options);
+  }
+
+  private parseValues(options: IntoOptions): Value[][] {
     const integerMode = options.integerMode ?? "bigint";
     return this.rows.map((row) => {
       const fields = this.resultSchema.fields();
@@ -101,20 +118,20 @@ export class ResultSet {
    * Returns all rows as plain objects keyed by column name.
    *
    * This is the most convenient form for typical application code — use this
-   * instead of `intoValues()` when you need to access columns by name.
+   * instead of `toValues()` when you need to access columns by name.
    *
    * @example
    * // Default: integer cells come back as bigint (preserves I64 precision,
    * // NOT directly JSON-serializable).
-   * const rows = result.intoObjects();
+   * const rows = result.toObjects();
    * console.log(rows[0]?.["user_id"]); // bigint
    *
    * @example
    * // Opt in to JSON-safe representation for integer cells.
-   * const rows = result.intoObjects({ integerMode: "number" });
+   * const rows = result.toObjects({ integerMode: "number" });
    * JSON.stringify(rows[0]); // safe
    */
-  intoObjects(options: IntoOptions = {}): Record<string, Value>[] {
+  toObjects(options: IntoOptions = {}): Record<string, Value>[] {
     const integerMode = options.integerMode ?? "bigint";
     const fields = this.resultSchema.fields();
     return this.rows.map((row) => {
@@ -130,6 +147,11 @@ export class ResultSet {
       });
       return obj;
     });
+  }
+
+  /** @deprecated Use `toObjects()`. */
+  intoObjects(options: IntoOptions = {}): Record<string, Value>[] {
+    return this.toObjects(options);
   }
 
   /**

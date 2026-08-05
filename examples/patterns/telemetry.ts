@@ -14,7 +14,6 @@
  * limitations under the License.
  */
 
-import { randomUUID } from "node:crypto";
 import { Client } from "scopedb";
 
 // Layer: production pattern (runnable demo).
@@ -30,20 +29,22 @@ if (tableName === undefined || tableName.length === 0) {
 
 const client = new Client(
   process.env["SCOPEDB_ENDPOINT"] ?? "http://127.0.0.1:6543",
-  { token: process.env["SCOPEDB_TOKEN"] },
+  {
+    apiKey: process.env["SCOPEDB_API_KEY"],
+  },
 );
-const table = client
-  .table(tableName)
-  .withDatabase(process.env["SCOPEDB_DATABASE"] ?? "scopedb")
-  .withSchema(process.env["SCOPEDB_SCHEMA"] ?? "public");
+const table = client.table(tableName, {
+  database: process.env["SCOPEDB_DATABASE"] ?? "scopedb",
+  schema: process.env["SCOPEDB_SCHEMA"] ?? "public",
+});
 
 const telemetry = table
   .appendStream({ failurePolicy: "continue" })
-  .batchBytes(1024 * 1024)
-  .flushInterval(1_000)
-  .maxInFlightRequests(2)
-  .maxPendingBytes(32 * 1024 * 1024)
-  .attemptTimeout(10_000)
+  .targetBatchBytes(1024 * 1024)
+  .flushIntervalMs(1_000)
+  .maxConcurrentBatches(2)
+  .maxBufferedBytes(32 * 1024 * 1024)
+  .attemptTimeoutMs(10_000)
   .onBatchFailure(({ error, action }) => {
     // Use a different diagnostics sink, never this same telemetry stream.
     console.error("telemetry append error", action, error);
@@ -55,7 +56,7 @@ function track(
   attributes: Record<string, unknown>,
 ): boolean {
   return telemetry.trySend({
-    event_id: randomUUID(),
+    event_id: crypto.randomUUID(),
     occurred_at: new Date().toISOString(),
     name,
     attributes,

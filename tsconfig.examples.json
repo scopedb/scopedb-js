@@ -4,7 +4,8 @@
     "outDir": "dist-test/examples-build",
     "rootDir": ".",
     "declaration": false,
-    "declarationMap": false
+    "declarationMap": false,
+    "types": ["node"]
   },
   "include": ["examples/**/*.ts"]
 }

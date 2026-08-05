@@ -25,24 +25,43 @@ export type ErrorKind =
   | "AppendRowsFailed";
 export type ErrorStatus = "permanent" | "temporary" | "persistent";
 
+export interface ScopeDBErrorOptions {
+  cause?: unknown;
+  status?: ErrorStatus;
+  /** HTTP response status, when the error came from the server. */
+  httpStatus?: number;
+  /** Request identifier returned by ScopeDB or an intermediary. */
+  requestId?: string;
+  /** Delay suggested by `Retry-After`, in milliseconds. */
+  retryAfterMs?: number;
+}
+
 export class ScopeDBError extends Error {
   readonly kind: ErrorKind;
+  readonly httpStatus?: number;
+  readonly requestId?: string;
+  readonly retryAfterMs?: number;
   private errorStatus: ErrorStatus;
   private readonly errorContext: Map<string, string>;
 
   constructor(
     kind: ErrorKind,
     message: string,
-    options?: {
-      cause?: unknown;
-      status?: ErrorStatus;
-    },
+    options?: ScopeDBErrorOptions,
   ) {
     super(message, options?.cause === undefined ? undefined : { cause: options.cause });
     this.name = "ScopeDBError";
     this.kind = kind;
+    this.httpStatus = options?.httpStatus;
+    this.requestId = options?.requestId;
+    this.retryAfterMs = options?.retryAfterMs;
     this.errorStatus = options?.status ?? "permanent";
     this.errorContext = new Map();
+  }
+
+  /** Whether retrying is appropriate for this error classification. */
+  get retryable(): boolean {
+    return this.errorStatus === "temporary";
   }
 
   withContext(key: string, value: string | number | boolean): this {
@@ -87,8 +106,18 @@ export class ScopeDBError extends Error {
 
   override toString(): string {
     let s = `ScopeDBError [${this.kind}/${this.errorStatus}]: ${this.message}`;
-    if (this.errorContext.size > 0) {
-      const ctx = [...this.errorContext.entries()]
+    const metadata = new Map(this.errorContext);
+    if (this.httpStatus !== undefined) {
+      metadata.set("http_status", String(this.httpStatus));
+    }
+    if (this.requestId !== undefined) {
+      metadata.set("request_id", this.requestId);
+    }
+    if (this.retryAfterMs !== undefined) {
+      metadata.set("retry_after_ms", String(this.retryAfterMs));
+    }
+    if (metadata.size > 0) {
+      const ctx = [...metadata.entries()]
         .map(([k, v]) => `${k}=${v}`)
         .join(", ");
       s += ` { ${ctx} }`;
@@ -105,7 +134,7 @@ export class AppendRowsError extends ScopeDBError {
   constructor(
     payload: AppendRowsErrorPayload,
     message: string,
-    options?: { cause?: unknown },
+    options?: ScopeDBErrorOptions,
   ) {
     super("AppendRowsFailed", message, options);
     this.name = "AppendRowsError";

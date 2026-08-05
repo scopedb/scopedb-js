@@ -29,14 +29,16 @@ if (tableName === undefined || tableName.length === 0) {
 
 const client = new Client(
   process.env["SCOPEDB_ENDPOINT"] ?? "http://127.0.0.1:6543",
-  { token: process.env["SCOPEDB_TOKEN"] },
+  {
+    apiKey: process.env["SCOPEDB_API_KEY"],
+  },
 );
-const table = client
-  .table(tableName)
-  .withDatabase(process.env["SCOPEDB_DATABASE"] ?? "scopedb")
-  .withSchema(process.env["SCOPEDB_SCHEMA"] ?? "public");
+const table = client.table(tableName, {
+  database: process.env["SCOPEDB_DATABASE"] ?? "scopedb",
+  schema: process.env["SCOPEDB_SCHEMA"] ?? "public",
+});
 
-async function* generateRows(count: number): AsyncIterable<unknown> {
+async function* generateRows(count: number): AsyncIterable<object> {
   for (let id = 1; id <= count; id += 1) {
     yield {
       id,
@@ -51,11 +53,11 @@ async function* generateRows(count: number): AsyncIterable<unknown> {
 const stream = table
   .appendStream()
   // Small enough for this sample to exercise several concurrent HTTP batches.
-  .batchBytes(32 * 1024)
-  .flushInterval(1_000)
-  .maxInFlightRequests(4)
-  .maxPendingBytes(1024 * 1024)
-  .attemptTimeout(30_000)
+  .targetBatchBytes(32 * 1024)
+  .flushIntervalMs(1_000)
+  .maxConcurrentBatches(4)
+  .maxBufferedBytes(1024 * 1024)
+  .attemptTimeoutMs(30_000)
   .build();
 
 let admissionError: unknown;

@@ -78,6 +78,18 @@ describe("StatementHandle.fetchOnce", () => {
     assert.equal(handle.status()?.status, "running");
   });
 
+  it("refresh returns the latest status", async () => {
+    const status = runningStatus("stmt-1");
+    const { fn } = makeFetchStub([jsonResponse(200, status)]);
+    const client = new Client("http://localhost:8080", { fetch: fn });
+    const handle = new StatementHandle(client, "stmt-1");
+
+    const refreshed = await handle.refresh();
+
+    assert.equal(refreshed.status, "running");
+    assert.equal(handle.status(), refreshed);
+  });
+
   it("skips the request when already finished", async () => {
     const finished = finishedStatus(emptyResultSet());
     const { fn, calls } = makeFetchStub([]);
@@ -143,6 +155,17 @@ describe("StatementHandle.fetch", () => {
     const rs = await handle.fetch(noDelay);
 
     assert.equal(calls.length, 3);
+    assert.equal(rs.numRows(), 0);
+  });
+
+  it("wait is the primary polling alias", async () => {
+    const finished = finishedStatus(emptyResultSet());
+    const { fn } = makeFetchStub([jsonResponse(200, finished)]);
+    const client = new Client("http://localhost:8080", { fetch: fn });
+    const handle = new StatementHandle(client, "stmt-1");
+
+    const rs = await handle.wait(noDelay);
+
     assert.equal(rs.numRows(), 0);
   });
 

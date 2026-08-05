@@ -1,6 +1,23 @@
-# ScopeDB SDK for Node.js
+# ScopeDB JavaScript SDK
 
-This package provides a TypeScript-first client for ScopeDB on Node.js.
+This package provides a TypeScript-first ScopeDB client for trusted server-side
+JavaScript runtimes. It is ESM-only and has no runtime dependencies.
+
+## Runtime support
+
+| Environment | Recommended usage |
+| --- | --- |
+| Node.js 20+ | Native ESM; Node 20 is a compatibility floor, so use a maintained Node LTS release in production |
+| Next.js | Route Handlers, Server Actions, and other `server-only` modules; prefer the Node runtime |
+| Bun | Use the same ESM API and `bun add scopedb`; no Bun-specific adapter |
+| Cloudflare Workers | Use secret bindings and Web APIs; `nodejs_compat` is not required |
+| CommonJS | Load the ESM package with dynamic `import()` |
+
+Do not use this SDK from browser code, Next.js Client Components, or other
+untrusted clients. A ScopeDB API key grants server access and must not be
+included in a browser bundle. The [Next.js](examples/frameworks/nextjs-route-handler/route.ts)
+and [Cloudflare Worker](examples/frameworks/cloudflare-worker/worker.ts)
+templates show the intended boundary.
 
 ## ScopeQL documentation
 
@@ -14,6 +31,8 @@ This SDK executes ScopeQL statements; the language is documented separately:
 
 ```sh
 pnpm add scopedb
+# or: npm install scopedb
+# or: bun add scopedb
 ```
 
 ## Create a Client
@@ -21,7 +40,9 @@ pnpm add scopedb
 ```ts
 import { Client } from "scopedb";
 
-const client = new Client("http://127.0.0.1:6543");
+const client = new Client(process.env.SCOPEDB_ENDPOINT!, {
+  apiKey: process.env.SCOPEDB_API_KEY!,
+});
 ```
 
 ## Run a Statement
@@ -29,10 +50,12 @@ const client = new Client("http://127.0.0.1:6543");
 ```ts
 import { Client } from "scopedb";
 
-const client = new Client("http://127.0.0.1:6543");
+const client = new Client(process.env.SCOPEDB_ENDPOINT!, {
+  apiKey: process.env.SCOPEDB_API_KEY!,
+});
 
-const result = await client.statement("SELECT 1").execute();
-console.log(result.intoValues());
+const result = await client.query("SELECT 1 AS ready");
+console.log(result.toObjects());
 ```
 
 ## Integer Representation
@@ -42,21 +65,21 @@ This is the safe default but is **not** directly JSON-serializable —
 `JSON.stringify(rowWithBigInt)` throws `TypeError: Do not know how to serialize
 a BigInt`.
 
-`intoValues()`, `intoObjects()`, and `first()` accept an optional
+`toValues()`, `toObjects()`, and `first()` accept an optional
 `{ integerMode }` to opt in to a different representation:
 
 ```ts
 // Default: bigint (lossless, NOT JSON-safe)
-const rowsBigint = result.intoObjects();
+const rowsBigint = result.toObjects();
 
 // JSON-safe number. Loses precision for |x| > Number.MAX_SAFE_INTEGER
 // (i.e. 2**53 - 1). Safe for typical count() / bounded counters.
-const rowsNumber = result.intoObjects({ integerMode: "number" });
+const rowsNumber = result.toObjects({ integerMode: "number" });
 JSON.stringify(rowsNumber); // ok
 
 // Decimal string. Always safe, always JSON-safe.
 // Recommended for unbounded I64 identifiers.
-const rowsString = result.intoObjects({ integerMode: "string" });
+const rowsString = result.toObjects({ integerMode: "string" });
 ```
 
 The option only affects `int` / `uint` columns; other types are unchanged.
@@ -66,13 +89,13 @@ The option only affects `int` / `uint` columns; other types are unchanged.
 ```ts
 import { Client } from "scopedb";
 
-const client = new Client("http://127.0.0.1:6543");
+const table = client.table("events", {
+  database: "scopedb",
+  schema: "public",
+});
 
-const table = client.table("events").withSchema("public");
-console.log(table.identifier());
-
-const schema = await table.tableSchema();
-console.log(schema.fields().length);
+const description = await table.describe();
+console.log(description.columns);
 ```
 
 ## Streaming Writes with NDJSON
@@ -85,11 +108,10 @@ the snippets before pointing any write path at production.
 ```ts
 import { Client } from "scopedb";
 
-const client = new Client("http://127.0.0.1:6543");
-const table = client
-  .table("sdk_example_events")
-  .withDatabase("scopedb")
-  .withSchema("public");
+const table = client.table("sdk_example_events", {
+  database: "scopedb",
+  schema: "public",
+});
 
 const result = await table.append(
   [
@@ -108,10 +130,11 @@ backpressure, and sends a bounded number of append requests concurrently.
 ```ts
 const stream = table
   .appendStream()
-  .batchBytes(4 * 1024 * 1024)
-  .flushInterval(1_000)
-  .maxInFlightRequests(4)
-  .maxPendingBytes(64 * 1024 * 1024)
+  .targetBatchBytes(4 * 1024 * 1024)
+  .maxBatchRows(10_000)
+  .flushIntervalMs(1_000)
+  .maxConcurrentBatches(4)
+  .maxBufferedBytes(64 * 1024 * 1024)
   .build();
 
 const accepted = await stream.sendAll([
@@ -164,7 +187,8 @@ committed. A transport error or attempt timeout is `unknown`; the SDK reports
 that batch without retrying it, then continue mode can process later batches.
 Continue mode releases a failed batch after reporting it; it is not an in-memory
 retry queue. Use an external spool/outbox when the payload must remain available
-for replay or reconciliation.
+for replay or reconciliation. Safe retries honor `Retry-After`, capped by the
+configured maximum backoff.
 
 ### Choose a delivery path
 
@@ -174,7 +198,7 @@ for replay or reconciliation.
 | Basic asynchronous batching | SDK owns batch boundaries; default strict barriers | [`append-stream.ts`](examples/append-stream.ts) |
 | Backfill or file import | Bounded backpressure and concurrent strict batches | [`bulk-import.ts`](examples/patterns/bulk-import.ts) |
 | Long-running logs and events | Continue-mode stream with observable loss | [`telemetry.ts`](examples/patterns/telemetry.ts) |
-| Node 20 Fetch-style Serverless | Warm stream settled through a lifecycle hook | [`serverless.ts`](examples/templates/serverless.ts) |
+| Fetch-style Serverless | Warm stream settled through a lifecycle hook | [`serverless.ts`](examples/templates/serverless.ts) |
 | Durable audit records | One durable attempt per request; ambiguous commits require reconciliation | [`audit-outbox.ts`](examples/templates/audit-outbox.ts) |
 
 For long-running telemetry, `trySend()` attempts local admission without
@@ -185,7 +209,7 @@ default circuit opens after five consecutive availability failures and probes
 again after 30 seconds. Its default attempt timeout is also 30 seconds.
 
 For Serverless, register the real `flush()` promise with a lifecycle hook such
-as `waitUntil()`; a per-attempt `attemptTimeout()` does not bound the whole
+as `waitUntil()`; a per-attempt `attemptTimeoutMs()` does not bound the whole
 barrier or a shared backlog. A report from a module-level stream can cover
 concurrent invocations, so it is not an attribution receipt for one event.
 
@@ -209,8 +233,8 @@ rows are not rolled back and may already have been dispatched. Call
 `shutdown()` when the accepted prefix should still commit; there is no
 transactional stream-wide abort or rollback.
 
-The default number of in-flight append requests is 4. Set
-`.maxInFlightRequests(1)` when batches must be submitted serially; concurrent
+The default number of concurrent batches is 4. Set
+`.maxConcurrentBatches(1)` when batches must be submitted serially; concurrent
 batches do not have a defined commit order. A single NDJSON request is capped at
 16 MiB and 200,000 rows; the stream splits automatically at either protocol
 limit.
@@ -225,25 +249,60 @@ marks as `"rejected"`.
 ## Browse the Catalog
 
 The RESTful catalog methods return database, schema, table-summary, and full
-table resources. List methods expose the server's opaque pagination token.
+table resources. Use async iterators for the common path; list methods remain
+available when an application needs explicit page boundaries.
 
 ```ts
-const databases = await client.listDatabases({ pageSize: 100 });
-const database = await client.fetchDatabase("scopedb");
-
-const schemas = await client.listSchemas("scopedb");
-const schema = await client.fetchSchema("scopedb", "public");
-
-const tables = await client.listTables("scopedb", "public");
-const table = await client.fetchTable("scopedb", "public", "events");
-
-if (databases.next_page_token !== undefined) {
-  const nextPage = await client.listDatabases({
-    pageSize: 100,
-    pageToken: databases.next_page_token,
-  });
-  console.log(nextPage.items);
+for await (const database of client.iterateDatabases({ pageSize: 100 })) {
+  console.log(database.name);
 }
+
+for await (
+  const table of client.iterateTables({
+    database: "scopedb",
+    schema: "public",
+    pageSize: 100,
+  })
+) {
+  console.log(table.name);
+}
+```
+
+## Errors
+
+Server messages pass through unchanged. `ScopeDBError` adds structured
+diagnostics without requiring callers to parse the message:
+
+```ts
+import { ScopeDBError } from "scopedb";
+
+try {
+  await client.query("SELECT 1");
+} catch (error) {
+  if (error instanceof ScopeDBError) {
+    console.error({
+      message: error.message,
+      httpStatus: error.httpStatus,
+      requestId: error.requestId,
+      retryable: error.retryable,
+      retryAfterMs: error.retryAfterMs,
+    });
+  }
+  throw error;
+}
+```
+
+## CommonJS applications
+
+The package is ESM-only. CommonJS applications can load it with dynamic import:
+
+```js
+async function main() {
+  const { Client } = await import("scopedb");
+  // ...
+}
+
+void main();
 ```
 
 ## Batched JSON Ingest
@@ -254,7 +313,9 @@ while evaluating the example.
 ```ts
 import { Client } from "scopedb";
 
-const client = new Client("http://127.0.0.1:6543");
+const client = new Client(process.env.SCOPEDB_ENDPOINT!, {
+  apiKey: process.env.SCOPEDB_API_KEY!,
+});
 
 const stream = client
   .ingestStream(`
@@ -296,5 +357,7 @@ pnpm run check
 ## Delivery Notes
 
 - The package is TypeScript-first and emits declarations from `src/index.ts`.
-- Generated artifacts should stay out of git; `dist/`, `dist-test/` and `node_modules/` are ignored in [`.gitignore`](.gitignore).
-- A broader package-delivery checklist lives in [DELIVERY.md](DELIVERY.md).
+- Generated artifacts stay out of git; `dist/`, `dist-test/`, and
+  `node_modules/` are ignored.
+- `prepack` runs unit, type, example, and package-entry checks before creating
+  a publishable tarball.
