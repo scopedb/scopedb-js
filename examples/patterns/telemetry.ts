@@ -38,7 +38,7 @@ const table = client
   .withSchema(process.env["SCOPEDB_SCHEMA"] ?? "public");
 
 const telemetry = table
-  .appendStream({ onFailure: "continue" })
+  .appendStream({ failurePolicy: "continue" })
   .batchBytes(1024 * 1024)
   .flushInterval(1_000)
   .maxInFlightRequests(2)

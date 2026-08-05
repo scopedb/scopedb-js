@@ -82,13 +82,15 @@ export class Table {
   appendStream(
     options?: AppendStreamOptions<AppendFailurePolicy>,
   ): AppendStreamBuilder<AppendFailurePolicy> {
-    const onFailure = options === undefined ? "stop" : options?.onFailure;
+    const failurePolicy = options === undefined
+      ? "stop"
+      : options?.failurePolicy;
     return AppendStreamBuilder.create(
       this.client,
       this.databaseName ?? "scopedb",
       this.schemaName ?? "public",
       this.tableName,
-      onFailure as AppendFailurePolicy,
+      failurePolicy as AppendFailurePolicy,
     );
   }
 

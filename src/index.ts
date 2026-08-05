@@ -25,7 +25,6 @@ export type {
   AppendCircuitState,
   AppendDeliveryReport,
   AppendFailurePolicy,
-  AnyAppendStream,
   AppendStreamOptions,
   AppendStreamState,
   AppendStreamStats,

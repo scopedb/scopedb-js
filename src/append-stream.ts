@@ -61,7 +61,7 @@ export interface AppendStreamOptions<
   /**
    * Whether a failed batch stops the stream or allows later batches to continue.
    */
-  onFailure: Policy;
+  failurePolicy: Policy;
 }
 
 export interface AppendWaitOptions {
@@ -77,7 +77,11 @@ export interface AppendAdmissionResult {
 
 /** Delivery outcomes covered by a continue-mode `flush()` or `shutdown()`. */
 export interface AppendDeliveryReport {
-  outcome: "ok" | "partial" | "failed";
+  /**
+   * `unknown` means no covered rows are known to have committed and at least
+   * one batch may have committed; callers must not blindly replay it.
+   */
+  outcome: "ok" | "partial" | "failed" | "unknown";
   acceptedRows: number;
   committedRows: number;
   failedRows: number;
@@ -133,7 +137,6 @@ export interface AppendCircuitBreakerOptions {
 
 export type AppendBarrierResult<Policy extends AppendFailurePolicy> =
   Policy extends "continue" ? AppendDeliveryReport : AppendRowsResult | null;
-export type AnyAppendStream = AppendStream<AppendFailurePolicy>;
 
 interface RetryConfig {
   maxRetries: number;
@@ -152,7 +155,7 @@ interface AppendStreamConfig<Policy extends AppendFailurePolicy> {
   readonly maxPendingBytes: number;
   readonly maxInFlightRequests: number;
   readonly retry: RetryConfig;
-  readonly onFailure: Policy;
+  readonly failurePolicy: Policy;
   readonly attemptTimeoutMs: number | undefined;
   readonly circuitBreaker: AppendCircuitBreakerOptions | false;
   readonly batchFailureListeners: ReadonlyArray<
@@ -241,14 +244,14 @@ export class AppendStreamBuilder<
     database: string,
     schema: string,
     table: string,
-    onFailure: Policy,
+    failurePolicy: Policy,
   ): AppendStreamBuilder<Policy> {
     return new AppendStreamBuilder(
       client,
       database,
       schema,
       table,
-      onFailure,
+      failurePolicy,
     );
   }
 
@@ -257,10 +260,10 @@ export class AppendStreamBuilder<
     private readonly database: string,
     private readonly schema: string,
     private readonly table: string,
-    private readonly onFailure: Policy,
+    private readonly failurePolicy: Policy,
   ) {
-    if (onFailure !== "stop" && onFailure !== "continue") {
-      throw configError("onFailure must be 'stop' or 'continue'");
+    if (failurePolicy !== "stop" && failurePolicy !== "continue") {
+      throw configError("failurePolicy must be 'stop' or 'continue'");
     }
   }
 
@@ -393,9 +396,9 @@ export class AppendStreamBuilder<
       maxPendingBytes: this.currentMaxPendingBytes,
       maxInFlightRequests: this.currentMaxInFlightRequests,
       retry: { ...this.currentRetry },
-      onFailure: this.onFailure,
+      failurePolicy: this.failurePolicy,
       attemptTimeoutMs: this.currentAttemptTimeoutMs ??
-        (this.onFailure === "continue"
+        (this.failurePolicy === "continue"
           ? DEFAULT_CONTINUE_ATTEMPT_TIMEOUT_MS
           : undefined),
       circuitBreaker: this.currentCircuitBreaker === false
@@ -468,12 +471,12 @@ export class AppendStream<Policy extends AppendFailurePolicy = "stop"> {
       return false;
     }
     const claimsCircuitProbe =
-      this.config.onFailure === "continue" &&
+      this.config.failurePolicy === "continue" &&
       this.circuitState === "open" &&
       Date.now() >= this.circuitOpenedUntil &&
       !this.circuitProbeAdmissionClaimed;
     if (
-      this.config.onFailure === "continue" &&
+      this.config.failurePolicy === "continue" &&
       this.circuitState !== "closed" &&
       !claimsCircuitProbe
     ) {
@@ -826,13 +829,13 @@ export class AppendStream<Policy extends AppendFailurePolicy = "stop"> {
           batchRows: batch.length,
           batchBytes,
           outcome: appendOutcome(error),
-          action: this.config.onFailure === "stop"
+          action: this.config.failurePolicy === "stop"
             ? "stopped"
             : circuitOpened
             ? "circuit-opened"
             : "continuing",
         });
-        if (this.config.onFailure === "stop") {
+        if (this.config.failurePolicy === "stop") {
           this.setFatal(error);
         }
       })
@@ -917,7 +920,7 @@ export class AppendStream<Policy extends AppendFailurePolicy = "stop"> {
 
   private async waitForCircuit(): Promise<boolean> {
     if (
-      this.config.onFailure !== "continue" ||
+      this.config.failurePolicy !== "continue" ||
       this.config.circuitBreaker === false
     ) {
       return false;
@@ -978,7 +981,7 @@ export class AppendStream<Policy extends AppendFailurePolicy = "stop"> {
     droppedRowsAtBarrier: number,
     startedAt: number,
   ): BarrierOutput {
-    if (this.config.onFailure === "continue") {
+    if (this.config.failurePolicy === "continue") {
       return this.takeDeliveryReport(droppedRowsAtBarrier, startedAt);
     }
     const result = this.interval.committedBatches === 0
@@ -1010,6 +1013,8 @@ export class AppendStream<Policy extends AppendFailurePolicy = "stop"> {
       ? "ok"
       : counters.committedRows > 0
       ? "partial"
+      : counters.unknownRows > 0
+      ? "unknown"
       : "failed";
     const report: AppendDeliveryReport = {
       outcome,
@@ -1093,7 +1098,7 @@ export class AppendStream<Policy extends AppendFailurePolicy = "stop"> {
   }
 
   private recordCircuitSuccess(probe: boolean): void {
-    if (this.config.onFailure !== "continue") {
+    if (this.config.failurePolicy !== "continue") {
       return;
     }
     this.consecutiveFailures = 0;
@@ -1104,7 +1109,7 @@ export class AppendStream<Policy extends AppendFailurePolicy = "stop"> {
 
   private recordCircuitFailure(error: ScopeDBError, probe: boolean): boolean {
     if (
-      this.config.onFailure !== "continue" ||
+      this.config.failurePolicy !== "continue" ||
       this.config.circuitBreaker === false
     ) {
       return false;

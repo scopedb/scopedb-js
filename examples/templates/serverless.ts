@@ -40,7 +40,7 @@ const telemetry = client
   .table(tableName)
   .withDatabase(process.env["SCOPEDB_DATABASE"] ?? "scopedb")
   .withSchema(process.env["SCOPEDB_SCHEMA"] ?? "public")
-  .appendStream({ onFailure: "continue" })
+  .appendStream({ failurePolicy: "continue" })
   .attemptTimeout(500)
   .maxRetries(1)
   .circuitBreaker(false)

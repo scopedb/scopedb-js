@@ -132,15 +132,18 @@ that its accepted prefix committed. In `"continue"` mode it is a settlement
 barrier: inspect its report because some batches may be rejected, unknown, or
 dropped while later batches continue.
 
-The default `onFailure` behavior is `"stop"`, which preserves fail-fast behavior
+The default `failurePolicy` is `"stop"`, which preserves fail-fast behavior
 and returns the existing `AppendRowsResult | null` from barriers. Best-effort
 telemetry must opt in when creating the stream with
-`.appendStream({ onFailure: "continue" })`. Its barriers return an
+`.appendStream({ failurePolicy: "continue" })`. Its barriers return an
 `AppendDeliveryReport` with committed, failed, unknown, and locally dropped row
 counts. `failedRows` includes explicitly rejected rows and rows that a local
 fatal stream failure prevented from being delivered; ambiguous outcomes remain
-separate in `unknownRows`. `outcome` is `"ok"` only when none of those rows were
-lost or unknown. In every completed report:
+separate in `unknownRows`. `outcome` is `"partial"` when at least one row
+committed but others were lost or remain unknown. With no committed rows it is
+`"unknown"` if any batch may have committed, otherwise `"failed"`; only a
+loss-free report is `"ok"`. Never blindly replay an `"unknown"` report. In every
+completed report:
 
 ```text
 acceptedRows = committedRows + failedRows + unknownRows
