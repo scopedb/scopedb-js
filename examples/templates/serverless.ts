@@ -41,7 +41,7 @@ const telemetry = client
   .withDatabase(process.env["SCOPEDB_DATABASE"] ?? "scopedb")
   .withSchema(process.env["SCOPEDB_SCHEMA"] ?? "public")
   .appendStream({ onFailure: "continue" })
-  .attemptTimeoutMs(500)
+  .attemptTimeout(500)
   .maxRetries(1)
   .circuitBreaker(false)
   .build();
@@ -78,7 +78,7 @@ export function handler(
 
 async function settleTelemetry(): Promise<void> {
   try {
-    // Keep the real barrier promise alive. attemptTimeoutMs() bounds each HTTP
+    // Keep the real barrier promise alive. attemptTimeout() bounds each HTTP
     // attempt, while the platform's waitUntil budget governs the shared barrier.
     const report = await telemetry.flush();
     // A module-level report can cover other concurrent invocations too.

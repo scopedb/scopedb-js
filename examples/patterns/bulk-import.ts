@@ -55,7 +55,7 @@ const stream = table
   .flushInterval(1_000)
   .maxInFlightRequests(4)
   .maxPendingBytes(1024 * 1024)
-  .attemptTimeoutMs(30_000)
+  .attemptTimeout(30_000)
   .build();
 
 let admissionError: unknown;

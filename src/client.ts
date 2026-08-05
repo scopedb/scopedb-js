@@ -209,6 +209,10 @@ export class Client {
     ndjson: string,
     options: RequestOptions = {},
   ): Promise<AppendRowsResult> {
+    // A request that has not started cannot have an ambiguous commit outcome.
+    // Keep this check outside the catch block below so the caller's abort reason
+    // is preserved instead of being wrapped as AppendRowsError("unknown").
+    options.signal?.throwIfAborted();
     const url = this.resourceUrl([
       "databases",
       database,

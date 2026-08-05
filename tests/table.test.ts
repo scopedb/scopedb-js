@@ -143,6 +143,24 @@ describe("Table.append", () => {
     );
   });
 
+  it("does not start an append when the signal is already aborted", async () => {
+    const { fn, calls } = makeFetchStub([
+      jsonResponse(200, { append_state: "committed", num_rows_inserted: 1 }),
+    ]);
+    const client = new Client("http://localhost:8080", { fetch: fn });
+    const controller = new AbortController();
+    const reason = new DOMException("cancelled", "AbortError");
+    controller.abort(reason);
+
+    await assert.rejects(
+      () => client.table("events").append('{"id":1}', {
+        signal: controller.signal,
+      }),
+      (error: unknown) => error === reason,
+    );
+    assert.equal(calls.length, 0);
+  });
+
   it("preserves row-level rejection details", async () => {
     const { fn } = makeFetchStub([
       jsonResponse(422, {

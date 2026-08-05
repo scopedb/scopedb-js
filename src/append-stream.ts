@@ -141,6 +141,25 @@ interface RetryConfig {
   maxBackoffMs: number;
 }
 
+interface AppendStreamConfig<Policy extends AppendFailurePolicy> {
+  readonly client: Client;
+  readonly database: string;
+  readonly schema: string;
+  readonly table: string;
+  readonly batchBytes: number;
+  readonly flushIntervalMs: number;
+  readonly channelCapacity: number;
+  readonly maxPendingBytes: number;
+  readonly maxInFlightRequests: number;
+  readonly retry: RetryConfig;
+  readonly onFailure: Policy;
+  readonly attemptTimeoutMs: number | undefined;
+  readonly circuitBreaker: AppendCircuitBreakerOptions | false;
+  readonly batchFailureListeners: ReadonlyArray<
+    (event: AppendBatchFailureEvent) => void
+  >;
+}
+
 interface SerializedRecord {
   payload: string;
   bytes: number;
@@ -316,10 +335,12 @@ export class AppendStreamBuilder<
     return this;
   }
 
-  /** Per-attempt HTTP timeout. A timeout has an unknown commit outcome. */
-  attemptTimeoutMs(attemptTimeoutMs: number): this {
+  /**
+   * Per-attempt HTTP timeout in milliseconds. A timeout has an unknown outcome.
+   */
+  attemptTimeout(attemptTimeoutMs: number): this {
     this.currentAttemptTimeoutMs = positiveIntegerConfig(
-      "attemptTimeoutMs",
+      "attemptTimeout",
       attemptTimeoutMs,
       MAX_TIMER_MS,
     );
@@ -361,27 +382,27 @@ export class AppendStreamBuilder<
   }
 
   build(): AppendStream<Policy> {
-    return AppendStream.create(
-      this.client,
-      this.database,
-      this.schema,
-      this.table,
-      this.currentBatchBytes,
-      this.currentFlushIntervalMs,
-      this.currentChannelCapacity,
-      this.currentMaxPendingBytes,
-      this.currentMaxInFlightRequests,
-      { ...this.currentRetry },
-      this.onFailure,
-      this.currentAttemptTimeoutMs ??
+    return AppendStream.create({
+      client: this.client,
+      database: this.database,
+      schema: this.schema,
+      table: this.table,
+      batchBytes: this.currentBatchBytes,
+      flushIntervalMs: this.currentFlushIntervalMs,
+      channelCapacity: this.currentChannelCapacity,
+      maxPendingBytes: this.currentMaxPendingBytes,
+      maxInFlightRequests: this.currentMaxInFlightRequests,
+      retry: { ...this.currentRetry },
+      onFailure: this.onFailure,
+      attemptTimeoutMs: this.currentAttemptTimeoutMs ??
         (this.onFailure === "continue"
           ? DEFAULT_CONTINUE_ATTEMPT_TIMEOUT_MS
           : undefined),
-      this.currentCircuitBreaker === false
+      circuitBreaker: this.currentCircuitBreaker === false
         ? false
         : { ...this.currentCircuitBreaker },
-      [...this.batchFailureListeners],
-    );
+      batchFailureListeners: [...this.batchFailureListeners],
+    });
   }
 }
 
@@ -426,61 +447,14 @@ export class AppendStream<Policy extends AppendFailurePolicy = "stop"> {
 
   /** @internal */
   static create<Policy extends AppendFailurePolicy>(
-    client: Client,
-    database: string,
-    schema: string,
-    table: string,
-    batchBytes: number,
-    flushIntervalMs: number,
-    channelCapacity: number,
-    maxPendingBytes: number,
-    maxInFlightRequests: number,
-    retry: RetryConfig,
-    onFailure: Policy,
-    attemptTimeoutMs: number | undefined,
-    circuitBreakerConfig: AppendCircuitBreakerOptions | false,
-    batchFailureListeners: ReadonlyArray<
-      (event: AppendBatchFailureEvent) => void
-    >,
+    config: AppendStreamConfig<Policy>,
   ): AppendStream<Policy> {
-    return new AppendStream(
-      client,
-      database,
-      schema,
-      table,
-      batchBytes,
-      flushIntervalMs,
-      channelCapacity,
-      maxPendingBytes,
-      maxInFlightRequests,
-      retry,
-      onFailure,
-      attemptTimeoutMs,
-      circuitBreakerConfig,
-      batchFailureListeners,
-    );
+    return new AppendStream(config);
   }
 
-  private constructor(
-    private readonly client: Client,
-    private readonly database: string,
-    private readonly schema: string,
-    private readonly table: string,
-    private readonly batchBytes: number,
-    private readonly flushIntervalMs: number,
-    channelCapacity: number,
-    maxPendingBytes: number,
-    private readonly maxInFlightRequests: number,
-    private readonly retry: RetryConfig,
-    private readonly onFailure: Policy,
-    private readonly attemptTimeoutMs: number | undefined,
-    private readonly circuitBreakerConfig: AppendCircuitBreakerOptions | false,
-    private readonly batchFailureListeners: ReadonlyArray<
-      (event: AppendBatchFailureEvent) => void
-    >,
-  ) {
-    this.queue = new AsyncBoundedQueue(channelCapacity);
-    this.pendingBytes = new PendingBytesBudget(maxPendingBytes);
+  private constructor(private readonly config: AppendStreamConfig<Policy>) {
+    this.queue = new AsyncBoundedQueue(config.channelCapacity);
+    this.pendingBytes = new PendingBytesBudget(config.maxPendingBytes);
     this.task = this.runWorker();
   }
 
@@ -494,12 +468,12 @@ export class AppendStream<Policy extends AppendFailurePolicy = "stop"> {
       return false;
     }
     const claimsCircuitProbe =
-      this.onFailure === "continue" &&
+      this.config.onFailure === "continue" &&
       this.circuitState === "open" &&
       Date.now() >= this.circuitOpenedUntil &&
       !this.circuitProbeAdmissionClaimed;
     if (
-      this.onFailure === "continue" &&
+      this.config.onFailure === "continue" &&
       this.circuitState !== "closed" &&
       !claimsCircuitProbe
     ) {
@@ -797,7 +771,7 @@ export class AppendStream<Policy extends AppendFailurePolicy = "stop"> {
     const separatorBytes = this.rows.length === 0 ? 0 : 1;
     if (
       this.rows.length > 0 &&
-      this.currentBytes + separatorBytes + record.bytes > this.batchBytes
+      this.currentBytes + separatorBytes + record.bytes > this.config.batchBytes
     ) {
       try {
         await this.dispatchBuffered();
@@ -808,7 +782,7 @@ export class AppendStream<Policy extends AppendFailurePolicy = "stop"> {
     }
 
     if (this.rows.length === 0) {
-      this.batchDeadlineMs = Date.now() + this.flushIntervalMs;
+      this.batchDeadlineMs = Date.now() + this.config.flushIntervalMs;
     } else {
       this.currentBytes += 1;
     }
@@ -816,7 +790,7 @@ export class AppendStream<Policy extends AppendFailurePolicy = "stop"> {
     this.currentBytes += record.bytes;
 
     if (
-      this.currentBytes >= this.batchBytes ||
+      this.currentBytes >= this.config.batchBytes ||
       this.rows.length >= MAX_APPEND_ROWS
     ) {
       await this.dispatchBuffered();
@@ -852,13 +826,13 @@ export class AppendStream<Policy extends AppendFailurePolicy = "stop"> {
           batchRows: batch.length,
           batchBytes,
           outcome: appendOutcome(error),
-          action: this.onFailure === "stop"
+          action: this.config.onFailure === "stop"
             ? "stopped"
             : circuitOpened
             ? "circuit-opened"
             : "continuing",
         });
-        if (this.onFailure === "stop") {
+        if (this.config.onFailure === "stop") {
           this.setFatal(error);
         }
       })
@@ -874,18 +848,18 @@ export class AppendStream<Policy extends AppendFailurePolicy = "stop"> {
   ): Promise<AppendRowsResult> {
     const payload = batch.map((row) => row.payload).join("\n");
     let retries = 0;
-    let backoffMs = this.retry.initialBackoffMs;
+    let backoffMs = this.config.retry.initialBackoffMs;
 
     for (;;) {
       this.checkFatal();
-      const timeoutSignal = this.attemptTimeoutMs === undefined
+      const timeoutSignal = this.config.attemptTimeoutMs === undefined
         ? undefined
-        : AbortSignal.timeout(this.attemptTimeoutMs);
+        : AbortSignal.timeout(this.config.attemptTimeoutMs);
       try {
-        const result = await this.client.appendRows(
-          this.database,
-          this.schema,
-          this.table,
+        const result = await this.config.client.appendRows(
+          this.config.database,
+          this.config.schema,
+          this.config.table,
           payload,
           timeoutSignal === undefined ? {} : { signal: timeoutSignal },
         );
@@ -897,15 +871,15 @@ export class AppendStream<Policy extends AppendFailurePolicy = "stop"> {
         const error = asStreamError(cause);
         if (
           timeoutSignal?.aborted === true &&
-          this.attemptTimeoutMs !== undefined
+          this.config.attemptTimeoutMs !== undefined
         ) {
-          error.withContext("attempt_timeout_ms", this.attemptTimeoutMs);
+          error.withContext("attempt_timeout_ms", this.config.attemptTimeoutMs);
         }
         const retryable =
           error instanceof AppendRowsError &&
           error.appendState === "rejected" &&
           error.isTemporary();
-        if (retryable && retries < this.retry.maxRetries) {
+        if (retryable && retries < this.config.retry.maxRetries) {
           if (backoffMs > 0) {
             await sleep(backoffMs, this.fatalController.signal);
           }
@@ -914,7 +888,10 @@ export class AppendStream<Policy extends AppendFailurePolicy = "stop"> {
           }
           retries += 1;
           this.noteRetry();
-          backoffMs = nextBackoff(backoffMs, this.retry.maxBackoffMs);
+          backoffMs = nextBackoff(
+            backoffMs,
+            this.config.retry.maxBackoffMs,
+          );
           continue;
         }
         if (retryable) {
@@ -926,7 +903,7 @@ export class AppendStream<Policy extends AppendFailurePolicy = "stop"> {
   }
 
   private async waitForCapacity(): Promise<void> {
-    while (this.inFlight.size >= this.maxInFlightRequests) {
+    while (this.inFlight.size >= this.config.maxInFlightRequests) {
       await Promise.race(this.inFlight);
       this.checkFatal();
     }
@@ -940,8 +917,8 @@ export class AppendStream<Policy extends AppendFailurePolicy = "stop"> {
 
   private async waitForCircuit(): Promise<boolean> {
     if (
-      this.onFailure !== "continue" ||
-      this.circuitBreakerConfig === false
+      this.config.onFailure !== "continue" ||
+      this.config.circuitBreaker === false
     ) {
       return false;
     }
@@ -1001,7 +978,7 @@ export class AppendStream<Policy extends AppendFailurePolicy = "stop"> {
     droppedRowsAtBarrier: number,
     startedAt: number,
   ): BarrierOutput {
-    if (this.onFailure === "continue") {
+    if (this.config.onFailure === "continue") {
       return this.takeDeliveryReport(droppedRowsAtBarrier, startedAt);
     }
     const result = this.interval.committedBatches === 0
@@ -1116,7 +1093,7 @@ export class AppendStream<Policy extends AppendFailurePolicy = "stop"> {
   }
 
   private recordCircuitSuccess(probe: boolean): void {
-    if (this.onFailure !== "continue") {
+    if (this.config.onFailure !== "continue") {
       return;
     }
     this.consecutiveFailures = 0;
@@ -1127,8 +1104,8 @@ export class AppendStream<Policy extends AppendFailurePolicy = "stop"> {
 
   private recordCircuitFailure(error: ScopeDBError, probe: boolean): boolean {
     if (
-      this.onFailure !== "continue" ||
-      this.circuitBreakerConfig === false
+      this.config.onFailure !== "continue" ||
+      this.config.circuitBreaker === false
     ) {
       return false;
     }
@@ -1143,10 +1120,11 @@ export class AppendStream<Policy extends AppendFailurePolicy = "stop"> {
     this.consecutiveFailures += 1;
     if (
       probe ||
-      this.consecutiveFailures >= this.circuitBreakerConfig.failureThreshold
+      this.consecutiveFailures >= this.config.circuitBreaker.failureThreshold
     ) {
       this.circuitState = "open";
-      this.circuitOpenedUntil = Date.now() + this.circuitBreakerConfig.cooldownMs;
+      this.circuitOpenedUntil =
+        Date.now() + this.config.circuitBreaker.cooldownMs;
       this.circuitProbeAdmissionClaimed = false;
       this.circuitProbeDone?.resolve();
       this.circuitProbeDone = undefined;
@@ -1165,7 +1143,7 @@ export class AppendStream<Policy extends AppendFailurePolicy = "stop"> {
   }
 
   private emitBatchFailure(event: AppendBatchFailureEvent): void {
-    for (const listener of this.batchFailureListeners) {
+    for (const listener of this.config.batchFailureListeners) {
       try {
         listener(event);
       } catch {

@@ -174,7 +174,7 @@ default circuit opens after five consecutive availability failures and probes
 again after 30 seconds. Its default attempt timeout is also 30 seconds.
 
 For Serverless, register the real `flush()` promise with a lifecycle hook such
-as `waitUntil()`; a per-attempt `attemptTimeoutMs()` does not bound the whole
+as `waitUntil()`; a per-attempt `attemptTimeout()` does not bound the whole
 barrier or a shared backlog. A report from a module-level stream can cover
 concurrent invocations, so it is not an attribution receipt for one event.
 

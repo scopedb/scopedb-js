@@ -43,7 +43,7 @@ const telemetry = table
   .flushInterval(1_000)
   .maxInFlightRequests(2)
   .maxPendingBytes(32 * 1024 * 1024)
-  .attemptTimeoutMs(10_000)
+  .attemptTimeout(10_000)
   .onBatchFailure(({ error, action }) => {
     // Use a different diagnostics sink, never this same telemetry stream.
     console.error("telemetry append error", action, error);

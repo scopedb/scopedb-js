@@ -530,7 +530,7 @@ describe("AppendStream local failures", () => {
       () => table.appendStream().maxRetries(Number.POSITIVE_INFINITY),
       () => table.appendStream().initialBackoff(-1),
       () => table.appendStream().maxBackoff(0.5),
-      () => table.appendStream().attemptTimeoutMs(0),
+      () => table.appendStream().attemptTimeout(0),
       () => table.appendStream().circuitBreaker({
         failureThreshold: 0,
         cooldownMs: 1_000,
@@ -883,7 +883,7 @@ describe("AppendStream best-effort delivery", () => {
       .onBatchFailure(({ error }) => {
         errors.push(error);
       })
-      .attemptTimeoutMs(10)
+      .attemptTimeout(10)
       .batchBytes(1)
       .maxRetries(0)
       .build();
