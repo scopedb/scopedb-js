@@ -7,6 +7,15 @@ tradeoffs match the workload.
 The commands below are for a source checkout of this repository. The published
 npm package includes the TypeScript examples as reference source.
 
+## ScopeQL documentation
+
+These examples show how to use the SDK. For the ScopeQL language itself, use
+the canonical documentation:
+
+- [Quickstart](https://docs.scopedb.io/guides/quickstart)
+- [Query guide](https://docs.scopedb.io/guides/query-events)
+- [Language reference](https://docs.scopedb.io/reference/)
+
 ## Read-only quickstarts
 
 These can run against a reachable ScopeDB server without modifying data.
