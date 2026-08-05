@@ -28,12 +28,14 @@ if (tableName === undefined || tableName.length === 0) {
 
 const client = new Client(
   process.env["SCOPEDB_ENDPOINT"] ?? "http://127.0.0.1:6543",
-  { token: process.env["SCOPEDB_TOKEN"] },
+  {
+    apiKey: process.env["SCOPEDB_API_KEY"],
+  },
 );
-const target = client
-  .table(tableName)
-  .withDatabase(process.env["SCOPEDB_DATABASE"] ?? "scopedb")
-  .withSchema(process.env["SCOPEDB_SCHEMA"] ?? "public");
+const target = client.table(tableName, {
+  database: process.env["SCOPEDB_DATABASE"] ?? "scopedb",
+  schema: process.env["SCOPEDB_SCHEMA"] ?? "public",
+});
 
 // Prefer table.append()/appendStream() for rows already shaped like the target
 // table. IngestStream remains useful when each JSON record needs SQL transforms.

@@ -15,7 +15,15 @@
  */
 
 export { Client } from "./client.js";
-export type { CatalogListOptions, ClientOptions, RequestOptions } from "./client.js";
+export type {
+  CatalogListOptions,
+  ClientOptions,
+  RequestOptions,
+  SchemaCatalogListOptions,
+  SchemaReference,
+  TableCatalogListOptions,
+  TableReference,
+} from "./client.js";
 export { AppendStream, AppendStreamBuilder } from "./append-stream.js";
 export type {
   AppendAdmissionResult,
@@ -31,7 +39,11 @@ export type {
   AppendWaitOptions,
 } from "./append-stream.js";
 export { AppendRowsError, ScopeDBError } from "./errors.js";
-export type { ErrorKind, ErrorStatus } from "./errors.js";
+export type {
+  ErrorKind,
+  ErrorStatus,
+  ScopeDBErrorOptions,
+} from "./errors.js";
 export { IngestStream, IngestStreamBuilder } from "./ingest-stream.js";
 export type {
   AppendRowError,
@@ -59,7 +71,17 @@ export type {
   TableSpec,
 } from "./protocol.js";
 export { FieldSchema, ResultSet, Schema } from "./result.js";
-export type { IntegerMode, IntoOptions, Value } from "./result.js";
+export type {
+  IntegerMode,
+  IntoOptions,
+  ResultOptions,
+  Value,
+} from "./result.js";
 export { Statement, StatementHandle } from "./statement.js";
 export type { FetchOptions } from "./statement.js";
 export { Table } from "./table.js";
+export type {
+  TableColumn,
+  TableDescription,
+  TableOptions,
+} from "./table.js";

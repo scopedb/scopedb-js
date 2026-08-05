@@ -1,14 +1,17 @@
 {
   "name": "scopedb",
   "version": "0.1.1",
-  "description": "A Node.js client for ScopeDB",
+  "description": "A TypeScript-first ScopeDB client for server-side JavaScript runtimes",
   "keywords": [
     "scopedb",
     "scopeql",
     "database",
     "analytics",
     "observability",
-    "typescript"
+    "typescript",
+    "nextjs",
+    "bun",
+    "serverless"
   ],
   "homepage": "https://docs.scopedb.io/developer/nodejs",
   "repository": {
@@ -20,6 +23,7 @@
   },
   "license": "Apache-2.0",
   "type": "module",
+  "sideEffects": false,
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "exports": {
@@ -30,6 +34,7 @@
     "./package.json": "./package.json"
   },
   "files": [
+    "CHANGELOG.md",
     "dist",
     "examples/**/*.ts",
     "examples/README.md"
@@ -43,7 +48,9 @@
     "check": "pnpm run build && pnpm run check:examples:built",
     "check:examples": "pnpm run build && pnpm run check:examples:built",
     "check:examples:built": "tsc -p tsconfig.examples.json --noEmit && pnpm run check:package",
-    "check:package": "node --input-type=module -e \"const sdk = await import('scopedb'); if (typeof sdk.Client !== 'function' || typeof sdk.AppendStream !== 'function' || typeof sdk.AppendRowsError !== 'function') throw new Error('public package entry is incomplete')\"",
+    "check:package": "node scripts/check-package.mjs",
+    "smoke:runtime": "pnpm run build && node scripts/smoke-runtime.mjs",
+    "smoke:web-runtime": "pnpm run build && node scripts/smoke-runtime.mjs --without-buffer",
     "clean:dist": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\"",
     "clean:examples": "node -e \"require('node:fs').rmSync('dist-test/examples-build', { recursive: true, force: true })\"",
     "example": "pnpm run build:examples && node scripts/run-example.mjs",
@@ -55,7 +62,7 @@
     "example:catalog": "pnpm run example -- catalog",
     "example:ingest-transform": "pnpm run example -- ingest-transform",
     "example:statement": "pnpm run example -- statement",
-    "prepack": "pnpm run check",
+    "prepack": "pnpm run test && pnpm run check",
     "test": "tsc -p tsconfig.test.json --noEmit && tsc -p tsconfig.test.json && node --test dist-test/tests/*.test.js"
   },
   "devDependencies": {

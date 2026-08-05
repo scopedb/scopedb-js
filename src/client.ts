@@ -22,7 +22,6 @@ import type {
   AppendRowsResult,
   CatalogPage,
   DatabaseResource,
-  ErrorPayload,
   IngestRequest,
   IngestResult,
   SchemaResource,
@@ -35,7 +34,7 @@ import type {
 import type { ResultSet } from "./result.js";
 import { Statement, StatementHandle } from "./statement.js";
 import type { FetchOptions } from "./statement.js";
-import { Table } from "./table.js";
+import { Table, type TableOptions } from "./table.js";
 
 export interface RequestOptions {
   signal?: AbortSignal;
@@ -48,14 +47,40 @@ export interface CatalogListOptions extends RequestOptions {
   pageToken?: string;
 }
 
+export interface SchemaCatalogListOptions extends CatalogListOptions {
+  database: string;
+}
+
+export interface TableCatalogListOptions extends CatalogListOptions {
+  database: string;
+  schema: string;
+}
+
+export interface SchemaReference extends RequestOptions {
+  database: string;
+  schema: string;
+}
+
+export interface TableReference extends SchemaReference {
+  table: string;
+}
+
 export interface ClientOptions {
   fetch?: typeof globalThis.fetch;
   /** Default headers sent with every request. */
   headers?: HeadersInit;
   /**
+   * ScopeDB API key. It is sent as a Bearer credential and must only be used
+   * from trusted server-side code. It takes precedence over `token` and an
+   * `Authorization` value in `headers`.
+   */
+  apiKey?: string;
+  /**
    * Bearer token for authentication.
    * Equivalent to `headers: { Authorization: 'Bearer <token>' }`.
-   * If both `token` and `headers.Authorization` are provided, `token` wins.
+   * If `apiKey` is also provided, `apiKey` wins.
+   *
+   * @deprecated Use `apiKey`.
    */
   token?: string;
 }
@@ -72,23 +97,31 @@ export class Client {
       throw new ScopeDBError("ConfigInvalid", "failed to parse endpoint", { cause });
     }
 
-    this.fetchFn = options.fetch ?? globalThis.fetch;
+    const fetchFn = options.fetch ?? globalThis.fetch;
+    // Some Web runtimes require fetch to be called without an arbitrary
+    // receiver. Calling a stored function as `this.fetchFn()` would otherwise
+    // pass the Client instance as `this` and fail with an illegal invocation.
+    this.fetchFn = (input, init) => fetchFn(input, init);
     this.defaultHeaders = new Headers(options.headers);
-    if (options.token !== undefined) {
-      this.defaultHeaders.set("Authorization", `Bearer ${options.token}`);
+    const apiKey = options.apiKey ?? options.token;
+    if (apiKey !== undefined) {
+      if (apiKey.length === 0) {
+        throw new ScopeDBError("ConfigInvalid", "apiKey must not be empty");
+      }
+      this.defaultHeaders.set("Authorization", `Bearer ${apiKey}`);
     }
   }
 
-  statement(statement: string): Statement {
-    return new Statement(this, statement);
+  statement(scopeql: string): Statement {
+    return new Statement(this, scopeql);
   }
 
   statementHandle(statementId: string): StatementHandle {
     return new StatementHandle(this, statementId);
   }
 
-  table(table: string): Table {
-    return new Table(this, table);
+  table(table: string, options: TableOptions = {}): Table {
+    return new Table(this, table, options);
   }
 
   ingestStream(statement: string): IngestStreamBuilder {
@@ -98,16 +131,16 @@ export class Client {
   /**
    * Executes a ScopeQL statement and returns all rows.
    *
-   * Shorthand for `client.statement(sql).execute(options)`.
+   * Shorthand for `client.statement(scopeql).execute(options)`.
    *
    * @example
    * const result = await client.query("FROM events SELECT * LIMIT 10");
-   * for (const row of result.intoObjects()) {
+   * for (const row of result.toObjects()) {
    *   console.log(row);
    * }
    */
-  async query(sql: string, options: FetchOptions = {}): Promise<ResultSet> {
-    return this.statement(sql).execute(options);
+  async query(scopeql: string, options: FetchOptions = {}): Promise<ResultSet> {
+    return this.statement(scopeql).execute(options);
   }
 
   async listDatabases(
@@ -130,71 +163,176 @@ export class Client {
   }
 
   async listSchemas(
+    reference: SchemaCatalogListOptions,
+  ): Promise<CatalogPage<SchemaResource>>;
+  async listSchemas(
     database: string,
+    options?: CatalogListOptions,
+  ): Promise<CatalogPage<SchemaResource>>;
+  async listSchemas(
+    databaseOrReference: string | SchemaCatalogListOptions,
     options: CatalogListOptions = {},
   ): Promise<CatalogPage<SchemaResource>> {
+    const [database, listOptions] = schemaListArguments(
+      databaseOrReference,
+      options,
+    );
     return this.requestJson(
-      this.catalogUrl(["databases", database, "schemas"], options),
+      this.catalogUrl(["databases", database, "schemas"], listOptions),
       {
         method: "GET",
-        signal: options.signal,
+        signal: listOptions.signal,
       },
     );
   }
 
+  async fetchSchema(reference: SchemaReference): Promise<SchemaResource>;
   async fetchSchema(
     database: string,
     schema: string,
+    options?: RequestOptions,
+  ): Promise<SchemaResource>;
+  async fetchSchema(
+    databaseOrReference: string | SchemaReference,
+    schema?: string,
     options: RequestOptions = {},
   ): Promise<SchemaResource> {
+    const [database, schemaName, requestOptions] = schemaReferenceArguments(
+      databaseOrReference,
+      schema,
+      options,
+    );
     return this.requestJson(
-      this.resourceUrl(["databases", database, "schemas", schema]),
+      this.resourceUrl(["databases", database, "schemas", schemaName]),
       {
         method: "GET",
-        signal: options.signal,
+        signal: requestOptions.signal,
       },
     );
   }
 
   async listTables(
+    reference: TableCatalogListOptions,
+  ): Promise<CatalogPage<TableResourceSummary>>;
+  async listTables(
     database: string,
     schema: string,
+    options?: CatalogListOptions,
+  ): Promise<CatalogPage<TableResourceSummary>>;
+  async listTables(
+    databaseOrReference: string | TableCatalogListOptions,
+    schema?: string,
     options: CatalogListOptions = {},
   ): Promise<CatalogPage<TableResourceSummary>> {
+    const [database, schemaName, listOptions] = tableListArguments(
+      databaseOrReference,
+      schema,
+      options,
+    );
     return this.requestJson(
       this.catalogUrl(
-        ["databases", database, "schemas", schema, "tables"],
-        options,
+        ["databases", database, "schemas", schemaName, "tables"],
+        listOptions,
       ),
       {
         method: "GET",
-        signal: options.signal,
+        signal: listOptions.signal,
       },
     );
   }
 
+  async fetchTable(reference: TableReference): Promise<TableResource>;
   async fetchTable(
     database: string,
     schema: string,
     table: string,
+    options?: RequestOptions,
+  ): Promise<TableResource>;
+  async fetchTable(
+    databaseOrReference: string | TableReference,
+    schema?: string,
+    table?: string,
     options: RequestOptions = {},
   ): Promise<TableResource> {
+    const [database, schemaName, tableName, requestOptions] = tableReferenceArguments(
+      databaseOrReference,
+      schema,
+      table,
+      options,
+    );
     return this.requestJson(
       this.resourceUrl([
         "databases",
         database,
         "schemas",
-        schema,
+        schemaName,
         "tables",
-        table,
+        tableName,
       ]),
       {
         method: "GET",
-        signal: options.signal,
+        signal: requestOptions.signal,
       },
     );
   }
 
+  /** Iterates databases across all catalog pages. */
+  async *iterateDatabases(
+    options: CatalogListOptions = {},
+  ): AsyncGenerator<DatabaseResource> {
+    yield* iterateCatalogPages(
+      (pageToken) => this.listDatabases({ ...options, pageToken }),
+      options.pageToken,
+    );
+  }
+
+  /** Iterates schemas across all catalog pages. */
+  iterateSchemas(reference: SchemaCatalogListOptions): AsyncGenerator<SchemaResource>;
+  iterateSchemas(
+    database: string,
+    options?: CatalogListOptions,
+  ): AsyncGenerator<SchemaResource>;
+  async *iterateSchemas(
+    databaseOrReference: string | SchemaCatalogListOptions,
+    options: CatalogListOptions = {},
+  ): AsyncGenerator<SchemaResource> {
+    const [database, listOptions] = schemaListArguments(
+      databaseOrReference,
+      options,
+    );
+    yield* iterateCatalogPages(
+      (pageToken) => this.listSchemas(database, { ...listOptions, pageToken }),
+      listOptions.pageToken,
+    );
+  }
+
+  /** Iterates table summaries across all catalog pages. */
+  iterateTables(reference: TableCatalogListOptions): AsyncGenerator<TableResourceSummary>;
+  iterateTables(
+    database: string,
+    schema: string,
+    options?: CatalogListOptions,
+  ): AsyncGenerator<TableResourceSummary>;
+  async *iterateTables(
+    databaseOrReference: string | TableCatalogListOptions,
+    schema?: string,
+    options: CatalogListOptions = {},
+  ): AsyncGenerator<TableResourceSummary> {
+    const [database, schemaName, listOptions] = tableListArguments(
+      databaseOrReference,
+      schema,
+      options,
+    );
+    yield* iterateCatalogPages(
+      (pageToken) => this.listTables(database, schemaName, {
+        ...listOptions,
+        pageToken,
+      }),
+      listOptions.pageToken,
+    );
+  }
+
+  /** @deprecated Use `client.table(name, location).append(ndjson)`. */
   async appendRows(
     database: string,
     schema: string,
@@ -216,16 +354,18 @@ export class Client {
       "rows",
     ]);
     try {
-      const result: unknown = await this.requestJson(url, {
+      const response = await this.request(url, {
         method: "POST",
         headers: { "Content-Type": "application/x-ndjson" },
         body: ndjson,
         signal: options.signal,
       });
+      const result: unknown = await parseJsonResponse(response);
       if (!isAppendRowsResult(result)) {
         throw new ScopeDBError(
           "Unexpected",
           "append response has an invalid body",
+          responseMetadata(response),
         );
       }
       return result;
@@ -250,7 +390,12 @@ export class Client {
           row_errors_truncated: false,
         },
         error.message,
-        { cause: error },
+        {
+          cause: error,
+          httpStatus: error.httpStatus,
+          requestId: error.requestId,
+          retryAfterMs: error.retryAfterMs,
+        },
       ).setPersistent();
     }
   }
@@ -270,6 +415,7 @@ export class Client {
     );
   }
 
+  /** @deprecated Use `client.statement(scopeql).submit()`. */
   async submitStatement(
     request: StatementRequest,
     options: RequestOptions = {},
@@ -281,11 +427,12 @@ export class Client {
     });
   }
 
+  /** @deprecated Use `client.statementHandle(id).refresh()` or `.wait()`. */
   async fetchStatement(
     statementId: string,
     options: RequestOptions = {},
   ): Promise<StatementStatus> {
-    const url = this.makeUrl(`v1/statements/${statementId}`);
+    const url = this.resourceUrl(["statements", statementId]);
     url.searchParams.set("format", "json");
     return this.requestJson(url, {
       method: "GET",
@@ -293,11 +440,12 @@ export class Client {
     });
   }
 
+  /** @deprecated Use `client.statementHandle(id).cancel()`. */
   async cancelStatement(
     statementId: string,
     options: RequestOptions = {},
   ): Promise<StatementCancelResult> {
-    return this.requestJson(`v1/statements/${statementId}/cancel`, {
+    return this.requestJson(this.resourceUrl(["statements", statementId, "cancel"]), {
       method: "POST",
       signal: options.signal,
     });
@@ -319,13 +467,7 @@ export class Client {
     init: RequestInit,
   ): Promise<T> {
     const response = await this.request(path, init);
-    try {
-      return (await response.json()) as T;
-    } catch (cause) {
-      throw new ScopeDBError("Unexpected", "failed to parse response body", {
-        cause,
-      });
-    }
+    return parseJsonResponse<T>(response);
   }
 
   private async request(path: string | URL, init: RequestInit): Promise<Response> {
@@ -341,7 +483,11 @@ export class Client {
 
     let response: Response;
     try {
-      response = await this.fetchFn(url, { ...init, headers });
+      response = await this.fetchFn(url, {
+        ...init,
+        cache: init.cache ?? "no-store",
+        headers,
+      });
     } catch (cause) {
       throw asScopeDBError("Unexpected", `failed to send request to ${url}`, cause).setTemporary();
     }
@@ -367,6 +513,16 @@ export class Client {
   ): URL {
     const url = this.resourceUrl(segments);
     if (options.pageSize !== undefined) {
+      if (
+        !Number.isSafeInteger(options.pageSize) ||
+        options.pageSize < 1 ||
+        options.pageSize > 1_000
+      ) {
+        throw new ScopeDBError(
+          "ConfigInvalid",
+          "catalog pageSize must be an integer from 1 to 1000",
+        );
+      }
       url.searchParams.set("page_size", String(options.pageSize));
     }
     if (options.pageToken !== undefined) {
@@ -386,40 +542,112 @@ function normalizeEndpoint(endpoint: string | URL): URL {
 
 async function responseToError(response: Response): Promise<ScopeDBError> {
   const body = await response.text();
-  let message = body;
+  let message = body.length > 0
+    ? body
+    : response.statusText || `HTTP ${response.status}`;
   let appendPayload: AppendRowsErrorPayload | undefined;
+  let requestId = response.headers.get("x-request-id") ?? undefined;
+  let serverRetryable: boolean | undefined;
   try {
     const payload: unknown = JSON.parse(body);
-    if (isErrorPayload(payload)) {
-      if (payload.message.length > 0) {
-        message = payload.message;
-      }
-      appendPayload = asAppendRowsErrorPayload(payload);
+    const parsed = parseErrorPayload(payload);
+    if (parsed !== undefined) {
+      message = parsed.message;
+      requestId = parsed.requestId ?? requestId;
+      serverRetryable = parsed.retryable;
+      appendPayload = asAppendRowsErrorPayload(parsed.raw, parsed.message);
     }
   } catch {
     // Fall back to the raw response body.
   }
 
-  const errorMessage = `${response.status} ${response.statusText}: ${message}`;
+  const metadata = {
+    ...responseMetadata(response),
+    ...(requestId === undefined ? {} : { requestId }),
+  };
   const error = appendPayload === undefined
-    ? new ScopeDBError("Unexpected", errorMessage)
-    : new AppendRowsError(appendPayload, errorMessage);
+    ? new ScopeDBError("Unexpected", message, metadata)
+    : new AppendRowsError(appendPayload, message, metadata);
   if (error instanceof AppendRowsError && error.appendState === "unknown") {
     // Retrying an append with an unknown commit outcome can insert duplicates.
     return error.setPersistent();
   }
-  if (response.status === 408 || response.status === 429 || response.status >= 500) {
+  const retryable = serverRetryable ??
+    (response.status === 408 || response.status === 429 || response.status >= 500);
+  if (retryable) {
     return error.setTemporary();
   }
   return error.setPermanent();
 }
 
-function isErrorPayload(value: unknown): value is ErrorPayload & Record<string, unknown> {
-  return isRecord(value) && typeof value["message"] === "string";
+async function parseJsonResponse<T>(response: Response): Promise<T> {
+  try {
+    return (await response.json()) as T;
+  } catch (cause) {
+    throw new ScopeDBError("Unexpected", "failed to parse response body", {
+      cause,
+      ...responseMetadata(response),
+    });
+  }
+}
+
+function responseMetadata(response: Response): {
+  httpStatus: number;
+  requestId?: string;
+  retryAfterMs?: number;
+} {
+  const requestId = response.headers.get("x-request-id") ?? undefined;
+  return {
+    httpStatus: response.status,
+    ...(requestId === undefined ? {} : { requestId }),
+    ...parseRetryAfter(response.headers.get("retry-after")),
+  };
+}
+
+interface ParsedErrorPayload {
+  message: string;
+  requestId?: string;
+  retryable?: boolean;
+  raw: Record<string, unknown>;
+}
+
+function parseErrorPayload(value: unknown): ParsedErrorPayload | undefined {
+  if (!isRecord(value)) {
+    return undefined;
+  }
+
+  if (typeof value["message"] === "string") {
+    return {
+      message: value["message"],
+      ...(typeof value["request_id"] === "string"
+        ? { requestId: value["request_id"] }
+        : {}),
+      ...(typeof value["retryable"] === "boolean"
+        ? { retryable: value["retryable"] }
+        : {}),
+      raw: value,
+    };
+  }
+
+  const nested = value["error"];
+  if (!isRecord(nested) || typeof nested["message"] !== "string") {
+    return undefined;
+  }
+  return {
+    message: nested["message"],
+    ...(typeof value["request_id"] === "string"
+      ? { requestId: value["request_id"] }
+      : {}),
+    ...(typeof nested["retryable"] === "boolean"
+      ? { retryable: nested["retryable"] }
+      : {}),
+    raw: value,
+  };
 }
 
 function asAppendRowsErrorPayload(
-  value: ErrorPayload & Record<string, unknown>,
+  value: Record<string, unknown>,
+  message: string,
 ): AppendRowsErrorPayload | undefined {
   const appendState = value["append_state"];
   if (appendState !== "rejected" && appendState !== "unknown") {
@@ -436,11 +664,114 @@ function asAppendRowsErrorPayload(
   }
 
   return {
-    message: value.message,
+    message,
     append_state: appendState,
     row_errors: rowErrors ?? [],
     row_errors_truncated: rowErrorsTruncated ?? false,
   };
+}
+
+function parseRetryAfter(value: string | null): { retryAfterMs?: number } {
+  if (value === null) {
+    return {};
+  }
+  const seconds = Number(value);
+  if (Number.isFinite(seconds) && seconds >= 0) {
+    return { retryAfterMs: Math.round(seconds * 1_000) };
+  }
+  const at = Date.parse(value);
+  if (!Number.isNaN(at)) {
+    return { retryAfterMs: Math.max(0, at - Date.now()) };
+  }
+  return {};
+}
+
+function schemaListArguments(
+  databaseOrReference: string | SchemaCatalogListOptions,
+  options: CatalogListOptions,
+): [string, CatalogListOptions] {
+  if (typeof databaseOrReference === "string") {
+    return [databaseOrReference, options];
+  }
+  const { database, ...listOptions } = databaseOrReference;
+  return [database, listOptions];
+}
+
+function tableListArguments(
+  databaseOrReference: string | TableCatalogListOptions,
+  schema: string | undefined,
+  options: CatalogListOptions,
+): [string, string, CatalogListOptions] {
+  if (typeof databaseOrReference === "string") {
+    if (schema === undefined) {
+      throw new ScopeDBError("ConfigInvalid", "schema is required");
+    }
+    return [databaseOrReference, schema, options];
+  }
+  const { database, schema: schemaName, ...listOptions } = databaseOrReference;
+  return [database, schemaName, listOptions];
+}
+
+function schemaReferenceArguments(
+  databaseOrReference: string | SchemaReference,
+  schema: string | undefined,
+  options: RequestOptions,
+): [string, string, RequestOptions] {
+  if (typeof databaseOrReference === "string") {
+    if (schema === undefined) {
+      throw new ScopeDBError("ConfigInvalid", "schema is required");
+    }
+    return [databaseOrReference, schema, options];
+  }
+  const { database, schema: schemaName, ...requestOptions } = databaseOrReference;
+  return [database, schemaName, requestOptions];
+}
+
+function tableReferenceArguments(
+  databaseOrReference: string | TableReference,
+  schema: string | undefined,
+  table: string | undefined,
+  options: RequestOptions,
+): [string, string, string, RequestOptions] {
+  if (typeof databaseOrReference === "string") {
+    if (schema === undefined || table === undefined) {
+      throw new ScopeDBError("ConfigInvalid", "schema and table are required");
+    }
+    return [databaseOrReference, schema, table, options];
+  }
+  const {
+    database,
+    schema: schemaName,
+    table: tableName,
+    ...requestOptions
+  } = databaseOrReference;
+  return [database, schemaName, tableName, requestOptions];
+}
+
+async function* iterateCatalogPages<T>(
+  fetchPage: (pageToken: string | undefined) => Promise<CatalogPage<T>>,
+  initialPageToken: string | undefined,
+): AsyncGenerator<T> {
+  let pageToken = initialPageToken;
+  const seenTokens = new Set<string>(
+    initialPageToken === undefined ? [] : [initialPageToken],
+  );
+  for (;;) {
+    const page = await fetchPage(pageToken);
+    yield* page.items;
+    const nextPageToken = page.next_page_token;
+    if (nextPageToken === undefined) {
+      return;
+    }
+    if (seenTokens.has(nextPageToken)) {
+      throw new ScopeDBError(
+        "Unexpected",
+        "catalog pagination returned a repeated page token",
+      );
+    }
+    seenTokens.add(nextPageToken);
+    pageToken = nextPageToken;
+  }
 }
 
 function isAppendRowErrors(value: unknown): value is AppendRowError[] {

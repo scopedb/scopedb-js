@@ -21,57 +21,33 @@ import { Client } from "scopedb";
 
 const client = new Client(
   process.env["SCOPEDB_ENDPOINT"] ?? "http://127.0.0.1:6543",
-  { token: process.env["SCOPEDB_TOKEN"] },
+  {
+    apiKey: process.env["SCOPEDB_API_KEY"],
+  },
 );
 const database = process.env["SCOPEDB_DATABASE"] ?? "scopedb";
 const schema = process.env["SCOPEDB_SCHEMA"] ?? "public";
 
-let pageToken: string | undefined;
-do {
-  const page = await client.listDatabases({
-    pageSize: 100,
-    pageToken,
-  });
-  for (const item of page.items) {
-    console.log("database", item.name, item.comment ?? "");
-  }
-  pageToken = page.next_page_token;
-} while (pageToken !== undefined);
+for await (const item of client.iterateDatabases({ pageSize: 100 })) {
+  console.log("database", item.name, item.comment ?? "");
+}
 
-let schemaPageToken: string | undefined;
-do {
-  const page = await client.listSchemas(database, {
-    pageSize: 100,
-    pageToken: schemaPageToken,
-  });
-  for (const item of page.items) {
-    console.log("schema", item.name, item.comment ?? "");
-  }
-  schemaPageToken = page.next_page_token;
-} while (schemaPageToken !== undefined);
+for await (const item of client.iterateSchemas({ database, pageSize: 100 })) {
+  console.log("schema", item.name, item.comment ?? "");
+}
 
 let firstTableName: string | undefined;
-let tablePageToken: string | undefined;
-do {
-  const page = await client.listTables(database, schema, {
-    pageSize: 100,
-    pageToken: tablePageToken,
-  });
-  for (const item of page.items) {
-    firstTableName ??= item.name;
-    console.log("table", item.name, item.comment ?? "");
-  }
-  tablePageToken = page.next_page_token;
-} while (tablePageToken !== undefined);
+for await (
+  const item of client.iterateTables({ database, schema, pageSize: 100 })
+) {
+  firstTableName ??= item.name;
+  console.log("table", item.name, item.comment ?? "");
+}
 
 if (firstTableName !== undefined) {
-  const resource = await client.fetchTable(database, schema, firstTableName);
-  console.log("first table resource", resource);
-
-  const tableSchema = await client
-    .table(firstTableName)
-    .withDatabase(database)
-    .withSchema(schema)
-    .tableSchema();
-  console.log("first table fields", tableSchema.fields());
+  const description = await client.table(firstTableName, {
+    database,
+    schema,
+  }).describe();
+  console.log("first table", description);
 }

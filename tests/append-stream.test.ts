@@ -146,6 +146,33 @@ describe("AppendStream batching and barriers", () => {
     );
   });
 
+  it("supports ergonomic batching and concurrency configuration names", async () => {
+    const { table, calls } = makeTable([appendOk(2), appendOk(2), appendOk(1)]);
+    const stream = table.appendStream()
+      .targetBatchBytes(1024)
+      .maxBatchRows(2)
+      .flushIntervalMs(60_000)
+      .maxConcurrentBatches(1)
+      .maxBufferedBytes(1024 * 1024)
+      .attemptTimeoutMs(10_000)
+      .build();
+
+    await stream.sendAll([
+      { id: 1 },
+      { id: 2 },
+      { id: 3 },
+      { id: 4 },
+      { id: 5 },
+    ]);
+
+    assert.equal((await stream.shutdown())?.num_rows_inserted, 5);
+    assert.deepEqual(calls.map(parseAppendRows), [
+      [{ id: 1 }, { id: 2 }],
+      [{ id: 3 }, { id: 4 }],
+      [{ id: 5 }],
+    ]);
+  });
+
   it("flushes by the first-row deadline even while records keep arriving", async () => {
     const { table, calls } = makeTable([appendOk(2)]);
     const stream = table.appendStream()
@@ -388,6 +415,24 @@ describe("AppendStream retry safety", () => {
     assert.equal(calls.length, 2);
   });
 
+  it("honors Retry-After before safely retrying a rejected batch", async () => {
+    const rejected = appendRejected(429);
+    rejected.headers.set("Retry-After", "0.02");
+    const { table, calls } = makeTable([rejected, appendOk(1)]);
+    const stream = table.appendStream()
+      .maxRetries(1)
+      .initialBackoff(0)
+      .maxBackoff(100)
+      .build();
+
+    await stream.send({ id: 1 });
+    const startedAt = Date.now();
+    assert.equal((await stream.shutdown())?.num_rows_inserted, 1);
+
+    assert.ok(Date.now() - startedAt >= 15);
+    assert.equal(calls.length, 2);
+  });
+
   it("cancels another batch's retry delay when the stream becomes fatal", async () => {
     const { table, calls } = makeTable([appendRejected(), appendUnknown()]);
     const stream = table.appendStream()
@@ -478,7 +523,10 @@ describe("AppendStream retry safety", () => {
   });
 
   it("preserves the append error after exhausting safe retries", async () => {
-    const { table, calls } = makeTable([appendRejected(), appendRejected()]);
+    const finalResponse = appendRejected();
+    finalResponse.headers.set("X-Request-Id", "req-retry-exhausted");
+    finalResponse.headers.set("Retry-After", "0");
+    const { table, calls } = makeTable([appendRejected(), finalResponse]);
     const stream = table.appendStream()
       .maxRetries(1)
       .initialBackoff(0)
@@ -493,6 +541,9 @@ describe("AppendStream retry safety", () => {
         assert.equal(error.appendState, "rejected");
         assert.ok(error.isPersistent());
         assert.equal(error.context().get("retries"), "1");
+        assert.equal(error.httpStatus, 503);
+        assert.equal(error.requestId, "req-retry-exhausted");
+        assert.equal(error.retryAfterMs, 0);
         return true;
       },
     );
@@ -531,6 +582,8 @@ describe("AppendStream local failures", () => {
       () => table.appendStream().initialBackoff(-1),
       () => table.appendStream().maxBackoff(0.5),
       () => table.appendStream().attemptTimeout(0),
+      () => table.appendStream().maxBatchRows(0),
+      () => table.appendStream().maxBatchRows(200_001),
       () => table.appendStream().circuitBreaker({
         failureThreshold: 0,
         cooldownMs: 1_000,
@@ -593,9 +646,35 @@ describe("AppendStream local failures", () => {
     const { table, calls } = makeTable([appendOk(1)]);
     const stream = table.appendStream().build();
 
-    await assert.rejects(() => stream.send(undefined), ScopeDBError);
+    await assert.rejects(() => stream.send(undefined as never), ScopeDBError);
     await stream.send({ id: 1 });
     assert.equal((await stream.shutdown())?.num_rows_inserted, 1);
+    assert.equal(calls.length, 1);
+  });
+
+  it("accepts only top-level JSON objects", async () => {
+    const { table, calls } = makeTable([appendOk(1)]);
+    const stream = table.appendStream().build();
+
+    await assert.rejects(
+      () => stream.send([]),
+      (error: unknown) => {
+        assert.ok(error instanceof ScopeDBError);
+        assert.match(error.message, /JSON objects/);
+        return true;
+      },
+    );
+    await assert.rejects(
+      () => stream.send(new Date()),
+      (error: unknown) => {
+        assert.ok(error instanceof ScopeDBError);
+        assert.match(error.message, /serialize to JSON objects/);
+        return true;
+      },
+    );
+
+    await stream.send({ id: 1 });
+    await stream.shutdown();
     assert.equal(calls.length, 1);
   });
 
@@ -657,7 +736,7 @@ describe("AppendStream telemetry admission", () => {
     assert.equal(stream.trySend(first), true);
     assert.equal(stream.trySend({ id: 2 }), false);
     assert.doesNotThrow(() => {
-      assert.equal(stream.trySend(undefined), false);
+      assert.equal(stream.trySend(undefined as never), false);
     });
 
     const report = await stream.flush();
@@ -998,7 +1077,7 @@ describe("AppendStream best-effort delivery", () => {
     await stream.send({ id: 1 });
     await waitForCallCount(calls, 1);
     const flushing = stream.flush();
-    assert.equal(stream.trySend(undefined), false);
+    assert.equal(stream.trySend(undefined as never), false);
     gate.resolve();
 
     const first = await flushing;

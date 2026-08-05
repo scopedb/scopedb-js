@@ -73,12 +73,14 @@ if (tableName === undefined || tableName.length === 0) {
 
 const client = new Client(
   process.env["SCOPEDB_ENDPOINT"] ?? "http://127.0.0.1:6543",
-  { token: process.env["SCOPEDB_TOKEN"] },
+  {
+    apiKey: process.env["SCOPEDB_API_KEY"],
+  },
 );
-const auditTable = client
-  .table(tableName)
-  .withDatabase(process.env["SCOPEDB_DATABASE"] ?? "scopedb")
-  .withSchema(process.env["SCOPEDB_SCHEMA"] ?? "public");
+const auditTable = client.table(tableName, {
+  database: process.env["SCOPEDB_DATABASE"] ?? "scopedb",
+  schema: process.env["SCOPEDB_SCHEMA"] ?? "public",
+});
 
 export async function drainAuditOutbox(
   outbox: DurableAuditOutbox,

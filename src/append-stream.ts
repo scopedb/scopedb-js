@@ -150,6 +150,7 @@ interface AppendStreamConfig<Policy extends AppendFailurePolicy> {
   readonly schema: string;
   readonly table: string;
   readonly batchBytes: number;
+  readonly batchRows: number;
   readonly flushIntervalMs: number;
   readonly channelCapacity: number;
   readonly maxPendingBytes: number;
@@ -220,6 +221,7 @@ export class AppendStreamBuilder<
   Policy extends AppendFailurePolicy = "stop",
 > {
   private currentBatchBytes = DEFAULT_BATCH_BYTES;
+  private currentBatchRows = MAX_APPEND_ROWS;
   private currentFlushIntervalMs = DEFAULT_FLUSH_INTERVAL_MS;
   private currentChannelCapacity = DEFAULT_CHANNEL_CAPACITY;
   private currentMaxPendingBytes = DEFAULT_MAX_PENDING_BYTES;
@@ -267,7 +269,10 @@ export class AppendStreamBuilder<
     }
   }
 
-  /** Target NDJSON payload size. A single row may exceed it, up to 16 MiB. */
+  /**
+   * Target NDJSON payload size. A single row may exceed it, up to 16 MiB.
+   * @deprecated Use `targetBatchBytes()`.
+   */
   batchBytes(batchBytes: number): this {
     this.currentBatchBytes = positiveIntegerConfig(
       "batchBytes",
@@ -277,10 +282,43 @@ export class AppendStreamBuilder<
     return this;
   }
 
-  /** Maximum time from the first buffered row until its batch is dispatched. */
+  /** Target NDJSON payload size. A single row may exceed it, up to 16 MiB. */
+  targetBatchBytes(targetBatchBytes: number): this {
+    this.currentBatchBytes = positiveIntegerConfig(
+      "targetBatchBytes",
+      targetBatchBytes,
+      MAX_APPEND_BODY_BYTES,
+    );
+    return this;
+  }
+
+  /** Maximum number of rows in one append request. */
+  maxBatchRows(maxBatchRows: number): this {
+    this.currentBatchRows = positiveIntegerConfig(
+      "maxBatchRows",
+      maxBatchRows,
+      MAX_APPEND_ROWS,
+    );
+    return this;
+  }
+
+  /**
+   * Maximum time from the first buffered row until its batch is dispatched.
+   * @deprecated Use `flushIntervalMs()`.
+   */
   flushInterval(flushIntervalMs: number): this {
     this.currentFlushIntervalMs = positiveIntegerConfig(
       "flushInterval",
+      flushIntervalMs,
+      MAX_TIMER_MS,
+    );
+    return this;
+  }
+
+  /** Maximum time from the first buffered row until its batch is dispatched. */
+  flushIntervalMs(flushIntervalMs: number): this {
+    this.currentFlushIntervalMs = positiveIntegerConfig(
+      "flushIntervalMs",
       flushIntervalMs,
       MAX_TIMER_MS,
     );
@@ -295,6 +333,7 @@ export class AppendStreamBuilder<
     return this;
   }
 
+  /** @deprecated Use `maxBufferedBytes()`. */
   maxPendingBytes(maxPendingBytes: number): this {
     this.currentMaxPendingBytes = positiveIntegerConfig(
       "maxPendingBytes",
@@ -303,11 +342,31 @@ export class AppendStreamBuilder<
     return this;
   }
 
-  /** Maximum number of append requests in flight. Defaults to 4. */
+  maxBufferedBytes(maxBufferedBytes: number): this {
+    this.currentMaxPendingBytes = positiveIntegerConfig(
+      "maxBufferedBytes",
+      maxBufferedBytes,
+    );
+    return this;
+  }
+
+  /**
+   * Maximum number of append requests in flight. Defaults to 4.
+   * @deprecated Use `maxConcurrentBatches()`.
+   */
   maxInFlightRequests(maxInFlightRequests: number): this {
     this.currentMaxInFlightRequests = positiveIntegerConfig(
       "maxInFlightRequests",
       maxInFlightRequests,
+    );
+    return this;
+  }
+
+  /** Maximum number of append requests in flight. Defaults to 4. */
+  maxConcurrentBatches(maxConcurrentBatches: number): this {
+    this.currentMaxInFlightRequests = positiveIntegerConfig(
+      "maxConcurrentBatches",
+      maxConcurrentBatches,
     );
     return this;
   }
@@ -340,10 +399,21 @@ export class AppendStreamBuilder<
 
   /**
    * Per-attempt HTTP timeout in milliseconds. A timeout has an unknown outcome.
+   * @deprecated Use `attemptTimeoutMs()`.
    */
   attemptTimeout(attemptTimeoutMs: number): this {
     this.currentAttemptTimeoutMs = positiveIntegerConfig(
       "attemptTimeout",
+      attemptTimeoutMs,
+      MAX_TIMER_MS,
+    );
+    return this;
+  }
+
+  /** Per-attempt HTTP timeout in milliseconds. */
+  attemptTimeoutMs(attemptTimeoutMs: number): this {
+    this.currentAttemptTimeoutMs = positiveIntegerConfig(
+      "attemptTimeoutMs",
       attemptTimeoutMs,
       MAX_TIMER_MS,
     );
@@ -394,6 +464,7 @@ export class AppendStreamBuilder<
       schema: this.schema,
       table: this.table,
       batchBytes: this.currentBatchBytes,
+      batchRows: this.currentBatchRows,
       flushIntervalMs: this.currentFlushIntervalMs,
       channelCapacity: this.currentChannelCapacity,
       maxPendingBytes: this.currentMaxPendingBytes,
@@ -797,7 +868,7 @@ export class AppendStream<Policy extends AppendFailurePolicy = "stop"> {
 
     if (
       this.currentBytes >= this.config.batchBytes ||
-      this.rows.length >= MAX_APPEND_ROWS
+      this.rows.length >= this.config.batchRows
     ) {
       await this.dispatchBuffered();
     }
@@ -886,8 +957,12 @@ export class AppendStream<Policy extends AppendFailurePolicy = "stop"> {
           error.appendState === "rejected" &&
           error.isTemporary();
         if (retryable && retries < this.config.retry.maxRetries) {
-          if (backoffMs > 0) {
-            await sleep(backoffMs, this.fatalController.signal);
+          const retryDelayMs = Math.min(
+            Math.max(backoffMs, error.retryAfterMs ?? 0),
+            this.config.retry.maxBackoffMs,
+          );
+          if (retryDelayMs > 0) {
+            await sleep(retryDelayMs, this.fatalController.signal);
           }
           if (this.fatal !== null) {
             throw error.withContext("retry_cancelled_by_stream_failure", true);
@@ -1275,12 +1350,24 @@ function prepareRecord(record: unknown): SerializedRecord {
 }
 
 function serializeRecord(record: unknown): string {
+  if (typeof record !== "object" || record === null || Array.isArray(record)) {
+    throw new ScopeDBError(
+      "AppendRowsFailed",
+      "append stream records must be JSON objects",
+    );
+  }
   try {
     const payload = JSON.stringify(record);
     if (payload === undefined) {
       throw new ScopeDBError(
         "AppendRowsFailed",
         "failed to serialize append stream record: record produced undefined JSON",
+      );
+    }
+    if (!payload.startsWith("{")) {
+      throw new ScopeDBError(
+        "AppendRowsFailed",
+        "append stream records must serialize to JSON objects",
       );
     }
     return payload;
@@ -1314,7 +1401,12 @@ function retryExhaustedError(
       row_errors_truncated: cause.rowErrorsTruncated,
     },
     "append stream batch exhausted retry budget",
-    { cause },
+    {
+      cause,
+      httpStatus: cause.httpStatus,
+      requestId: cause.requestId,
+      retryAfterMs: cause.retryAfterMs,
+    },
   )
     .withContext("retries", retries)
     .withContext("last_error", cause.message)

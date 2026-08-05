@@ -99,6 +99,19 @@ describe("Client.fetchStatement", () => {
     assert.equal(result.status, "finished");
     assert.equal(result.statement_id, "stmt-99");
   });
+
+  it("encodes the statement id as one path segment", async () => {
+    const status = finishedStatus(emptyResultSet(), "stmt/99");
+    const { fn, calls } = makeFetchStub([jsonResponse(200, status)]);
+    const client = new Client("http://localhost:8080", { fetch: fn });
+
+    await client.fetchStatement("stmt/99");
+
+    assert.equal(
+      calls[0]!.url,
+      "http://localhost:8080/v1/statements/stmt%2F99?format=json",
+    );
+  });
 });
 
 describe("Client.cancelStatement", () => {
@@ -194,6 +207,60 @@ describe("Client error mapping", () => {
       },
     );
   });
+
+  it("preserves nested server errors and response metadata", async () => {
+    const response = new Response(JSON.stringify({
+      error: { message: "capacity is unavailable", retryable: false },
+      request_id: "request-from-body",
+    }), {
+      status: 503,
+      headers: {
+        "Content-Type": "application/json",
+        "Retry-After": "2",
+        "X-Request-Id": "request-from-header",
+      },
+    });
+    const { fn } = makeFetchStub([response]);
+    const client = new Client("http://localhost:8080", { fetch: fn });
+
+    await assert.rejects(
+      () => client.listDatabases(),
+      (err: unknown) => {
+        assert.ok(err instanceof ScopeDBError);
+        assert.equal(err.message, "capacity is unavailable");
+        assert.equal(err.httpStatus, 503);
+        assert.equal(err.requestId, "request-from-body");
+        assert.equal(err.retryable, false);
+        assert.equal(err.retryAfterMs, 2_000);
+        return true;
+      },
+    );
+  });
+
+  it("disables framework fetch caching", async () => {
+    const { fn, calls } = makeFetchStub([jsonResponse(200, { items: [] })]);
+    const client = new Client("http://localhost:8080", { fetch: fn });
+
+    await client.listDatabases();
+
+    assert.equal((calls[0]!.init as RequestInit).cache, "no-store");
+  });
+});
+
+describe("Client fetch transport", () => {
+  it("invokes fetch without using the Client as its receiver", async () => {
+    const fetch: typeof globalThis.fetch = function (
+      this: unknown,
+      _input: RequestInfo | URL,
+      _init?: RequestInit,
+    ): Promise<Response> {
+      assert.equal(this, undefined);
+      return Promise.resolve(jsonResponse(200, { items: [] }));
+    };
+    const client = new Client("http://localhost:8080", { fetch });
+
+    assert.deepEqual(await client.listDatabases(), { items: [] });
+  });
 });
 
 describe("Client.query shorthand", () => {
@@ -240,5 +307,45 @@ describe("ClientOptions.token", () => {
 
     const headers = (calls[0]!.init as RequestInit).headers as Headers;
     assert.equal(headers.get("Authorization"), "Bearer token-wins");
+  });
+});
+
+describe("ClientOptions.apiKey", () => {
+  it("rejects an empty API key", () => {
+    assert.throws(
+      () => new Client("http://localhost:8080", { apiKey: "" }),
+      (error: unknown) => {
+        assert.ok(error instanceof ScopeDBError);
+        assert.equal(error.kind, "ConfigInvalid");
+        return true;
+      },
+    );
+  });
+
+  it("sends the API key as a Bearer credential", async () => {
+    const { fn, calls } = makeFetchStub([jsonResponse(200, { items: [] })]);
+    const client = new Client("http://localhost:8080", {
+      fetch: fn,
+      apiKey: "api-key",
+    });
+
+    await client.listDatabases();
+
+    const headers = (calls[0]!.init as RequestInit).headers as Headers;
+    assert.equal(headers.get("Authorization"), "Bearer api-key");
+  });
+
+  it("takes precedence over the deprecated token option", async () => {
+    const { fn, calls } = makeFetchStub([jsonResponse(200, { items: [] })]);
+    const client = new Client("http://localhost:8080", {
+      fetch: fn,
+      apiKey: "api-key-wins",
+      token: "old-token",
+    });
+
+    await client.listDatabases();
+
+    const headers = (calls[0]!.init as RequestInit).headers as Headers;
+    assert.equal(headers.get("Authorization"), "Bearer api-key-wins");
   });
 });

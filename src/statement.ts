@@ -83,7 +83,7 @@ export class Statement {
 
   async execute(options: FetchOptions = {}): Promise<ResultSet> {
     const handle = await this.submit(options);
-    return handle.fetch(options);
+    return handle.wait(options);
   }
 
   /**
@@ -95,6 +95,8 @@ export class Statement {
    * @example
    * const row = await client.statement("FROM events AGGREGATE count() AS n").executeOne();
    * console.log(row?.["n"]); // bigint
+   *
+   * @deprecated Use `execute()` followed by `ResultSet.first()`.
    */
   async executeOne(options: FetchOptions = {}): Promise<Record<string, Value> | null> {
     return (await this.execute(options)).first();
@@ -124,20 +126,28 @@ export class StatementHandle {
     return ResultSet.fromStatementResultSet(this.currentStatus.result_set);
   }
 
-  async fetchOnce(options: RequestOptions = {}): Promise<void> {
+  /** Fetches and returns the latest statement status. */
+  async refresh(options: RequestOptions = {}): Promise<StatementStatus> {
     if (this.currentStatus !== undefined && statementIsTerminated(this.currentStatus)) {
-      return;
+      return this.currentStatus;
     }
 
     this.currentStatus = await this.client.fetchStatement(this.statementId, options);
+    return this.currentStatus;
   }
 
-  async fetch(options: FetchOptions = {}): Promise<ResultSet> {
+  /** @deprecated Use `refresh()`. */
+  async fetchOnce(options: RequestOptions = {}): Promise<void> {
+    await this.refresh(options);
+  }
+
+  /** Waits for the statement to terminate and returns its result set. */
+  async wait(options: FetchOptions = {}): Promise<ResultSet> {
     let delayMs = options.initialDelayMs ?? 5;
     const maxDelayMs = options.maxDelayMs ?? 1000;
 
     for (;;) {
-      await this.fetchOnce(options);
+      await this.refresh(options);
 
       if (this.currentStatus === undefined) {
         throw new ScopeDBError("Unexpected", "statement fetch returned no status");
@@ -158,6 +168,11 @@ export class StatementHandle {
           break;
       }
     }
+  }
+
+  /** @deprecated Use `wait()`. */
+  async fetch(options: FetchOptions = {}): Promise<ResultSet> {
+    return this.wait(options);
   }
 
   async cancel(options: RequestOptions = {}): Promise<StatementCancelResult> {

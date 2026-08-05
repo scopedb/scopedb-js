@@ -21,7 +21,9 @@ import { Client } from "scopedb";
 
 const client = new Client(
   process.env["SCOPEDB_ENDPOINT"] ?? "http://127.0.0.1:6543",
-  { token: process.env["SCOPEDB_TOKEN"] },
+  {
+    apiKey: process.env["SCOPEDB_API_KEY"],
+  },
 );
 
 const result = await client
@@ -31,4 +33,4 @@ const result = await client
 
 // `number` is JSON-safe. Keep the default bigint mode when full i64 precision
 // matters and the result does not need to pass through JSON.stringify().
-console.log(result.intoObjects({ integerMode: "number" }));
+console.log(result.toObjects({ integerMode: "number" }));

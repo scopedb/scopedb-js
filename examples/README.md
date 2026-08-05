@@ -4,6 +4,9 @@ Every example is self-contained and imports the public `scopedb` package entry.
 Start with a quickstart, then move to a production pattern only when its delivery
 tradeoffs match the workload.
 
+The SDK is for trusted server-side code. Never expose `SCOPEDB_API_KEY` from a
+browser bundle or a Next.js Client Component.
+
 The commands below are for a source checkout of this repository. The published
 npm package includes the TypeScript examples as reference source.
 
@@ -49,7 +52,7 @@ CREATE TABLE public.sdk_example_events (
 Configuration is read from:
 
 - `SCOPEDB_ENDPOINT` (defaults to `http://127.0.0.1:6543`)
-- `SCOPEDB_TOKEN`
+- `SCOPEDB_API_KEY`
 - `SCOPEDB_DATABASE` (defaults to `scopedb`)
 - `SCOPEDB_SCHEMA` (defaults to `public`)
 - `SCOPEDB_TABLE` (required for writes)
@@ -96,8 +99,24 @@ file so its lifecycle or durability contract stays with the implementation.
 
 | Template | Requires | Delivery model |
 | --- | --- | --- |
-| [`templates/serverless.ts`](templates/serverless.ts) | Node 20 Fetch `Request`/`Response` and a `waitUntil()` hook | Module-level best-effort stream with lifecycle-backed barriers |
+| [`templates/serverless.ts`](templates/serverless.ts) | Web-standard `Request`/`Response` and a `waitUntil()` hook | Module-level best-effort stream with lifecycle-backed barriers |
 | [`templates/audit-outbox.ts`](templates/audit-outbox.ts) | An application-owned transactional outbox | One immutable durable attempt per HTTP request, with crash-safe reconciliation |
+
+## Framework and runtime templates
+
+These templates keep credentials on the server and use the same public SDK
+surface as the runnable examples.
+
+| Runtime | Template | Notes |
+| --- | --- | --- |
+| Next.js | [`frameworks/nextjs-route-handler/route.ts`](frameworks/nextjs-route-handler/route.ts) | Route Handler with `server-only`, an application-level write token, and a bounded event shape; the Node runtime is preferred |
+| Cloudflare Workers | [`frameworks/cloudflare-worker/worker.ts`](frameworks/cloudflare-worker/worker.ts) | Uses Web APIs without `nodejs_compat`; configure both the ScopeDB key and the separate application write token as secrets |
+| Bun | Use any runnable ESM example | Install with `bun add scopedb`; no Bun-specific SDK surface is required |
+
+The framework POST templates require `APP_WRITE_TOKEN` in addition to the
+ScopeDB credential. It is a minimal application-level guard for the copyable
+example, not a replacement for your normal session, authorization, rate-limit,
+and abuse controls.
 
 For audit delivery, the outbox must persist `READY -> ATTEMPTING` before the
 network call. Crash recovery routes an incomplete `ATTEMPTING` record to
