@@ -142,7 +142,7 @@ describe("Client error mapping", () => {
     const client = new Client("http://localhost:8080", { fetch: fn });
 
     await assert.rejects(
-      () => client.healthCheck(),
+      () => client.listDatabases(),
       (err: unknown) => {
         assert.ok(err instanceof ScopeDBError);
         assert.ok(err.isTemporary(), `expected temporary, got ${err.status()}`);
@@ -156,7 +156,7 @@ describe("Client error mapping", () => {
     const client = new Client("http://localhost:8080", { fetch: fn });
 
     await assert.rejects(
-      () => client.healthCheck(),
+      () => client.listDatabases(),
       (err: unknown) => {
         assert.ok(err instanceof ScopeDBError);
         assert.ok(err.isTemporary(), `expected temporary, got ${err.status()}`);
@@ -170,7 +170,7 @@ describe("Client error mapping", () => {
     const client = new Client("http://localhost:8080", { fetch: fn });
 
     await assert.rejects(
-      () => client.healthCheck(),
+      () => client.listDatabases(),
       (err: unknown) => {
         assert.ok(err instanceof ScopeDBError);
         assert.ok(
@@ -187,26 +187,12 @@ describe("Client error mapping", () => {
     const client = new Client("http://localhost:8080", { fetch: fn });
 
     await assert.rejects(
-      () => client.healthCheck(),
+      () => client.listDatabases(),
       (err: unknown) => {
         assert.ok(err instanceof ScopeDBError);
         return true;
       },
     );
-  });
-});
-
-describe("Client.healthCheck", () => {
-  it("sends GET /v1/health", async () => {
-    const { fn, calls } = makeFetchStub([jsonResponse(200, {})]);
-    const client = new Client("http://localhost:8080", { fetch: fn });
-
-    await client.healthCheck();
-
-    assert.equal(calls.length, 1);
-    const call = calls[0]!;
-    assert.ok(call.url.endsWith("/v1/health"), `unexpected URL: ${call.url}`);
-    assert.equal((call.init as RequestInit).method, "GET");
   });
 });
 
@@ -233,24 +219,24 @@ describe("Client.query shorthand", () => {
 
 describe("ClientOptions.token", () => {
   it("sends Authorization Bearer header on every request", async () => {
-    const { fn, calls } = makeFetchStub([jsonResponse(200, {})]);
+    const { fn, calls } = makeFetchStub([jsonResponse(200, { items: [] })]);
     const client = new Client("http://localhost:8080", { fetch: fn, token: "my-secret" });
 
-    await client.healthCheck();
+    await client.listDatabases();
 
     const headers = (calls[0]!.init as RequestInit).headers as Headers;
     assert.equal(headers.get("Authorization"), "Bearer my-secret");
   });
 
   it("token takes precedence over explicit Authorization header", async () => {
-    const { fn, calls } = makeFetchStub([jsonResponse(200, {})]);
+    const { fn, calls } = makeFetchStub([jsonResponse(200, { items: [] })]);
     const client = new Client("http://localhost:8080", {
       fetch: fn,
       token: "token-wins",
       headers: { Authorization: "Bearer other" },
     });
 
-    await client.healthCheck();
+    await client.listDatabases();
 
     const headers = (calls[0]!.init as RequestInit).headers as Headers;
     assert.equal(headers.get("Authorization"), "Bearer token-wins");
