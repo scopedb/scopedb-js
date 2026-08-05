@@ -14,11 +14,15 @@
  * limitations under the License.
  */
 
+import type { AppendRowError, AppendRowsErrorPayload } from "./protocol.js";
+
 export type ErrorKind =
   | "Unexpected"
   | "ConfigInvalid"
   /** The statement execution was rejected by the server (failed or cancelled in-band). */
-  | "StatementFailed";
+  | "StatementFailed"
+  /** The table append was rejected or its commit outcome is unknown. */
+  | "AppendRowsFailed";
 export type ErrorStatus = "permanent" | "temporary" | "persistent";
 
 export class ScopeDBError extends Error {
@@ -90,6 +94,24 @@ export class ScopeDBError extends Error {
       s += ` { ${ctx} }`;
     }
     return s;
+  }
+}
+
+export class AppendRowsError extends ScopeDBError {
+  readonly appendState: AppendRowsErrorPayload["append_state"];
+  readonly rowErrors: readonly AppendRowError[];
+  readonly rowErrorsTruncated: boolean;
+
+  constructor(
+    payload: AppendRowsErrorPayload,
+    message: string,
+    options?: { cause?: unknown },
+  ) {
+    super("AppendRowsFailed", message, options);
+    this.name = "AppendRowsError";
+    this.appendState = payload.append_state;
+    this.rowErrors = payload.row_errors;
+    this.rowErrorsTruncated = payload.row_errors_truncated;
   }
 }
 

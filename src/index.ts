@@ -15,13 +15,34 @@
  */
 
 export { Client } from "./client.js";
-export type { ClientOptions, RequestOptions } from "./client.js";
-export { ScopeDBError } from "./errors.js";
+export type { CatalogListOptions, ClientOptions, RequestOptions } from "./client.js";
+export { AppendStream, AppendStreamBuilder } from "./append-stream.js";
+export type {
+  AppendBackgroundError,
+  AppendBarrierResult,
+  AppendCircuitState,
+  AppendFailurePolicy,
+  AnyAppendStream,
+  AppendStreamState,
+  AppendStreamStats,
+  AppendWaitOptions,
+  CircuitBreakerOptions,
+  FlushReport,
+  SendAllReport,
+} from "./append-stream.js";
+export { AppendRowsError, ScopeDBError } from "./errors.js";
 export type { ErrorKind, ErrorStatus } from "./errors.js";
 export { IngestStream, IngestStreamBuilder } from "./ingest-stream.js";
 export type {
+  AppendRowError,
+  AppendRowsErrorPayload,
+  AppendRowsResult,
+  AppendState,
   DataType,
+  DatabaseResource,
   IngestResult,
+  ResourceCollection,
+  SchemaResource,
   StatementCancelResult,
   StatementEstimatedProgress,
   StatementProgress,
@@ -31,6 +52,11 @@ export type {
   StatementStatusFinished,
   StatementStatusPending,
   StatementStatusRunning,
+  TableColumnSpec,
+  TableDistinctSpec,
+  TableResource,
+  TableResourceSummary,
+  TableSpec,
 } from "./protocol.js";
 export { FieldSchema, ResultSet, Schema } from "./result.js";
 export type { IntegerMode, IntoOptions, Value } from "./result.js";

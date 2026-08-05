@@ -15,8 +15,8 @@
  */
 
 import type { Client, RequestOptions } from "./client.js";
-import { ScopeDBError } from "./errors.js";
-import type { DataType } from "./protocol.js";
+import { AppendStreamBuilder } from "./append-stream.js";
+import type { AppendRowsResult } from "./protocol.js";
 import { FieldSchema, Schema } from "./result.js";
 
 export class Table {
@@ -54,49 +54,46 @@ export class Table {
     await this.client.statement(`DROP TABLE ${this.identifier()}`).execute(options);
   }
 
+  /** Appends newline-delimited JSON rows to this table. */
+  async append(ndjson: string, options: RequestOptions = {}): Promise<AppendRowsResult> {
+    return this.client.appendRows(
+      this.databaseName ?? "scopedb",
+      this.schemaName ?? "public",
+      this.tableName,
+      ndjson,
+      options,
+    );
+  }
+
+  /** Builds an asynchronous, concurrent NDJSON append stream for this table. */
+  appendStream(): AppendStreamBuilder {
+    return new AppendStreamBuilder(
+      this.client,
+      this.databaseName ?? "scopedb",
+      this.schemaName ?? "public",
+      this.tableName,
+      "stop",
+    );
+  }
+
   async tableSchema(options: RequestOptions = {}): Promise<Schema> {
     const databaseName = this.databaseName ?? "scopedb";
     const schemaName = this.schemaName ?? "public";
-    const statement = `
-            FROM scopedb.system.columns
-            WHERE table_name = ${quoteStringLiteral(this.tableName)}
-              AND schema_name = ${quoteStringLiteral(schemaName)}
-              AND database_name = ${quoteStringLiteral(databaseName)}
-            SELECT column_name, data_type
-            `;
-
-    const rows = await this.client.statement(statement).execute(options);
-    const values = rows.intoValues();
+    const table = await this.client.fetchTable(
+      databaseName,
+      schemaName,
+      this.tableName,
+      options,
+    );
 
     return new Schema(
-      values.map((row) => {
-        if (row.length !== 2) {
-          throw new ScopeDBError(
-            "Unexpected",
-            `expected 2 columns in table schema row, got ${row.length}`,
-          );
-        }
-
-        const [columnName, dataType] = row;
-        if (typeof columnName !== "string") {
-          throw new ScopeDBError("Unexpected", `expected string column name, got ${columnName}`);
-        }
-        if (typeof dataType !== "string") {
-          throw new ScopeDBError("Unexpected", `expected string data type, got ${dataType}`);
-        }
-
-        return new FieldSchema(columnName, dataType as DataType);
-      }),
+      table.columns.map((column) => new FieldSchema(column.name, column.data_type)),
     );
   }
 }
 
 function quoteIdent(input: string, quote: string): string {
   return quoteScopeQL(input, quote);
-}
-
-function quoteStringLiteral(input: string): string {
-  return quoteScopeQL(input, "'");
 }
 
 function quoteScopeQL(input: string, quote: string): string {

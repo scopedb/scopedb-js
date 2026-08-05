@@ -17,6 +17,24 @@
 import type { Client } from "./client.js";
 import { ScopeDBError } from "./errors.js";
 import type { IngestResult } from "./protocol.js";
+import {
+  AsyncBoundedQueue,
+  Deferred,
+  PendingBytesBudget,
+  PendingBytesClosedError,
+  PendingBytesExceedsCapacityError,
+  type PendingBytesReservation,
+  MAX_TIMER_MS,
+  QUEUE_CLOSED,
+  QUEUE_HEAD_UNAVAILABLE,
+  QUEUE_TIMEOUT,
+  byteLength,
+  nextBackoff,
+  nonnegativeIntegerConfig,
+  positiveIntegerConfig,
+  sleep,
+  waitForAck,
+} from "./stream-internals.js";
 
 const DEFAULT_BATCH_BYTES = 16 * 1024 * 1024;
 const DEFAULT_FLUSH_INTERVAL_MS = 1_000;
@@ -80,37 +98,58 @@ export class IngestStreamBuilder {
   ) {}
 
   batchBytes(batchBytes: number): this {
-    this.currentBatchBytes = Math.max(1, batchBytes);
+    this.currentBatchBytes = positiveIntegerConfig("batchBytes", batchBytes);
     return this;
   }
 
   flushInterval(flushIntervalMs: number): this {
-    this.currentFlushIntervalMs = Math.max(1, flushIntervalMs);
+    this.currentFlushIntervalMs = positiveIntegerConfig(
+      "flushInterval",
+      flushIntervalMs,
+      MAX_TIMER_MS,
+    );
     return this;
   }
 
   channelCapacity(channelCapacity: number): this {
-    this.currentChannelCapacity = Math.max(1, channelCapacity);
+    this.currentChannelCapacity = positiveIntegerConfig(
+      "channelCapacity",
+      channelCapacity,
+    );
     return this;
   }
 
   maxPendingBytes(maxPendingBytes: number): this {
-    this.currentMaxPendingBytes = Math.max(1, maxPendingBytes);
+    this.currentMaxPendingBytes = positiveIntegerConfig(
+      "maxPendingBytes",
+      maxPendingBytes,
+    );
     return this;
   }
 
   maxRetries(maxRetries: number): this {
-    this.currentRetry.maxRetries = maxRetries;
+    this.currentRetry.maxRetries = nonnegativeIntegerConfig(
+      "maxRetries",
+      maxRetries,
+    );
     return this;
   }
 
   initialBackoff(initialBackoffMs: number): this {
-    this.currentRetry.initialBackoffMs = Math.max(0, initialBackoffMs);
+    this.currentRetry.initialBackoffMs = nonnegativeIntegerConfig(
+      "initialBackoff",
+      initialBackoffMs,
+      MAX_TIMER_MS,
+    );
     return this;
   }
 
   maxBackoff(maxBackoffMs: number): this {
-    this.currentRetry.maxBackoffMs = Math.max(0, maxBackoffMs);
+    this.currentRetry.maxBackoffMs = nonnegativeIntegerConfig(
+      "maxBackoff",
+      maxBackoffMs,
+      MAX_TIMER_MS,
+    );
     return this;
   }
 
@@ -291,9 +330,10 @@ export class IngestStream {
         }
       }
     } finally {
-      releaseRows(rows);
       this.queue.close();
       this.pendingBytes.close();
+      releaseRows(rows);
+      this.drainQueued();
     }
   }
 
@@ -370,6 +410,21 @@ export class IngestStream {
     }
   }
 
+  private drainQueued(): void {
+    const error = this.closedOrFatalError();
+    for (const command of this.queue.drain()) {
+      switch (command.type) {
+        case "record":
+          command.record.reservation.release();
+          break;
+        case "flush":
+        case "shutdown":
+          command.ack.reject(error);
+          break;
+      }
+    }
+  }
+
   private checkFatal(): void {
     if (this.fatal !== null) {
       throw fatalToError(this.fatal);
@@ -397,247 +452,6 @@ export class IngestStream {
   }
 }
 
-class Deferred<T> {
-  readonly promise: Promise<T>;
-  resolve!: (value: T) => void;
-  reject!: (reason?: unknown) => void;
-
-  constructor() {
-    this.promise = new Promise<T>((resolve, reject) => {
-      this.resolve = resolve;
-      this.reject = reject;
-    });
-  }
-}
-
-class QueueClosedError extends Error {}
-
-const QUEUE_TIMEOUT = Symbol("QUEUE_TIMEOUT");
-const QUEUE_CLOSED = Symbol("QUEUE_CLOSED");
-const QUEUE_HEAD_UNAVAILABLE = Symbol("QUEUE_HEAD_UNAVAILABLE");
-
-type QueueReceiveResult<T> = T | typeof QUEUE_TIMEOUT | typeof QUEUE_CLOSED;
-
-class AsyncBoundedQueue<T> {
-  private readonly items: T[] = [];
-  private readonly sendWaiters: Array<{ item: T; ack: Deferred<void> }> = [];
-  private readonly recvWaiters: Array<{
-    deferred: Deferred<QueueReceiveResult<T>>;
-    timer?: ReturnType<typeof setTimeout>;
-  }> = [];
-  private closed = false;
-
-  constructor(private readonly capacity: number) {}
-
-  async send(item: T): Promise<void> {
-    if (this.closed) {
-      throw new QueueClosedError();
-    }
-
-    const recvWaiter = this.recvWaiters.shift();
-    if (recvWaiter !== undefined) {
-      if (recvWaiter.timer !== undefined) {
-        clearTimeout(recvWaiter.timer);
-      }
-      recvWaiter.deferred.resolve(item);
-      return;
-    }
-
-    if (this.items.length < this.capacity) {
-      this.items.push(item);
-      return;
-    }
-
-    const ack = new Deferred<void>();
-    this.sendWaiters.push({ item, ack });
-    await ack.promise;
-  }
-
-  async receive(timeoutMs: number): Promise<QueueReceiveResult<T>> {
-    if (this.items.length > 0) {
-      const item = this.items.shift()!;
-      this.drainSenders();
-      return item;
-    }
-
-    if (this.sendWaiters.length > 0) {
-      const waiter = this.sendWaiters.shift()!;
-      waiter.ack.resolve();
-      return waiter.item;
-    }
-
-    if (this.closed) {
-      return QUEUE_CLOSED;
-    }
-
-    const deferred = new Deferred<QueueReceiveResult<T>>();
-    const waiter: {
-      deferred: Deferred<QueueReceiveResult<T>>;
-      timer?: ReturnType<typeof setTimeout>;
-    } = { deferred };
-    if (timeoutMs > 0) {
-      waiter.timer = setTimeout(() => {
-        const index = this.recvWaiters.indexOf(waiter);
-        if (index >= 0) {
-          this.recvWaiters.splice(index, 1);
-        }
-        deferred.resolve(QUEUE_TIMEOUT);
-      }, timeoutMs);
-    }
-    this.recvWaiters.push(waiter);
-    return deferred.promise;
-  }
-
-  tryReceiveHeadIf(predicate: (item: T) => boolean): T | typeof QUEUE_HEAD_UNAVAILABLE {
-    if (this.items.length > 0) {
-      const item = this.items[0]!;
-      if (!predicate(item)) {
-        return QUEUE_HEAD_UNAVAILABLE;
-      }
-      this.items.shift();
-      this.drainSenders();
-      return item;
-    }
-
-    if (this.sendWaiters.length > 0) {
-      const waiter = this.sendWaiters[0]!;
-      if (!predicate(waiter.item)) {
-        return QUEUE_HEAD_UNAVAILABLE;
-      }
-      this.sendWaiters.shift();
-      waiter.ack.resolve();
-      return waiter.item;
-    }
-
-    return QUEUE_HEAD_UNAVAILABLE;
-  }
-
-  close(): void {
-    if (this.closed) {
-      return;
-    }
-    this.closed = true;
-    while (this.sendWaiters.length > 0) {
-      this.sendWaiters.shift()!.ack.reject(new QueueClosedError());
-    }
-    while (this.recvWaiters.length > 0) {
-      const waiter = this.recvWaiters.shift()!;
-      if (waiter.timer !== undefined) {
-        clearTimeout(waiter.timer);
-      }
-      waiter.deferred.resolve(QUEUE_CLOSED);
-    }
-  }
-
-  private drainSenders(): void {
-    while (this.sendWaiters.length > 0) {
-      const waiter = this.sendWaiters[0]!;
-      const recvWaiter = this.recvWaiters.shift();
-      if (recvWaiter !== undefined) {
-        this.sendWaiters.shift();
-        if (recvWaiter.timer !== undefined) {
-          clearTimeout(recvWaiter.timer);
-        }
-        recvWaiter.deferred.resolve(waiter.item);
-        waiter.ack.resolve();
-        continue;
-      }
-      if (this.items.length >= this.capacity) {
-        break;
-      }
-      this.sendWaiters.shift();
-      this.items.push(waiter.item);
-      waiter.ack.resolve();
-    }
-  }
-}
-
-class PendingBytesClosedError extends Error {}
-
-class PendingBytesExceedsCapacityError extends Error {
-  constructor(readonly capacity: number) {
-    super("pending bytes request exceeds capacity");
-  }
-}
-
-class PendingBytesReservation {
-  private released = false;
-
-  constructor(
-    private readonly budget: PendingBytesBudget,
-    readonly permits: number,
-  ) {}
-
-  release(): void {
-    if (this.released) {
-      return;
-    }
-    this.released = true;
-    this.budget.release(this.permits);
-  }
-}
-
-class PendingBytesBudget {
-  private available: number;
-  private readonly waiters: Array<{
-    requested: number;
-    deferred: Deferred<PendingBytesReservation>;
-  }> = [];
-  private closed = false;
-
-  constructor(private readonly capacity: number) {
-    this.available = capacity;
-  }
-
-  async acquire(requested: number): Promise<PendingBytesReservation> {
-    if (requested > this.capacity) {
-      throw new PendingBytesExceedsCapacityError(this.capacity);
-    }
-    if (this.closed) {
-      throw new PendingBytesClosedError();
-    }
-    if (requested <= this.available) {
-      this.available -= requested;
-      return new PendingBytesReservation(this, requested);
-    }
-
-    const deferred = new Deferred<PendingBytesReservation>();
-    this.waiters.push({ requested, deferred });
-    return deferred.promise;
-  }
-
-  release(permits: number): void {
-    this.available += permits;
-    this.drainWaiters();
-  }
-
-  close(): void {
-    if (this.closed) {
-      return;
-    }
-    this.closed = true;
-    while (this.waiters.length > 0) {
-      this.waiters.shift()!.deferred.reject(new PendingBytesClosedError());
-    }
-  }
-
-  private drainWaiters(): void {
-    while (this.waiters.length > 0) {
-      if (this.closed) {
-        this.close();
-        return;
-      }
-      const next = this.waiters[0]!;
-      if (next.requested > this.available) {
-        return;
-      }
-      this.waiters.shift();
-      this.available -= next.requested;
-      next.deferred.resolve(new PendingBytesReservation(this, next.requested));
-    }
-  }
-}
-
 function serializeRecord(record: unknown): string {
   try {
     const payload = JSON.stringify(record);
@@ -657,23 +471,10 @@ function serializeRecord(record: unknown): string {
     });
   }
 }
-
-
-function byteLength(payload: string): number {
-  return Buffer.byteLength(payload, "utf8");
-}
-
 function releaseRows(rows: BufferedRecord[]): void {
   for (const row of rows) {
     row.reservation.release();
   }
-}
-
-function nextBackoff(currentMs: number, maxBackoffMs: number): number {
-  if (currentMs === 0) {
-    return 0;
-  }
-  return Math.min(currentMs * 2, maxBackoffMs);
 }
 
 function retryExhaustedError(retries: number, cause: ScopeDBError): ScopeDBError {
@@ -719,24 +520,4 @@ function asScopeDBError(cause: unknown): ScopeDBError {
     return new ScopeDBError("Unexpected", cause.message, { cause });
   }
   return new ScopeDBError("Unexpected", String(cause));
-}
-
-async function sleep(ms: number): Promise<void> {
-  await new Promise<void>((resolve) => {
-    setTimeout(resolve, ms);
-  });
-}
-
-async function waitForAck<T>(
-  deferred: Deferred<T>,
-  makeClosedError: () => ScopeDBError,
-): Promise<T> {
-  try {
-    return await deferred.promise;
-  } catch (cause) {
-    if (cause instanceof ScopeDBError) {
-      throw cause;
-    }
-    throw makeClosedError();
-  }
 }
