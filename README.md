@@ -2,6 +2,14 @@
 
 This package provides a TypeScript-first client for ScopeDB on Node.js.
 
+## ScopeQL documentation
+
+This SDK executes ScopeQL statements; the language is documented separately:
+
+- [Quickstart](https://docs.scopedb.io/guides/quickstart)
+- [Query guide](https://docs.scopedb.io/guides/query-events)
+- [Language reference](https://docs.scopedb.io/reference/)
+
 ## Installation
 
 ```sh

@@ -2,6 +2,22 @@
   "name": "scopedb",
   "version": "0.1.1",
   "description": "A Node.js client for ScopeDB",
+  "keywords": [
+    "scopedb",
+    "scopeql",
+    "database",
+    "analytics",
+    "observability",
+    "typescript"
+  ],
+  "homepage": "https://docs.scopedb.io/developer/nodejs",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/scopedb/scopedb-js.git"
+  },
+  "bugs": {
+    "url": "https://github.com/scopedb/scopedb-js/issues"
+  },
   "license": "Apache-2.0",
   "type": "module",
   "main": "./dist/index.js",
