@@ -819,6 +819,42 @@ describe("AppendStream best-effort delivery", () => {
     await stream.shutdown();
   });
 
+  it("isolates synchronous and asynchronous batch failure listener errors", async () => {
+    const unhandledRejections: unknown[] = [];
+    const onUnhandledRejection = (reason: unknown) => {
+      unhandledRejections.push(reason);
+    };
+    process.on("unhandledRejection", onUnhandledRejection);
+
+    const { table } = makeTable([appendRejected(400)]);
+    let observed = 0;
+    const stream = table.appendStream({ failurePolicy: "continue" })
+      .onBatchFailure(() => {
+        throw new Error("synchronous listener failure");
+      })
+      .onBatchFailure(async () => {
+        throw new Error("asynchronous listener failure");
+      })
+      .onBatchFailure(() => {
+        observed += 1;
+      })
+      .maxRetries(0)
+      .build();
+
+    try {
+      await stream.send({ id: 1 });
+      const report = await stream.flush();
+      await delay(0);
+
+      assert.equal(report.outcome, "failed");
+      assert.equal(observed, 1);
+      assert.deepEqual(unhandledRejections, []);
+    } finally {
+      process.off("unhandledRejection", onUnhandledRejection);
+      await stream.shutdown();
+    }
+  });
+
   it("does not retry an unknown batch but continues with a new batch", async () => {
     const errors: ScopeDBError[] = [];
     const { table, calls } = makeTable([appendUnknown(), appendOk(1)]);

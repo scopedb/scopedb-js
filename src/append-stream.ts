@@ -159,7 +159,7 @@ interface AppendStreamConfig<Policy extends AppendFailurePolicy> {
   readonly attemptTimeoutMs: number | undefined;
   readonly circuitBreaker: AppendCircuitBreakerOptions | false;
   readonly batchFailureListeners: ReadonlyArray<
-    (event: AppendBatchFailureEvent) => void
+    (event: AppendBatchFailureEvent) => void | PromiseLike<void>
   >;
 }
 
@@ -230,7 +230,7 @@ export class AppendStreamBuilder<
     cooldownMs: DEFAULT_CIRCUIT_COOLDOWN_MS,
   };
   private readonly batchFailureListeners: Array<
-    (event: AppendBatchFailureEvent) => void
+    (event: AppendBatchFailureEvent) => void | PromiseLike<void>
   > = [];
   private currentRetry: RetryConfig = {
     maxRetries: DEFAULT_MAX_RETRIES,
@@ -375,8 +375,11 @@ export class AppendStreamBuilder<
 
   /**
    * Observes rejected or ambiguous batch outcomes without affecting the worker.
+   * Async listeners are observed but not awaited; listener failures are ignored.
    */
-  onBatchFailure(listener: (event: AppendBatchFailureEvent) => void): this {
+  onBatchFailure(
+    listener: (event: AppendBatchFailureEvent) => void | PromiseLike<void>,
+  ): this {
     if (typeof listener !== "function") {
       throw configError("onBatchFailure listener must be a function");
     }
@@ -1150,7 +1153,10 @@ export class AppendStream<Policy extends AppendFailurePolicy = "stop"> {
   private emitBatchFailure(event: AppendBatchFailureEvent): void {
     for (const listener of this.config.batchFailureListeners) {
       try {
-        listener(event);
+        const pending = listener(event);
+        if (pending !== undefined) {
+          void Promise.resolve(pending).catch(() => {});
+        }
       } catch {
         // Diagnostics must never recursively fail the append worker.
       }
