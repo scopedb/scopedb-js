@@ -42,3 +42,22 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm run build
       - run: bun scripts/smoke-runtime.mjs --without-buffer
+
+  framework-consumers:
+    name: Packed Next.js and Workers consumers
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - uses: actions/cache@v4
+        with:
+          path: ~/.npm
+          key: npm-${{ runner.os }}-${{ hashFiles('tests/consumers/frameworks/package-lock.json') }}
+          restore-keys: npm-${{ runner.os }}-
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm run smoke:frameworks
