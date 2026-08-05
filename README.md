@@ -67,9 +67,9 @@ const schema = await table.tableSchema();
 console.log(schema.fields().length);
 ```
 
-## Append Rows with NDJSON
+## Streaming Writes with NDJSON
 
-The stateless table append API accepts newline-delimited JSON. The table helper
+The streaming write API accepts newline-delimited JSON. The table helper
 uses `scopedb` and `public` when the database or schema is not specified.
 The destination table must already exist. Use an explicit disposable table for
 the snippets before pointing any write path at production.
