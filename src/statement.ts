@@ -93,7 +93,7 @@ export class Statement {
    * Useful for point lookups and aggregate queries that return at most one row.
    *
    * @example
-   * const row = await client.statement("SELECT count(*) AS n FROM events").executeOne();
+   * const row = await client.statement("FROM events AGGREGATE count() AS n").executeOne();
    * console.log(row?.["n"]); // bigint
    */
   async executeOne(options: FetchOptions = {}): Promise<Record<string, Value> | null> {

@@ -319,7 +319,7 @@ describe("Statement.executeOne", () => {
     ]);
     const client = new Client("http://localhost:8080", { fetch: fn });
 
-    const row = await client.statement("SELECT count(*) AS count FROM t").executeOne(noDelay);
+    const row = await client.statement("FROM t AGGREGATE count() AS count").executeOne(noDelay);
 
     assert.ok(row !== null);
     assert.equal(row["count"], 42n);

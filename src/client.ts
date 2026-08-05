@@ -101,20 +101,13 @@ export class Client {
    * Shorthand for `client.statement(sql).execute(options)`.
    *
    * @example
-   * const result = await client.query("SELECT * FROM events LIMIT 10");
+   * const result = await client.query("FROM events SELECT * LIMIT 10");
    * for (const row of result.intoObjects()) {
    *   console.log(row);
    * }
    */
   async query(sql: string, options: FetchOptions = {}): Promise<ResultSet> {
     return this.statement(sql).execute(options);
-  }
-
-  async healthCheck(options: RequestOptions = {}): Promise<void> {
-    await this.request("v1/health", {
-      method: "GET",
-      signal: options.signal,
-    });
   }
 
   async listDatabases(
