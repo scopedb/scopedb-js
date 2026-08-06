@@ -9,7 +9,8 @@
 - Automatic database, schema, and table catalog iterators.
 - `Table.describe()` with JavaScript-style metadata field names.
 - `ResultSet.rawRows()`, `toValues()`, and `toObjects()` aliases.
-- `StatementHandle.refresh()` and `wait()` aliases.
+- `StatementHandle.lastStatus()` and `wait()` lifecycle methods.
+- `WaitOptions` for statement polling configuration.
 - Clearer streaming-write configuration names and configurable row batching.
 - HTTP status, request ID, retryability, and `Retry-After` diagnostics on
   `ScopeDBError`.
@@ -26,6 +27,8 @@
 - The SDK source no longer requires Node.js `Buffer`, allowing Web-standard
   server runtimes to use streaming writes without Node compatibility shims.
 - Examples use `SCOPEDB_API_KEY` and the new application-facing API names.
+- **Breaking:** `StatementHandle.status()` now asynchronously requests the
+  latest remote status. Use `lastStatus()` for the synchronous local snapshot.
 
 ### Deprecated
 
@@ -34,7 +37,8 @@
   `Client.table()`.
 - `ResultSet.jsonRows()`, `intoValues()`, and `intoObjects()` in favor of their
   JavaScript-style aliases.
-- `StatementHandle.fetchOnce()` and `fetch()` in favor of `refresh()` and
+- `StatementHandle.fetchOnce()` and `fetch()` in favor of `status()` and
   `wait()`.
+- `FetchOptions` in favor of `WaitOptions`.
 - Ambiguous streaming-write configuration names in favor of names that include
   their units or operational meaning.

@@ -23,6 +23,9 @@ load the SDK with dynamic `import()`.
 `src/index.ts` is the declaration root. New application examples should use:
 
 - `Client.query()`, `Client.statement()`, and `Client.statementHandle()`
+- `StatementHandle.lastStatus()` for the local snapshot, `status()` for one
+  remote update, and `wait()` for polling to completion
+- `WaitOptions` for query and statement polling configuration
 - catalog list/fetch methods or the automatic catalog iterators
 - `Client.table(name, { database, schema })`
 - `Table.describe()`, `Table.append()`, and `Table.appendStream()`

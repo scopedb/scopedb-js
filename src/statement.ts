@@ -26,7 +26,7 @@ import { statementIsFinished, statementIsTerminated } from "./protocol.js";
 import type { Value } from "./result.js";
 import { ResultSet } from "./result.js";
 
-export interface FetchOptions extends RequestOptions {
+export interface WaitOptions extends RequestOptions {
   /**
    * Initial polling delay in milliseconds.
    * The delay doubles on each poll up to `maxDelayMs`.
@@ -39,6 +39,9 @@ export interface FetchOptions extends RequestOptions {
    */
   maxDelayMs?: number;
 }
+
+/** @deprecated Use `WaitOptions`. */
+export type FetchOptions = WaitOptions;
 
 export class Statement {
   private statementIdValue?: string;
@@ -81,7 +84,7 @@ export class Statement {
     return new StatementHandle(this.client, status.statement_id, this.format, status);
   }
 
-  async execute(options: FetchOptions = {}): Promise<ResultSet> {
+  async execute(options: WaitOptions = {}): Promise<ResultSet> {
     const handle = await this.submit(options);
     return handle.wait(options);
   }
@@ -98,7 +101,7 @@ export class Statement {
    *
    * @deprecated Use `execute()` followed by `ResultSet.first()`.
    */
-  async executeOne(options: FetchOptions = {}): Promise<Record<string, Value> | null> {
+  async executeOne(options: WaitOptions = {}): Promise<Record<string, Value> | null> {
     return (await this.execute(options)).first();
   }
 }
@@ -111,7 +114,8 @@ export class StatementHandle {
     private currentStatus?: StatementStatus,
   ) {}
 
-  status(): StatementStatus | undefined {
+  /** Returns the latest status snapshot held by this handle without making a request. */
+  lastStatus(): StatementStatus | undefined {
     return this.currentStatus;
   }
 
@@ -126,8 +130,8 @@ export class StatementHandle {
     return ResultSet.fromStatementResultSet(this.currentStatus.result_set);
   }
 
-  /** Fetches and returns the latest statement status. */
-  async refresh(options: RequestOptions = {}): Promise<StatementStatus> {
+  /** Fetches and returns the latest status, or reuses a cached terminal status. */
+  async status(options: RequestOptions = {}): Promise<StatementStatus> {
     if (this.currentStatus !== undefined && statementIsTerminated(this.currentStatus)) {
       return this.currentStatus;
     }
@@ -136,18 +140,18 @@ export class StatementHandle {
     return this.currentStatus;
   }
 
-  /** @deprecated Use `refresh()`. */
+  /** @deprecated Use `status()`. */
   async fetchOnce(options: RequestOptions = {}): Promise<void> {
-    await this.refresh(options);
+    await this.status(options);
   }
 
   /** Waits for the statement to terminate and returns its result set. */
-  async wait(options: FetchOptions = {}): Promise<ResultSet> {
+  async wait(options: WaitOptions = {}): Promise<ResultSet> {
     let delayMs = options.initialDelayMs ?? 5;
     const maxDelayMs = options.maxDelayMs ?? 1000;
 
     for (;;) {
-      await this.refresh(options);
+      await this.status(options);
 
       if (this.currentStatus === undefined) {
         throw new ScopeDBError("Unexpected", "statement fetch returned no status");
@@ -171,7 +175,7 @@ export class StatementHandle {
   }
 
   /** @deprecated Use `wait()`. */
-  async fetch(options: FetchOptions = {}): Promise<ResultSet> {
+  async fetch(options: WaitOptions = {}): Promise<ResultSet> {
     return this.wait(options);
   }
 
