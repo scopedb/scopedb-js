@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.2.0 - 2026-08-06
+
 ### Added
 
 - `ClientOptions.apiKey` for server-side API-key authentication.
