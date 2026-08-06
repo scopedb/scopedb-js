@@ -33,7 +33,7 @@ import type {
 } from "./protocol.js";
 import type { ResultSet } from "./result.js";
 import { Statement, StatementHandle } from "./statement.js";
-import type { FetchOptions } from "./statement.js";
+import type { WaitOptions } from "./statement.js";
 import { Table, type TableOptions } from "./table.js";
 
 export interface RequestOptions {
@@ -139,7 +139,7 @@ export class Client {
    *   console.log(row);
    * }
    */
-  async query(scopeql: string, options: FetchOptions = {}): Promise<ResultSet> {
+  async query(scopeql: string, options: WaitOptions = {}): Promise<ResultSet> {
     return this.statement(scopeql).execute(options);
   }
 
@@ -427,7 +427,7 @@ export class Client {
     });
   }
 
-  /** @deprecated Use `client.statementHandle(id).refresh()` or `.wait()`. */
+  /** @deprecated Use `client.statementHandle(id).status()` or `.wait()`. */
   async fetchStatement(
     statementId: string,
     options: RequestOptions = {},

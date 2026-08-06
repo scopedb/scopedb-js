@@ -58,6 +58,29 @@ const result = await client.query("SELECT 1 AS ready");
 console.log(result.toObjects());
 ```
 
+For a detached or long-running statement, keep its handle and choose between a
+local snapshot, one remote status request, or waiting for the result:
+
+```ts
+const handle = await client.statement("SELECT 1 AS ready").submit();
+
+// Synchronous and local: the snapshot updated by submit(), status(), or wait().
+console.log(handle.lastStatus()?.status);
+
+// Asynchronous: requests the latest remote status while the statement is active.
+const latest = await handle.status();
+console.log(latest.status);
+
+// Polls until the statement terminates and returns its result set.
+const result = await handle.wait();
+```
+
+`status()` returns the cached snapshot without another request once the handle
+has reached a terminal state. Use `client.statementHandle(id)` to resume this
+lifecycle from a previously stored statement ID. `wait()`, `query()`, and
+`execute()` accept `WaitOptions` when polling delays or cancellation need to be
+configured.
+
 ## Integer Representation
 
 `int` and `uint` cells default to JS `bigint` to preserve full I64 precision.

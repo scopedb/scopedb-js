@@ -78,7 +78,7 @@ export type {
   Value,
 } from "./result.js";
 export { Statement, StatementHandle } from "./statement.js";
-export type { FetchOptions } from "./statement.js";
+export type { FetchOptions, WaitOptions } from "./statement.js";
 export { Table } from "./table.js";
 export type {
   TableColumn,

@@ -42,7 +42,7 @@ describe("Statement.submit", () => {
     const handle = await client.statement("SELECT 1").submit();
 
     assert.equal(handle.statementId, "stmt-abc");
-    assert.equal(handle.status()?.status, "pending");
+    assert.equal(handle.lastStatus()?.status, "pending");
   });
 
   it("forwards optional fields from Statement builder", async () => {
@@ -65,29 +65,30 @@ describe("Statement.submit", () => {
   });
 });
 
-describe("StatementHandle.fetchOnce", () => {
-  it("fetches status from server and updates internal state", async () => {
+describe("StatementHandle.status", () => {
+  it("fetches status from server and updates the local snapshot", async () => {
     const status = runningStatus("stmt-1");
     const { fn, calls } = makeFetchStub([jsonResponse(200, status)]);
     const client = new Client("http://localhost:8080", { fetch: fn });
     const handle = new StatementHandle(client, "stmt-1");
 
-    await handle.fetchOnce();
+    const latest = await handle.status();
 
     assert.equal(calls.length, 1);
-    assert.equal(handle.status()?.status, "running");
+    assert.equal(latest.status, "running");
+    assert.equal(handle.lastStatus(), latest);
   });
 
-  it("refresh returns the latest status", async () => {
+  it("lastStatus returns the cached snapshot without making a request", async () => {
     const status = runningStatus("stmt-1");
-    const { fn } = makeFetchStub([jsonResponse(200, status)]);
+    const { fn, calls } = makeFetchStub([]);
     const client = new Client("http://localhost:8080", { fetch: fn });
-    const handle = new StatementHandle(client, "stmt-1");
+    const handle = new StatementHandle(client, "stmt-1", "json", status);
 
-    const refreshed = await handle.refresh();
+    const snapshot = handle.lastStatus();
 
-    assert.equal(refreshed.status, "running");
-    assert.equal(handle.status(), refreshed);
+    assert.equal(snapshot, status);
+    assert.equal(calls.length, 0);
   });
 
   it("skips the request when already finished", async () => {
@@ -96,9 +97,10 @@ describe("StatementHandle.fetchOnce", () => {
     const client = new Client("http://localhost:8080", { fetch: fn });
     const handle = new StatementHandle(client, "stmt-1", "json", finished);
 
-    await handle.fetchOnce();
+    const status = await handle.status();
 
     assert.equal(calls.length, 0);
+    assert.equal(status, finished);
   });
 
   it("skips the request when already failed", async () => {
@@ -107,9 +109,10 @@ describe("StatementHandle.fetchOnce", () => {
     const client = new Client("http://localhost:8080", { fetch: fn });
     const handle = new StatementHandle(client, "stmt-1", "json", failed);
 
-    await handle.fetchOnce();
+    const status = await handle.status();
 
     assert.equal(calls.length, 0);
+    assert.equal(status, failed);
   });
 
   it("skips the request when already cancelled", async () => {
@@ -118,13 +121,26 @@ describe("StatementHandle.fetchOnce", () => {
     const client = new Client("http://localhost:8080", { fetch: fn });
     const handle = new StatementHandle(client, "stmt-1", "json", cancelled);
 
-    await handle.fetchOnce();
+    const status = await handle.status();
 
     assert.equal(calls.length, 0);
+    assert.equal(status, cancelled);
+  });
+
+  it("keeps fetchOnce as a deprecated forwarding alias", async () => {
+    const status = runningStatus("stmt-1");
+    const { fn, calls } = makeFetchStub([jsonResponse(200, status)]);
+    const client = new Client("http://localhost:8080", { fetch: fn });
+    const handle = new StatementHandle(client, "stmt-1");
+
+    await handle.fetchOnce();
+
+    assert.equal(calls.length, 1);
+    assert.deepEqual(handle.lastStatus(), status);
   });
 });
 
-describe("StatementHandle.fetch", () => {
+describe("StatementHandle.wait", () => {
   it("returns ResultSet immediately when first poll returns finished", async () => {
     const resultSet = {
       metadata: { fields: [{ name: "x", data_type: "int" as const }], num_rows: 1 },
@@ -136,7 +152,7 @@ describe("StatementHandle.fetch", () => {
     const client = new Client("http://localhost:8080", { fetch: fn });
     const handle = new StatementHandle(client, "stmt-1");
 
-    const rs = await handle.fetch(noDelay);
+    const rs = await handle.wait(noDelay);
 
     assert.equal(calls.length, 1);
     assert.equal(rs.numRows(), 1);
@@ -152,13 +168,13 @@ describe("StatementHandle.fetch", () => {
     const client = new Client("http://localhost:8080", { fetch: fn });
     const handle = new StatementHandle(client, "stmt-1");
 
-    const rs = await handle.fetch(noDelay);
+    const rs = await handle.wait(noDelay);
 
     assert.equal(calls.length, 3);
     assert.equal(rs.numRows(), 0);
   });
 
-  it("wait is the primary polling alias", async () => {
+  it("waits until the statement finishes", async () => {
     const finished = finishedStatus(emptyResultSet());
     const { fn } = makeFetchStub([jsonResponse(200, finished)]);
     const client = new Client("http://localhost:8080", { fetch: fn });
@@ -175,7 +191,7 @@ describe("StatementHandle.fetch", () => {
     const handle = new StatementHandle(client, "stmt-1");
 
     await assert.rejects(
-      () => handle.fetch(noDelay),
+      () => handle.wait(noDelay),
       (err: unknown) => {
         assert.ok(err instanceof ScopeDBError);
         assert.equal(err.kind, "StatementFailed");
@@ -191,7 +207,7 @@ describe("StatementHandle.fetch", () => {
     const handle = new StatementHandle(client, "stmt-1");
 
     await assert.rejects(
-      () => handle.fetch(noDelay),
+      () => handle.wait(noDelay),
       (err: unknown) => {
         assert.ok(err instanceof ScopeDBError);
         assert.equal(err.kind, "StatementFailed");
@@ -212,12 +228,23 @@ describe("StatementHandle.fetch", () => {
     const handle = new StatementHandle(client, "stmt-1");
     const controller = new AbortController();
 
-    const promise = handle.fetch({ initialDelayMs: 5, maxDelayMs: 10, signal: controller.signal });
+    const promise = handle.wait({ initialDelayMs: 5, maxDelayMs: 10, signal: controller.signal });
 
     // Abort after first fetch completes
     setTimeout(() => controller.abort(), 1);
 
     await assert.rejects(promise);
+  });
+
+  it("keeps fetch as a deprecated forwarding alias", async () => {
+    const finished = finishedStatus(emptyResultSet());
+    const { fn } = makeFetchStub([jsonResponse(200, finished)]);
+    const client = new Client("http://localhost:8080", { fetch: fn });
+    const handle = new StatementHandle(client, "stmt-1");
+
+    const result = await handle.fetch(noDelay);
+
+    assert.equal(result.numRows(), 0);
   });
 });
 
@@ -306,7 +333,7 @@ describe("StatementHandle.cancel", () => {
 
     await handle.cancel();
 
-    assert.equal(handle.status()?.status, "failed");
+    assert.equal(handle.lastStatus()?.status, "failed");
   });
 
   it("updates internal status after cancel returns cancelled", async () => {
@@ -322,7 +349,7 @@ describe("StatementHandle.cancel", () => {
 
     await handle.cancel();
 
-    assert.equal(handle.status()?.status, "cancelled");
+    assert.equal(handle.lastStatus()?.status, "cancelled");
   });
 });
 

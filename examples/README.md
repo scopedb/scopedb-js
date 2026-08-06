@@ -25,7 +25,7 @@ These can run against a reachable ScopeDB server without modifying data.
 
 | Example | Shows | Run |
 | --- | --- | --- |
-| [`statement.ts`](statement.ts) | Query execution and JSON-safe integer results | `pnpm run example:statement` |
+| [`statement.ts`](statement.ts) | Async statement lifecycle and JSON-safe integer results | `pnpm run example:statement` |
 | [`catalog.ts`](catalog.ts) | Complete REST catalog pagination and table metadata | `pnpm run example:catalog` |
 
 ## Before running a write example
