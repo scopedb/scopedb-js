@@ -18,7 +18,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { Client } from "../src/client.js";
 import { ScopeDBError } from "../src/errors.js";
-import { jsonResponse, makeFetchStub } from "./helpers.js";
+import { jsonResponse, makeFetchStub, parseJsonRequestBody } from "./helpers.js";
 
 const TRANSFORM = "INSERT INTO t SELECT *";
 
@@ -45,7 +45,7 @@ function ingestPerm(): Response {
 
 // Parse the ingest POST body to extract inserted rows as an array of parsed records
 function parseIngestRows(init: RequestInit | undefined): unknown[] {
-  const body = JSON.parse(init!.body as string) as { data: { rows: string } };
+  const body = parseJsonRequestBody(init) as { data: { rows: string } };
   return body.data.rows.split("\n").map((line) => JSON.parse(line) as unknown);
 }
 
@@ -63,7 +63,7 @@ describe("IngestStream basic send + flush", () => {
     assert.ok(call.url.endsWith("/v1/ingest"), `unexpected URL: ${call.url}`);
     assert.equal((call.init as RequestInit).method, "POST");
 
-    const body = JSON.parse((call.init as RequestInit).body as string) as Record<string, unknown>;
+    const body = parseJsonRequestBody(call.init) as Record<string, unknown>;
     assert.equal(body["type"], "committed");
     assert.deepEqual((body["data"] as Record<string, string>)["format"], "json");
     assert.equal(body["statement"], TRANSFORM);
@@ -232,7 +232,7 @@ describe("IngestStream retry / backoff", () => {
     assert.equal(calls.length, 3);
     assert.deepEqual(parseIngestRows(calls[1]!.init), [first, second]);
     assert.deepEqual(parseIngestRows(calls[2]!.init), [third]);
-    const retryRows = JSON.parse(calls[1]!.init!.body as string) as {
+    const retryRows = parseJsonRequestBody(calls[1]!.init) as {
       data: { rows: string };
     };
     assert.ok(Buffer.byteLength(retryRows.data.rows, "utf8") <= batchBytes);

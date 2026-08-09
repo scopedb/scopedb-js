@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### Changed
+
+- JSON request bodies now use gzip compression by default. Direct and
+  streaming table appends remain identity-encoded as required by the table
+  append API.
+
 ## 0.2.0 - 2026-08-06
 
 ### Added

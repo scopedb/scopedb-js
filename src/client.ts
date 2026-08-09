@@ -466,7 +466,27 @@ export class Client {
     path: string | URL,
     init: RequestInit,
   ): Promise<T> {
-    const response = await this.request(path, init);
+    let requestInit = init;
+    if (init.body !== undefined) {
+      init.signal?.throwIfAborted();
+      if (typeof init.body !== "string") {
+        throw new ScopeDBError(
+          "Unexpected",
+          "JSON request body must be a string before compression",
+        );
+      }
+
+      const { body, uncompressedBytes } = await gzipJsonRequestBody(init.body);
+      const headers = new Headers(init.headers);
+      headers.set("Content-Encoding", "gzip");
+      headers.set(
+        "X-ScopeDB-Uncompressed-Content-Length",
+        String(uncompressedBytes),
+      );
+      requestInit = { ...init, body, headers };
+    }
+
+    const response = await this.request(path, requestInit);
     return parseJsonResponse<T>(response);
   }
 
@@ -529,6 +549,27 @@ export class Client {
       url.searchParams.set("page_token", options.pageToken);
     }
     return url;
+  }
+}
+
+async function gzipJsonRequestBody(
+  body: string,
+): Promise<{ body: ArrayBuffer; uncompressedBytes: number }> {
+  try {
+    const uncompressed = new Blob([body]);
+    const compressed = uncompressed
+      .stream()
+      .pipeThrough(new CompressionStream("gzip"));
+    return {
+      body: await new Response(compressed).arrayBuffer(),
+      uncompressedBytes: uncompressed.size,
+    };
+  } catch (cause) {
+    throw new ScopeDBError(
+      "Unexpected",
+      "failed to compress JSON request body with gzip",
+      { cause },
+    );
   }
 }
 

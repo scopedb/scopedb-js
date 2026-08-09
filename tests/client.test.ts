@@ -23,6 +23,7 @@ import {
   finishedStatus,
   jsonResponse,
   makeFetchStub,
+  parseJsonRequestBody,
   pendingStatus,
   textResponse,
 } from "./helpers.js";
@@ -39,9 +40,18 @@ describe("Client.submitStatement", () => {
     const call = calls[0]!;
     assert.ok(call.url.endsWith("/v1/statements"));
     assert.equal((call.init as RequestInit).method, "POST");
-    const body = JSON.parse((call.init as RequestInit).body as string) as Record<string, unknown>;
+    const body = parseJsonRequestBody(call.init) as Record<string, unknown>;
     assert.equal(body["statement"], "SELECT 1");
     assert.equal(body["format"], "json");
+    const headers = new Headers(call.init?.headers);
+    assert.equal(headers.get("Content-Encoding"), "gzip");
+    assert.equal(
+      headers.get("X-ScopeDB-Uncompressed-Content-Length"),
+      String(new TextEncoder().encode(JSON.stringify({
+        statement: "SELECT 1",
+        format: "json",
+      })).byteLength),
+    );
   });
 
   it("includes optional fields when set", async () => {
@@ -57,7 +67,7 @@ describe("Client.submitStatement", () => {
       max_parallelism: 4,
     });
 
-    const body = JSON.parse((calls[0]!.init as RequestInit).body as string) as Record<string, unknown>;
+    const body = parseJsonRequestBody(calls[0]!.init) as Record<string, unknown>;
     assert.equal(body["statement_id"], "my-id");
     assert.equal(body["exec_timeout"], "30s");
     assert.equal(body["max_parallelism"], 4);

@@ -26,6 +26,7 @@ import {
   finishedStatus,
   jsonResponse,
   makeFetchStub,
+  parseJsonRequestBody,
   pendingStatus,
   runningStatus,
 } from "./helpers.js";
@@ -57,7 +58,7 @@ describe("Statement.submit", () => {
       .withMaxParallelism(8)
       .submit();
 
-    const body = JSON.parse((calls[0]!.init as RequestInit).body as string) as Record<string, unknown>;
+    const body = parseJsonRequestBody(calls[0]!.init) as Record<string, unknown>;
     assert.equal(body["statement_id"], "custom-id");
     assert.equal(body["exec_timeout"], "60s");
     assert.equal(body["max_parallelism"], 8);
