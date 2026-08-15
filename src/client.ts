@@ -340,6 +340,30 @@ export class Client {
     ndjson: string,
     options: RequestOptions = {},
   ): Promise<AppendRowsResult> {
+    return this.sendAppendRows(database, schema, table, ndjson, undefined, options);
+  }
+
+  /** @internal */
+  async appendRowsCompressed(
+    database: string,
+    schema: string,
+    table: string,
+    ndjson: string,
+    options: RequestOptions = {},
+  ): Promise<AppendRowsResult> {
+    options.signal?.throwIfAborted();
+    const { body } = await gzipJsonRequestBody(ndjson);
+    return this.sendAppendRows(database, schema, table, body, "gzip", options);
+  }
+
+  private async sendAppendRows(
+    database: string,
+    schema: string,
+    table: string,
+    body: string | ArrayBuffer,
+    contentEncoding: "gzip" | undefined,
+    options: RequestOptions,
+  ): Promise<AppendRowsResult> {
     // A request that has not started cannot have an ambiguous commit outcome.
     // Keep this check outside the catch block below so the caller's abort reason
     // is preserved instead of being wrapped as AppendRowsError("unknown").
@@ -354,10 +378,16 @@ export class Client {
       "rows",
     ]);
     try {
+      const headers = new Headers({
+        "Content-Type": "application/x-ndjson",
+      });
+      if (contentEncoding !== undefined) {
+        headers.set("Content-Encoding", contentEncoding);
+      }
       const response = await this.request(url, {
         method: "POST",
-        headers: { "Content-Type": "application/x-ndjson" },
-        body: ndjson,
+        headers,
+        body,
         signal: options.signal,
       });
       const result: unknown = await parseJsonResponse(response);
@@ -567,7 +597,7 @@ async function gzipJsonRequestBody(
   } catch (cause) {
     throw new ScopeDBError(
       "Unexpected",
-      "failed to compress JSON request body with gzip",
+      "failed to compress request body with gzip",
       { cause },
     );
   }

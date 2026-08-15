@@ -20,7 +20,7 @@ const fetch = async (input, init) => {
   const url = new URL(input instanceof Request ? input.url : input);
   calls.push({ url, init });
   if (url.pathname.endsWith("/rows")) {
-    const rows = String(init?.body).split("\n").length;
+    const rows = (await requestText(init)).split("\n").length;
     return Response.json({
       append_state: "committed",
       num_rows_inserted: rows,
@@ -60,10 +60,25 @@ const result = await stream.shutdown();
 check(result?.num_rows_inserted === 3, "append stream result");
 check(calls.length === 2, "catalog plus one append request");
 check(
+  new Headers(calls[1]?.init?.headers).get("Content-Encoding") === "gzip",
+  "append stream compression",
+);
+check(
   calls.every(({ init }) => new Headers(init?.headers).get("Authorization") ===
     "Bearer runtime-smoke-key"),
   "API key propagation",
 );
+
+async function requestText(init) {
+  const encoding = new Headers(init?.headers).get("Content-Encoding");
+  if (encoding !== "gzip") {
+    return String(init?.body);
+  }
+  const decompressed = new Blob([init.body])
+    .stream()
+    .pipeThrough(new DecompressionStream("gzip"));
+  return new Response(decompressed).text();
+}
 
 function check(condition, label) {
   if (!condition) {

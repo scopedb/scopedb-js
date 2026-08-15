@@ -61,6 +61,10 @@ export function textResponse(status: number, text: string): Response {
 }
 
 export function parseJsonRequestBody(init: RequestInit | undefined): unknown {
+  return JSON.parse(requestBodyText(init)) as unknown;
+}
+
+export function requestBodyText(init: RequestInit | undefined): string {
   const body = init?.body;
   let bytes: Uint8Array;
   if (typeof body === "string") {
@@ -80,7 +84,7 @@ export function parseJsonRequestBody(init: RequestInit | undefined): unknown {
     throw new Error(`unsupported test request encoding: ${encoding}`);
   }
 
-  return JSON.parse(new TextDecoder().decode(bytes)) as unknown;
+  return new TextDecoder().decode(bytes);
 }
 
 export function emptyProgress(): StatementEstimatedProgress {
