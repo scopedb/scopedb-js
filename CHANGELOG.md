@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.2.1 - 2026-08-20
+
 ### Changed
 
 - JSON request bodies and `AppendStream` batches now use gzip compression by
