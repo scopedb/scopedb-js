@@ -45,6 +45,10 @@ const client = new Client(process.env.SCOPEDB_ENDPOINT!, {
 });
 ```
 
+The SDK compresses JSON request bodies and `AppendStream` batches with gzip by
+default using the Web Compression API. Direct caller-encoded table appends
+remain identity-encoded.
+
 ## Run a Statement
 
 ```ts

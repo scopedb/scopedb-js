@@ -15,6 +15,7 @@
  */
 
 import type { StatementEstimatedProgress, StatementResultSet, StatementStatus } from "../src/protocol.js";
+import { gunzipSync } from "node:zlib";
 
 export type FetchCall = { url: string; init?: RequestInit };
 
@@ -57,6 +58,33 @@ export function jsonResponse(status: number, body: unknown): Response {
 
 export function textResponse(status: number, text: string): Response {
   return new Response(text, { status });
+}
+
+export function parseJsonRequestBody(init: RequestInit | undefined): unknown {
+  return JSON.parse(requestBodyText(init)) as unknown;
+}
+
+export function requestBodyText(init: RequestInit | undefined): string {
+  const body = init?.body;
+  let bytes: Uint8Array;
+  if (typeof body === "string") {
+    bytes = new TextEncoder().encode(body);
+  } else if (body instanceof Uint8Array) {
+    bytes = body;
+  } else if (body instanceof ArrayBuffer) {
+    bytes = new Uint8Array(body);
+  } else {
+    throw new Error("request does not contain a supported body");
+  }
+
+  const encoding = new Headers(init?.headers).get("Content-Encoding");
+  if (encoding === "gzip") {
+    bytes = gunzipSync(bytes);
+  } else if (encoding !== null && encoding !== "identity") {
+    throw new Error(`unsupported test request encoding: ${encoding}`);
+  }
+
+  return new TextDecoder().decode(bytes);
 }
 
 export function emptyProgress(): StatementEstimatedProgress {

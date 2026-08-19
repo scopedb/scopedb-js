@@ -19,7 +19,13 @@ import { describe, it } from "node:test";
 import { Client } from "../src/client.js";
 import { AppendRowsError } from "../src/errors.js";
 import { Table } from "../src/table.js";
-import { emptyResultSet, finishedStatus, jsonResponse, makeFetchStub } from "./helpers.js";
+import {
+  emptyResultSet,
+  finishedStatus,
+  jsonResponse,
+  makeFetchStub,
+  parseJsonRequestBody,
+} from "./helpers.js";
 
 describe("Table.identifier — ScopeQL quoting", () => {
   function makeTable(name: string): Table {
@@ -90,7 +96,7 @@ describe("Table.drop", () => {
     await table.drop({ initialDelayMs: 0, maxDelayMs: 0 } as Parameters<typeof table.drop>[0]);
 
     // First call is POST /v1/statements; verify the statement contains the quoted identifier
-    const body = JSON.parse((calls[0]!.init as RequestInit).body as string) as Record<string, unknown>;
+    const body = parseJsonRequestBody(calls[0]!.init) as Record<string, unknown>;
     assert.ok(
       (body["statement"] as string).includes("`my_table`"),
       `statement was: ${body["statement"]}`,
@@ -127,6 +133,8 @@ describe("Table.append", () => {
     const headers = init.headers as Headers;
     assert.equal(headers.get("Content-Type"), "application/x-ndjson");
     assert.equal(headers.get("Accept"), "application/json");
+    assert.equal(headers.get("Content-Encoding"), null);
+    assert.equal(headers.get("X-ScopeDB-Uncompressed-Content-Length"), null);
   });
 
   it("uses the default database and schema", async () => {

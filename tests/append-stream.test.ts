@@ -23,7 +23,7 @@ import type {
 import { Client } from "../src/client.js";
 import { AppendRowsError, ScopeDBError } from "../src/errors.js";
 import type { FetchCall } from "./helpers.js";
-import { jsonResponse, makeFetchStub } from "./helpers.js";
+import { jsonResponse, makeFetchStub, requestBodyText } from "./helpers.js";
 
 function appendOk(numRows = 1): Response {
   return jsonResponse(200, {
@@ -61,7 +61,7 @@ function makeTable(responses: Response[]) {
 }
 
 function parseAppendRows(call: FetchCall): unknown[] {
-  return (call.init!.body as string)
+  return requestBodyText(call.init)
     .split("\n")
     .map((line) => JSON.parse(line) as unknown);
 }
@@ -83,6 +83,10 @@ describe("AppendStream batching and barriers", () => {
     assert.equal(await stream.shutdown(), null);
 
     assert.equal(calls.length, 1);
+    assert.equal(
+      new Headers(calls[0]!.init?.headers).get("Content-Encoding"),
+      "gzip",
+    );
     assert.deepEqual(parseAppendRows(calls[0]!), [
       { id: 1 },
       { id: 2 },
@@ -113,7 +117,7 @@ describe("AppendStream batching and barriers", () => {
     assert.deepEqual(parseAppendRows(calls[0]!), [first, second]);
     assert.deepEqual(parseAppendRows(calls[1]!), [third]);
     assert.ok(
-      Buffer.byteLength(calls[0]!.init!.body as string, "utf8") <= batchBytes,
+      Buffer.byteLength(requestBodyText(calls[0]!.init), "utf8") <= batchBytes,
     );
   });
 
@@ -132,6 +136,7 @@ describe("AppendStream batching and barriers", () => {
     const { table, calls } = makeTable([appendOk(200_000), appendOk(1)]);
     const stream = table.appendStream()
       .flushInterval(60_000)
+      .maxConcurrentBatches(1)
       .build();
 
     for (let index = 0; index < 200_001; index += 1) {
@@ -141,7 +146,7 @@ describe("AppendStream batching and barriers", () => {
 
     assert.equal(calls.length, 2);
     assert.deepEqual(
-      calls.map((call) => (call.init!.body as string).split("\n").length),
+      calls.map((call) => requestBodyText(call.init).split("\n").length),
       [200_000, 1],
     );
   });
@@ -400,7 +405,10 @@ describe("AppendStream retry safety", () => {
     await stream.shutdown();
 
     assert.equal(calls.length, 2);
-    assert.equal(calls[0]!.init!.body, calls[1]!.init!.body);
+    assert.equal(
+      requestBodyText(calls[0]!.init),
+      requestBodyText(calls[1]!.init),
+    );
   });
 
   it("safely retries an explicitly rejected append body timeout", async () => {

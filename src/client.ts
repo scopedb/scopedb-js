@@ -340,6 +340,30 @@ export class Client {
     ndjson: string,
     options: RequestOptions = {},
   ): Promise<AppendRowsResult> {
+    return this.sendAppendRows(database, schema, table, ndjson, undefined, options);
+  }
+
+  /** @internal */
+  async appendRowsCompressed(
+    database: string,
+    schema: string,
+    table: string,
+    ndjson: string,
+    options: RequestOptions = {},
+  ): Promise<AppendRowsResult> {
+    options.signal?.throwIfAborted();
+    const { body } = await gzipJsonRequestBody(ndjson);
+    return this.sendAppendRows(database, schema, table, body, "gzip", options);
+  }
+
+  private async sendAppendRows(
+    database: string,
+    schema: string,
+    table: string,
+    body: string | ArrayBuffer,
+    contentEncoding: "gzip" | undefined,
+    options: RequestOptions,
+  ): Promise<AppendRowsResult> {
     // A request that has not started cannot have an ambiguous commit outcome.
     // Keep this check outside the catch block below so the caller's abort reason
     // is preserved instead of being wrapped as AppendRowsError("unknown").
@@ -354,10 +378,16 @@ export class Client {
       "rows",
     ]);
     try {
+      const headers = new Headers({
+        "Content-Type": "application/x-ndjson",
+      });
+      if (contentEncoding !== undefined) {
+        headers.set("Content-Encoding", contentEncoding);
+      }
       const response = await this.request(url, {
         method: "POST",
-        headers: { "Content-Type": "application/x-ndjson" },
-        body: ndjson,
+        headers,
+        body,
         signal: options.signal,
       });
       const result: unknown = await parseJsonResponse(response);
@@ -466,7 +496,27 @@ export class Client {
     path: string | URL,
     init: RequestInit,
   ): Promise<T> {
-    const response = await this.request(path, init);
+    let requestInit = init;
+    if (init.body !== undefined) {
+      init.signal?.throwIfAborted();
+      if (typeof init.body !== "string") {
+        throw new ScopeDBError(
+          "Unexpected",
+          "JSON request body must be a string before compression",
+        );
+      }
+
+      const { body, uncompressedBytes } = await gzipJsonRequestBody(init.body);
+      const headers = new Headers(init.headers);
+      headers.set("Content-Encoding", "gzip");
+      headers.set(
+        "X-ScopeDB-Uncompressed-Content-Length",
+        String(uncompressedBytes),
+      );
+      requestInit = { ...init, body, headers };
+    }
+
+    const response = await this.request(path, requestInit);
     return parseJsonResponse<T>(response);
   }
 
@@ -529,6 +579,27 @@ export class Client {
       url.searchParams.set("page_token", options.pageToken);
     }
     return url;
+  }
+}
+
+async function gzipJsonRequestBody(
+  body: string,
+): Promise<{ body: ArrayBuffer; uncompressedBytes: number }> {
+  try {
+    const uncompressed = new Blob([body]);
+    const compressed = uncompressed
+      .stream()
+      .pipeThrough(new CompressionStream("gzip"));
+    return {
+      body: await new Response(compressed).arrayBuffer(),
+      uncompressedBytes: uncompressed.size,
+    };
+  } catch (cause) {
+    throw new ScopeDBError(
+      "Unexpected",
+      "failed to compress request body with gzip",
+      { cause },
+    );
   }
 }
 

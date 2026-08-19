@@ -933,7 +933,7 @@ export class AppendStream<Policy extends AppendFailurePolicy = "stop"> {
         ? undefined
         : AbortSignal.timeout(this.config.attemptTimeoutMs);
       try {
-        const result = await this.config.client.appendRows(
+        const result = await this.config.client.appendRowsCompressed(
           this.config.database,
           this.config.schema,
           this.config.table,

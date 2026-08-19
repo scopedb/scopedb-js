@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+### Changed
+
+- JSON request bodies and `AppendStream` batches now use gzip compression by
+  default. Direct caller-encoded table appends remain identity-encoded.
+
 ## 0.2.0 - 2026-08-06
 
 ### Added
