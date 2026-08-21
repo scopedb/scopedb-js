@@ -581,7 +581,7 @@ describe("AppendStream local failures", () => {
     const { table } = makeTable([]);
     const invalidConfigurations = [
       () => table.appendStream().batchBytes(Number.NaN),
-      () => table.appendStream().batchBytes(16 * 1024 * 1024 + 1),
+      () => table.appendStream().batchBytes(8 * 1024 * 1024 + 1),
       () => table.appendStream().flushInterval(Number.POSITIVE_INFINITY),
       () => table.appendStream().channelCapacity(0),
       () => table.appendStream().maxPendingBytes(Number.NaN),
@@ -613,6 +613,21 @@ describe("AppendStream local failures", () => {
         },
       );
     }
+  });
+
+  it("rejects a row larger than the 8 MiB stream request limit", async () => {
+    const { table, calls } = makeTable([]);
+    const stream = table.appendStream().build();
+
+    await assert.rejects(
+      () => stream.send({ payload: "x".repeat(8 * 1024 * 1024) }),
+      (error: unknown) =>
+        error instanceof ScopeDBError &&
+        error.kind === "AppendRowsFailed" &&
+        error.message.includes("8388608-byte append limit"),
+    );
+    assert.equal(await stream.shutdown(), null);
+    assert.equal(calls.length, 0);
   });
 
   it("rejects invalid append-stream factory options at runtime", () => {
