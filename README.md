@@ -262,9 +262,9 @@ transactional stream-wide abort or rollback.
 
 The default number of concurrent batches is 4. Set
 `.maxConcurrentBatches(1)` when batches must be submitted serially; concurrent
-batches do not have a defined commit order. A single NDJSON request is capped at
-16 MiB and 200,000 rows; the stream splits automatically at either protocol
-limit.
+batches do not have a defined commit order. `AppendStream` caps each uncompressed
+NDJSON request at 8 MiB and 200,000 rows, and splits automatically at either
+limit. Direct caller-encoded appends retain the endpoint's 16 MiB limit.
 
 Remote append failures and ambiguous commit outcomes throw `AppendRowsError`.
 Its `appendState`, `rowErrors`, and `rowErrorsTruncated` fields preserve the
