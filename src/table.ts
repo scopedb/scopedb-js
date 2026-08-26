@@ -94,7 +94,7 @@ export class Table {
     await this.client.statement(`DROP TABLE ${this.identifier()}`).execute(options);
   }
 
-  /** Appends newline-delimited JSON rows to this table. */
+  /** Appends at most 8 MiB of uncompressed newline-delimited JSON. */
   async append(ndjson: string, options: RequestOptions = {}): Promise<AppendRowsResult> {
     return this.client.appendRows(
       this.databaseName ?? "scopedb",

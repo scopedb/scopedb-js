@@ -20,7 +20,7 @@ import { AppendRowsError, Client } from "scopedb";
 // Requires a transactional outbox with crash-safe ATTEMPTING recovery.
 
 const MAX_APPEND_ROWS = 200_000;
-const MAX_APPEND_BYTES = 16 * 1024 * 1024;
+const MAX_APPEND_BYTES = 8 * 1024 * 1024;
 
 /** One durable attempt maps to exactly one HTTP append request. */
 export interface PreparedAuditAttempt {

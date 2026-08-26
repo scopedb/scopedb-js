@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+### Changed
+
+- Direct caller-encoded table appends now use the same gzip compression and
+  8 MiB uncompressed request limit as `AppendStream` batches.
+
 ## 0.2.2 - 2026-08-22
 
 ### Changed

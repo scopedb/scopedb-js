@@ -45,9 +45,9 @@ const client = new Client(process.env.SCOPEDB_ENDPOINT!, {
 });
 ```
 
-The SDK compresses JSON request bodies and `AppendStream` batches with gzip by
-default using the Web Compression API. Direct caller-encoded table appends
-remain identity-encoded.
+The SDK compresses JSON request bodies and table append requests with gzip by
+default using the Web Compression API. Append limits are based on the
+uncompressed NDJSON body.
 
 ## Run a Statement
 
@@ -262,9 +262,9 @@ transactional stream-wide abort or rollback.
 
 The default number of concurrent batches is 4. Set
 `.maxConcurrentBatches(1)` when batches must be submitted serially; concurrent
-batches do not have a defined commit order. `AppendStream` caps each uncompressed
-NDJSON request at 8 MiB and 200,000 rows, and splits automatically at either
-limit. Direct caller-encoded appends retain the endpoint's 16 MiB limit.
+batches do not have a defined commit order. Every table append request is
+limited to 8 MiB of uncompressed NDJSON and 200,000 rows; `AppendStream` splits
+automatically at either limit.
 
 Remote append failures and ambiguous commit outcomes throw `AppendRowsError`.
 Its `appendState`, `rowErrors`, and `rowErrorsTruncated` fields preserve the
