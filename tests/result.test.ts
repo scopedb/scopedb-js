@@ -218,6 +218,16 @@ describe("ResultSet.intoObjects", () => {
     );
     assert.throws(() => rs.intoObjects(), ScopeDBError);
   });
+
+  it("rejects duplicate column names instead of overwriting values", () => {
+    const rs = makeResultSet(
+      [{ name: "value", data_type: "int" }, { name: "value", data_type: "int" }],
+      [["1", "2"]],
+    );
+
+    assert.throws(() => rs.toObjects(), /column name .* is duplicated/);
+    assert.deepEqual(rs.toValues(), [[1n, 2n]]);
+  });
 });
 
 describe("ResultSet.first", () => {
@@ -234,6 +244,15 @@ describe("ResultSet.first", () => {
   it("returns null for empty result set", () => {
     const rs = makeResultSet([{ name: "n", data_type: "int" }], []);
     assert.equal(rs.first(), null);
+  });
+
+  it("rejects duplicate column names instead of overwriting values", () => {
+    const rs = makeResultSet(
+      [{ name: "value", data_type: "int" }, { name: "value", data_type: "int" }],
+      [["1", "2"]],
+    );
+
+    assert.throws(() => rs.first(), /column name .* is duplicated/);
   });
 });
 

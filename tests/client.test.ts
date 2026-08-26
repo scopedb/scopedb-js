@@ -64,13 +64,12 @@ describe("Client.submitStatement", () => {
       format: "json",
       statement_id: "my-id",
       exec_timeout: "30s",
-      max_parallelism: 4,
     });
 
     const body = parseJsonRequestBody(calls[0]!.init) as Record<string, unknown>;
     assert.equal(body["statement_id"], "my-id");
     assert.equal(body["exec_timeout"], "30s");
-    assert.equal(body["max_parallelism"], 4);
+    assert.equal(body["max_parallelism"], undefined);
   });
 
   it("returns the statement status from the response", async () => {

@@ -21,13 +21,18 @@ import type {
   AppendRowsErrorPayload,
   AppendRowsResult,
   CatalogPage,
+  DataType,
   DatabaseResource,
   IngestRequest,
   IngestResult,
   SchemaResource,
   StatementCancelResult,
+  StatementErrorDetails,
   StatementRequest,
+  StatementResultSet,
   StatementStatus,
+  TableColumnSpec,
+  TableDistinctSpec,
   TableResource,
   TableResourceSummary,
 } from "./protocol.js";
@@ -147,20 +152,28 @@ export class Client {
   async listDatabases(
     options: CatalogListOptions = {},
   ): Promise<CatalogPage<DatabaseResource>> {
-    return this.requestJson(this.catalogUrl(["databases"], options), {
-      method: "GET",
-      signal: options.signal,
-    });
+    return expectCatalogPage(
+      await this.requestJson(this.catalogUrl(["databases"], options), {
+        method: "GET",
+        signal: options.signal,
+      }),
+      isDatabaseResource,
+      "database catalog page",
+    );
   }
 
   async fetchDatabase(
     database: string,
     options: RequestOptions = {},
   ): Promise<DatabaseResource> {
-    return this.requestJson(this.resourceUrl(["databases", database]), {
-      method: "GET",
-      signal: options.signal,
-    });
+    return expectResponse(
+      await this.requestJson(this.resourceUrl(["databases", database]), {
+        method: "GET",
+        signal: options.signal,
+      }),
+      isDatabaseResource,
+      "database resource",
+    );
   }
 
   async listSchemas(
@@ -178,12 +191,16 @@ export class Client {
       databaseOrReference,
       options,
     );
-    return this.requestJson(
-      this.catalogUrl(["databases", database, "schemas"], listOptions),
-      {
-        method: "GET",
-        signal: listOptions.signal,
-      },
+    return expectCatalogPage(
+      await this.requestJson(
+        this.catalogUrl(["databases", database, "schemas"], listOptions),
+        {
+          method: "GET",
+          signal: listOptions.signal,
+        },
+      ),
+      isSchemaResource,
+      "schema catalog page",
     );
   }
 
@@ -203,12 +220,16 @@ export class Client {
       schema,
       options,
     );
-    return this.requestJson(
-      this.resourceUrl(["databases", database, "schemas", schemaName]),
-      {
-        method: "GET",
-        signal: requestOptions.signal,
-      },
+    return expectResponse(
+      await this.requestJson(
+        this.resourceUrl(["databases", database, "schemas", schemaName]),
+        {
+          method: "GET",
+          signal: requestOptions.signal,
+        },
+      ),
+      isSchemaResource,
+      "schema resource",
     );
   }
 
@@ -230,15 +251,19 @@ export class Client {
       schema,
       options,
     );
-    return this.requestJson(
-      this.catalogUrl(
-        ["databases", database, "schemas", schemaName, "tables"],
-        listOptions,
+    return expectCatalogPage(
+      await this.requestJson(
+        this.catalogUrl(
+          ["databases", database, "schemas", schemaName, "tables"],
+          listOptions,
+        ),
+        {
+          method: "GET",
+          signal: listOptions.signal,
+        },
       ),
-      {
-        method: "GET",
-        signal: listOptions.signal,
-      },
+      isTableResourceSummary,
+      "table catalog page",
     );
   }
 
@@ -261,19 +286,23 @@ export class Client {
       table,
       options,
     );
-    return this.requestJson(
-      this.resourceUrl([
-        "databases",
-        database,
-        "schemas",
-        schemaName,
-        "tables",
-        tableName,
-      ]),
-      {
-        method: "GET",
-        signal: requestOptions.signal,
-      },
+    return expectResponse(
+      await this.requestJson(
+        this.resourceUrl([
+          "databases",
+          database,
+          "schemas",
+          schemaName,
+          "tables",
+          tableName,
+        ]),
+        {
+          method: "GET",
+          signal: requestOptions.signal,
+        },
+      ),
+      isTableResource,
+      "table resource",
     );
   }
 
@@ -359,8 +388,9 @@ export class Client {
         message,
       );
     }
+    const expectedRows = countNDJSONRows(ndjson);
     const { body } = await gzipJsonRequestBody(ndjson);
-    return this.sendAppendRows(database, schema, table, body, options);
+    return this.sendAppendRows(database, schema, table, body, expectedRows, options);
   }
 
   private async sendAppendRows(
@@ -368,6 +398,7 @@ export class Client {
     schema: string,
     table: string,
     body: ArrayBuffer,
+    expectedRows: number,
     options: RequestOptions,
   ): Promise<AppendRowsResult> {
     // A request that has not started cannot have an ambiguous commit outcome.
@@ -401,6 +432,20 @@ export class Client {
           "append response has an invalid body",
           responseMetadata(response),
         );
+      }
+      if (result.num_rows_inserted !== expectedRows) {
+        const message =
+          `table append response reported ${result.num_rows_inserted} inserted rows for a ${expectedRows}-row request`;
+        throw new AppendRowsError(
+          {
+            message,
+            append_state: "unknown",
+            row_errors: [],
+            row_errors_truncated: false,
+          },
+          message,
+          responseMetadata(response),
+        ).setPersistent();
       }
       return result;
     } catch (cause) {
@@ -454,11 +499,15 @@ export class Client {
     request: StatementRequest,
     options: RequestOptions = {},
   ): Promise<StatementStatus> {
-    return this.requestJson("v1/statements", {
-      method: "POST",
-      body: JSON.stringify(request),
-      signal: options.signal,
-    });
+    return expectResponse(
+      await this.requestJson("v1/statements", {
+        method: "POST",
+        body: JSON.stringify(request),
+        signal: options.signal,
+      }),
+      isStatementStatus,
+      "statement response",
+    );
   }
 
   /** @deprecated Use `client.statementHandle(id).status()` or `.wait()`. */
@@ -468,10 +517,14 @@ export class Client {
   ): Promise<StatementStatus> {
     const url = this.resourceUrl(["statements", statementId]);
     url.searchParams.set("format", "json");
-    return this.requestJson(url, {
-      method: "GET",
-      signal: options.signal,
-    });
+    return expectResponse(
+      await this.requestJson(url, {
+        method: "GET",
+        signal: options.signal,
+      }),
+      isStatementStatus,
+      "statement response",
+    );
   }
 
   /** @deprecated Use `client.statementHandle(id).cancel()`. */
@@ -479,21 +532,29 @@ export class Client {
     statementId: string,
     options: RequestOptions = {},
   ): Promise<StatementCancelResult> {
-    return this.requestJson(this.resourceUrl(["statements", statementId, "cancel"]), {
-      method: "POST",
-      signal: options.signal,
-    });
+    return expectResponse(
+      await this.requestJson(this.resourceUrl(["statements", statementId, "cancel"]), {
+        method: "POST",
+        signal: options.signal,
+      }),
+      isStatementCancelResult,
+      "statement cancellation response",
+    );
   }
 
   async ingest(
     request: IngestRequest,
     options: RequestOptions = {},
   ): Promise<IngestResult> {
-    return this.requestJson("v1/ingest", {
-      method: "POST",
-      body: JSON.stringify(request),
-      signal: options.signal,
-    });
+    return expectResponse(
+      await this.requestJson("v1/ingest", {
+        method: "POST",
+        body: JSON.stringify(request),
+        signal: options.signal,
+      }),
+      isIngestResult,
+      "ingest response",
+    );
   }
 
   private async requestJson<T>(
@@ -860,6 +921,234 @@ function isAppendRowErrors(value: unknown): value is AppendRowError[] {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
+}
+
+function expectResponse<T>(
+  value: unknown,
+  validate: (value: unknown) => value is T,
+  responseName: string,
+): T {
+  if (!validate(value)) {
+    throw new ScopeDBError("Unexpected", `${responseName} has an invalid body`);
+  }
+  return value;
+}
+
+function expectCatalogPage<T>(
+  value: unknown,
+  validateItem: (value: unknown) => value is T,
+  responseName: string,
+): CatalogPage<T> {
+  if (!isRecord(value) || !Array.isArray(value["items"])) {
+    throw new ScopeDBError("Unexpected", `${responseName} has an invalid body`);
+  }
+  const items = value["items"];
+  if (!items.every(validateItem)) {
+    throw new ScopeDBError("Unexpected", `${responseName} has an invalid body`);
+  }
+  const nextPageToken = value["next_page_token"];
+  if (
+    nextPageToken !== undefined &&
+    nextPageToken !== null &&
+    typeof nextPageToken !== "string"
+  ) {
+    throw new ScopeDBError("Unexpected", `${responseName} has an invalid body`);
+  }
+  return {
+    items,
+    ...(typeof nextPageToken === "string"
+      ? { next_page_token: nextPageToken }
+      : {}),
+  };
+}
+
+function isDatabaseResource(value: unknown): value is DatabaseResource {
+  return isRecord(value) &&
+    typeof value["name"] === "string" &&
+    isNullableString(value["comment"]);
+}
+
+function isSchemaResource(value: unknown): value is SchemaResource {
+  return isRecord(value) &&
+    typeof value["database"] === "string" &&
+    typeof value["name"] === "string" &&
+    isNullableString(value["comment"]);
+}
+
+function isTableResourceSummary(value: unknown): value is TableResourceSummary {
+  return isRecord(value) &&
+    typeof value["database"] === "string" &&
+    typeof value["schema"] === "string" &&
+    typeof value["name"] === "string" &&
+    isNullableString(value["comment"]);
+}
+
+function isTableResource(value: unknown): value is TableResource {
+  if (!isRecord(value) || !isTableResourceSummary(value)) {
+    return false;
+  }
+  return (
+    Array.isArray(value["columns"]) &&
+    value["columns"].every(isTableColumnSpec) &&
+    isStringArray(value["partition_by"]) &&
+    isStringArray(value["cluster_by"]) &&
+    isTableDistinctSpec(value["distinct_on"]) &&
+    (value["data_retention_days"] === null ||
+      Number.isInteger(value["data_retention_days"]))
+  );
+}
+
+function isTableColumnSpec(value: unknown): value is TableColumnSpec {
+  return isRecord(value) &&
+    typeof value["name"] === "string" &&
+    isCanonicalDataType(value["data_type"]) &&
+    isNullableString(value["comment"]);
+}
+
+function isTableDistinctSpec(value: unknown): value is TableDistinctSpec {
+  return isRecord(value) &&
+    isStringArray(value["on"]) &&
+    isStringArray(value["by"]);
+}
+
+function isStatementStatus(value: unknown): value is StatementStatus {
+  if (
+    !isRecord(value) ||
+    typeof value["statement_id"] !== "string" ||
+    typeof value["created_at"] !== "string" ||
+    !isStatementProgress(value["progress"])
+  ) {
+    return false;
+  }
+
+  switch (value["status"]) {
+    case "pending":
+    case "running":
+      return true;
+    case "finished":
+      return isStatementResultSet(value["result_set"]);
+    case "failed":
+      return typeof value["message"] === "string" &&
+        (value["error"] === undefined || isStatementErrorDetails(value["error"]));
+    case "cancelled":
+      return typeof value["message"] === "string";
+    default:
+      return false;
+  }
+}
+
+const STATEMENT_PROGRESS_FIELDS = [
+  "total_percentage",
+  "nanos_from_submitted",
+  "nanos_from_started",
+  "total_stages",
+  "total_partitions",
+  "total_rows",
+  "total_compressed_bytes",
+  "total_uncompressed_bytes",
+  "scanned_stages",
+  "scanned_partitions",
+  "scanned_rows",
+  "scanned_compressed_bytes",
+  "scanned_uncompressed_bytes",
+  "skipped_partitions",
+  "skipped_rows",
+  "skipped_compressed_bytes",
+  "skipped_uncompressed_bytes",
+] as const;
+
+function isStatementProgress(value: unknown): boolean {
+  return isRecord(value) && STATEMENT_PROGRESS_FIELDS.every((field) =>
+    typeof value[field] === "number" && Number.isFinite(value[field])
+  );
+}
+
+function isStatementResultSet(value: unknown): value is StatementResultSet {
+  if (
+    !isRecord(value) ||
+    value["format"] !== "json" ||
+    !isRecord(value["metadata"]) ||
+    !Array.isArray(value["metadata"]["fields"]) ||
+    !value["metadata"]["fields"].every(isFieldSchemaPayload) ||
+    !Number.isSafeInteger(value["metadata"]["num_rows"]) ||
+    (value["metadata"]["num_rows"] as number) < 0 ||
+    !Array.isArray(value["rows"])
+  ) {
+    return false;
+  }
+  const fields = value["metadata"]["fields"];
+  const rows = value["rows"];
+  return rows.length === value["metadata"]["num_rows"] && rows.every((row) =>
+    Array.isArray(row) &&
+    row.length === fields.length &&
+    row.every((cell) => cell === null || typeof cell === "string")
+  );
+}
+
+function isFieldSchemaPayload(value: unknown): boolean {
+  return isRecord(value) &&
+    typeof value["name"] === "string" &&
+    isDataType(value["data_type"]);
+}
+
+function isStatementErrorDetails(value: unknown): value is StatementErrorDetails {
+  return isRecord(value) &&
+    typeof value["code"] === "string" &&
+    typeof value["message"] === "string";
+}
+
+function isStatementCancelResult(value: unknown): value is StatementCancelResult {
+  return isRecord(value) &&
+    typeof value["statement_id"] === "string" &&
+    typeof value["created_at"] === "string" &&
+    typeof value["message"] === "string" &&
+    (value["status"] === "finished" ||
+      value["status"] === "failed" ||
+      value["status"] === "cancelled");
+}
+
+function isIngestResult(value: unknown): value is IngestResult {
+  return isRecord(value) &&
+    Number.isSafeInteger(value["num_rows_inserted"]) &&
+    (value["num_rows_inserted"] as number) >= 0;
+}
+
+const DATA_TYPES = new Set<DataType>([
+  "int",
+  "uint",
+  "u_int",
+  "float",
+  "timestamp",
+  "interval",
+  "boolean",
+  "string",
+  "binary",
+  "array",
+  "object",
+  "any",
+  "null",
+]);
+
+function isDataType(value: unknown): value is DataType {
+  return typeof value === "string" && DATA_TYPES.has(value as DataType);
+}
+
+function isCanonicalDataType(
+  value: unknown,
+): value is Exclude<DataType, "u_int"> {
+  return isDataType(value) && value !== "u_int";
+}
+
+function isNullableString(value: unknown): value is string | null {
+  return value === null || typeof value === "string";
+}
+
+function isStringArray(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every((item) => typeof item === "string");
+}
+
+function countNDJSONRows(ndjson: string): number {
+  return ndjson.split("\n").filter((line) => line.trim().length > 0).length;
 }
 
 function isAppendRowsResult(value: unknown): value is AppendRowsResult {

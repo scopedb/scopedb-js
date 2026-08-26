@@ -26,10 +26,7 @@ const client = new Client(
   },
 );
 
-const handle = await client
-  .statement("SELECT 42 AS answer")
-  .withMaxParallelism(4)
-  .submit();
+const handle = await client.statement("SELECT 42 AS answer").submit();
 
 // lastStatus() is a synchronous local snapshot. status() requests the latest
 // remote state while the statement is active, and wait() polls to completion.

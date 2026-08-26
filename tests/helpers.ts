@@ -14,7 +14,12 @@
  * limitations under the License.
  */
 
-import type { StatementEstimatedProgress, StatementResultSet, StatementStatus } from "../src/protocol.js";
+import type {
+  StatementErrorDetails,
+  StatementEstimatedProgress,
+  StatementResultSet,
+  StatementStatus,
+} from "../src/protocol.js";
 import { gunzipSync } from "node:zlib";
 
 export type FetchCall = { url: string; init?: RequestInit };
@@ -121,8 +126,19 @@ export function finishedStatus(resultSet: StatementResultSet, statementId = "stm
   return { status: "finished", statement_id: statementId, created_at: "2024-01-01T00:00:00Z", progress: emptyProgress(), result_set: resultSet };
 }
 
-export function failedStatus(message: string, statementId = "stmt-1"): StatementStatus {
-  return { status: "failed", statement_id: statementId, created_at: "2024-01-01T00:00:00Z", progress: emptyProgress(), message };
+export function failedStatus(
+  message: string,
+  statementId = "stmt-1",
+  error?: StatementErrorDetails,
+): StatementStatus {
+  return {
+    status: "failed",
+    statement_id: statementId,
+    created_at: "2024-01-01T00:00:00Z",
+    progress: emptyProgress(),
+    message,
+    ...(error === undefined ? {} : { error }),
+  };
 }
 
 export function cancelledStatus(message: string, statementId = "stmt-1"): StatementStatus {

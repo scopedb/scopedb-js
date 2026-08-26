@@ -134,6 +134,7 @@ export class ResultSet {
   toObjects(options: IntoOptions = {}): Record<string, Value>[] {
     const integerMode = options.integerMode ?? "bigint";
     const fields = this.resultSchema.fields();
+    validateUniqueFieldNames(fields);
     return this.rows.map((row) => {
       if (row.length !== fields.length) {
         throw new ScopeDBError(
@@ -178,6 +179,7 @@ export class ResultSet {
       return null;
     }
     const fields = this.resultSchema.fields();
+    validateUniqueFieldNames(fields);
     if (row.length !== fields.length) {
       throw new ScopeDBError(
         "Unexpected",
@@ -201,6 +203,19 @@ export class ResultSet {
       resultSet.metadata.num_rows,
       resultSet.rows,
     );
+  }
+}
+
+function validateUniqueFieldNames(fields: readonly FieldSchema[]): void {
+  const names = new Set<string>();
+  for (const field of fields) {
+    if (names.has(field.name())) {
+      throw new ScopeDBError(
+        "Unexpected",
+        `cannot convert result to objects because column name ${JSON.stringify(field.name())} is duplicated; use toValues() instead`,
+      );
+    }
+    names.add(field.name());
   }
 }
 

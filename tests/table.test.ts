@@ -253,6 +253,24 @@ describe("Table.append", () => {
     );
   });
 
+  it("treats a committed response with the wrong row count as unknown", async () => {
+    const { fn } = makeFetchStub([
+      jsonResponse(200, { append_state: "committed", num_rows_inserted: 2 }),
+    ]);
+    const client = new Client("http://localhost:8080", { fetch: fn });
+
+    await assert.rejects(
+      () => client.table("events").append('{"id":1}'),
+      (error: unknown) => {
+        assert.ok(error instanceof AppendRowsError);
+        assert.equal(error.appendState, "unknown");
+        assert.ok(error.isPersistent());
+        assert.match(error.message, /2 inserted rows for a 1-row request/);
+        return true;
+      },
+    );
+  });
+
   it("preserves response metadata when a successful append body is malformed", async () => {
     const responses = [
       new Response("not-json", {

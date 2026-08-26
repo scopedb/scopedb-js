@@ -46,7 +46,6 @@ export type FetchOptions = WaitOptions;
 export class Statement {
   private statementIdValue?: string;
   private execTimeoutValue?: string;
-  private maxParallelismValue?: number;
   private readonly format: ResultFormat = "json";
 
   constructor(
@@ -64,18 +63,12 @@ export class Statement {
     return this;
   }
 
-  withMaxParallelism(maxParallelism: number): this {
-    this.maxParallelismValue = maxParallelism;
-    return this;
-  }
-
   async submit(options: RequestOptions = {}): Promise<StatementHandle> {
     const status = await this.client.submitStatement(
       {
         statement: this.statementText,
         statement_id: this.statementIdValue,
         exec_timeout: this.execTimeoutValue,
-        max_parallelism: this.maxParallelismValue,
         format: this.format,
       },
       options,
@@ -161,6 +154,9 @@ export class StatementHandle {
         case "finished":
           return ResultSet.fromStatementResultSet(this.currentStatus.result_set);
         case "failed":
+          throw new ScopeDBError("StatementFailed", this.currentStatus.message, {
+            statementDetails: this.currentStatus.error,
+          });
         case "cancelled":
           throw new ScopeDBError("StatementFailed", this.currentStatus.message);
         case "pending":

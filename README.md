@@ -313,11 +313,15 @@ try {
       requestId: error.requestId,
       retryable: error.retryable,
       retryAfterMs: error.retryAfterMs,
+      statementDetails: error.statementDetails,
     });
   }
   throw error;
 }
 ```
+
+When a statement reaches the `failed` state, `statementDetails` preserves the
+server-provided `code`, `message`, and optional code-specific `details` object.
 
 ## CommonJS applications
 

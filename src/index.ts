@@ -57,6 +57,7 @@ export type {
   SchemaResource,
   StatementCancelResult,
   StatementEstimatedProgress,
+  StatementErrorDetails,
   StatementProgress,
   StatementStatus,
   StatementStatusCancelled,
