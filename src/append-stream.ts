@@ -24,6 +24,7 @@ import {
   PendingBytesClosedError,
   PendingBytesExceedsCapacityError,
   type PendingBytesReservation,
+  MAX_APPEND_BODY_BYTES,
   MAX_TIMER_MS,
   QUEUE_CLOSED,
   QUEUE_TIMEOUT,
@@ -36,7 +37,6 @@ import {
   throwIfAborted,
 } from "./stream-internals.js";
 
-const MAX_APPEND_BODY_BYTES = 8 * 1024 * 1024;
 const MAX_APPEND_ROWS = 200_000;
 const DEFAULT_BATCH_BYTES = MAX_APPEND_BODY_BYTES;
 const DEFAULT_FLUSH_INTERVAL_MS = 1_000;
@@ -932,7 +932,7 @@ export class AppendStream<Policy extends AppendFailurePolicy = "stop"> {
         ? undefined
         : AbortSignal.timeout(this.config.attemptTimeoutMs);
       try {
-        const result = await this.config.client.appendRowsCompressed(
+        const result = await this.config.client.appendRows(
           this.config.database,
           this.config.schema,
           this.config.table,

@@ -17,6 +17,7 @@
 import { ScopeDBError } from "./errors.js";
 
 export const MAX_TIMER_MS = 2_147_483_647;
+export const MAX_APPEND_BODY_BYTES = 8 * 1024 * 1024;
 
 export function positiveIntegerConfig(
   name: string,

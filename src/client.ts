@@ -34,6 +34,7 @@ import type {
 import type { ResultSet } from "./result.js";
 import { Statement, StatementHandle } from "./statement.js";
 import type { WaitOptions } from "./statement.js";
+import { MAX_APPEND_BODY_BYTES, byteLength } from "./stream-internals.js";
 import { Table, type TableOptions } from "./table.js";
 
 export interface RequestOptions {
@@ -332,7 +333,10 @@ export class Client {
     );
   }
 
-  /** @deprecated Use `client.table(name, location).append(ndjson)`. */
+  /**
+   * Appends at most 8 MiB of uncompressed newline-delimited JSON.
+   * @deprecated Use `client.table(name, location).append(ndjson)`.
+   */
   async appendRows(
     database: string,
     schema: string,
@@ -340,28 +344,30 @@ export class Client {
     ndjson: string,
     options: RequestOptions = {},
   ): Promise<AppendRowsResult> {
-    return this.sendAppendRows(database, schema, table, ndjson, undefined, options);
-  }
-
-  /** @internal */
-  async appendRowsCompressed(
-    database: string,
-    schema: string,
-    table: string,
-    ndjson: string,
-    options: RequestOptions = {},
-  ): Promise<AppendRowsResult> {
     options.signal?.throwIfAborted();
+    const uncompressedBytes = byteLength(ndjson);
+    if (uncompressedBytes > MAX_APPEND_BODY_BYTES) {
+      const message =
+        `append payload requires ${uncompressedBytes} bytes, exceeds the ${MAX_APPEND_BODY_BYTES}-byte append limit`;
+      throw new AppendRowsError(
+        {
+          message,
+          append_state: "rejected",
+          row_errors: [],
+          row_errors_truncated: false,
+        },
+        message,
+      );
+    }
     const { body } = await gzipJsonRequestBody(ndjson);
-    return this.sendAppendRows(database, schema, table, body, "gzip", options);
+    return this.sendAppendRows(database, schema, table, body, options);
   }
 
   private async sendAppendRows(
     database: string,
     schema: string,
     table: string,
-    body: string | ArrayBuffer,
-    contentEncoding: "gzip" | undefined,
+    body: ArrayBuffer,
     options: RequestOptions,
   ): Promise<AppendRowsResult> {
     // A request that has not started cannot have an ambiguous commit outcome.
@@ -380,10 +386,8 @@ export class Client {
     try {
       const headers = new Headers({
         "Content-Type": "application/x-ndjson",
+        "Content-Encoding": "gzip",
       });
-      if (contentEncoding !== undefined) {
-        headers.set("Content-Encoding", contentEncoding);
-      }
       const response = await this.request(url, {
         method: "POST",
         headers,

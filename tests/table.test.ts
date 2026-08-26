@@ -25,6 +25,7 @@ import {
   jsonResponse,
   makeFetchStub,
   parseJsonRequestBody,
+  requestBodyText,
 } from "./helpers.js";
 
 describe("Table.identifier — ScopeQL quoting", () => {
@@ -129,12 +130,11 @@ describe("Table.append", () => {
     );
     const init = call.init as RequestInit;
     assert.equal(init.method, "POST");
-    assert.equal(init.body, ndjson);
+    assert.equal(requestBodyText(init), ndjson);
     const headers = init.headers as Headers;
     assert.equal(headers.get("Content-Type"), "application/x-ndjson");
     assert.equal(headers.get("Accept"), "application/json");
-    assert.equal(headers.get("Content-Encoding"), null);
-    assert.equal(headers.get("X-ScopeDB-Uncompressed-Content-Length"), null);
+    assert.equal(headers.get("Content-Encoding"), "gzip");
   });
 
   it("uses the default database and schema", async () => {
@@ -166,6 +166,23 @@ describe("Table.append", () => {
       calls[0]!.url,
       "http://localhost:8080/v1/databases/analytics/schemas/logs/tables/events/rows",
     );
+  });
+
+  it("rejects an uncompressed NDJSON body over 8 MiB before sending", async () => {
+    const { fn, calls } = makeFetchStub([]);
+    const client = new Client("http://localhost:8080", { fetch: fn });
+    const oversized = "x".repeat(8 * 1024 * 1024 + 1);
+
+    await assert.rejects(
+      () => client.table("events").append(oversized),
+      (error: unknown) => {
+        assert.ok(error instanceof AppendRowsError);
+        assert.equal(error.appendState, "rejected");
+        assert.match(error.message, /8388608-byte append limit/);
+        return true;
+      },
+    );
+    assert.equal(calls.length, 0);
   });
 
   it("does not start an append when the signal is already aborted", async () => {
