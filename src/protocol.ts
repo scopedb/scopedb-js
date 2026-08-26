@@ -89,9 +89,19 @@ export interface StatementStatusFinished extends StatementStatusBase {
   result_set: StatementResultSet;
 }
 
+export interface StatementErrorDetails {
+  /** Stable machine-readable failure code. Unknown codes are preserved. */
+  code: string;
+  message: string;
+  /** Code-specific details returned by ScopeDB. */
+  details?: unknown;
+}
+
 export interface StatementStatusFailed extends StatementStatusBase {
   status: "failed";
   message: string;
+  /** Structured server failure, absent when talking to an older server. */
+  error?: StatementErrorDetails;
 }
 
 export interface StatementStatusCancelled extends StatementStatusBase {
@@ -110,7 +120,6 @@ export interface StatementRequest {
   statement: string;
   statement_id?: string;
   exec_timeout?: string;
-  max_parallelism?: number;
   format: ResultFormat;
 }
 

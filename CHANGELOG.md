@@ -2,10 +2,19 @@
 
 ## Unreleased
 
+### Breaking Changes
+
+- Removed the statement `maxParallelism` option. Execution timeout remains the
+  only exposed statement execution control.
+
 ### Changed
 
 - Direct caller-encoded table appends now use the same gzip compression and
   8 MiB uncompressed request limit as `AppendStream` batches.
+- Preserve structured failed-statement details, validate successful statement
+  and catalog responses at runtime, reject duplicate result column names in
+  object conversions, and treat committed append row-count mismatches as an
+  unknown commit outcome.
 
 ## 0.2.2 - 2026-08-22
 

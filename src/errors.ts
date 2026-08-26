@@ -14,7 +14,11 @@
  * limitations under the License.
  */
 
-import type { AppendRowError, AppendRowsErrorPayload } from "./protocol.js";
+import type {
+  AppendRowError,
+  AppendRowsErrorPayload,
+  StatementErrorDetails,
+} from "./protocol.js";
 
 export type ErrorKind =
   | "Unexpected"
@@ -34,6 +38,8 @@ export interface ScopeDBErrorOptions {
   requestId?: string;
   /** Delay suggested by `Retry-After`, in milliseconds. */
   retryAfterMs?: number;
+  /** Structured server failure for a failed statement. */
+  statementDetails?: StatementErrorDetails;
 }
 
 export class ScopeDBError extends Error {
@@ -41,6 +47,7 @@ export class ScopeDBError extends Error {
   readonly httpStatus?: number;
   readonly requestId?: string;
   readonly retryAfterMs?: number;
+  readonly statementDetails?: StatementErrorDetails;
   private errorStatus: ErrorStatus;
   private readonly errorContext: Map<string, string>;
 
@@ -55,6 +62,7 @@ export class ScopeDBError extends Error {
     this.httpStatus = options?.httpStatus;
     this.requestId = options?.requestId;
     this.retryAfterMs = options?.retryAfterMs;
+    this.statementDetails = options?.statementDetails;
     this.errorStatus = options?.status ?? "permanent";
     this.errorContext = new Map();
   }

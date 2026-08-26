@@ -78,6 +78,21 @@ describe("Client catalog API", () => {
     assert.equal(calls.length, 0);
   });
 
+  it("rejects malformed successful catalog responses", async () => {
+    const { fn } = makeFetchStub([jsonResponse(200, { items: [{}] })]);
+    const client = new Client("http://localhost:8080", { fetch: fn });
+
+    await assert.rejects(
+      () => client.listDatabases(),
+      (error: unknown) => {
+        assert.ok(error instanceof ScopeDBError);
+        assert.equal(error.kind, "Unexpected");
+        assert.match(error.message, /invalid body/);
+        return true;
+      },
+    );
+  });
+
   it("fetches a database and encodes its name as one path segment", async () => {
     const database = { name: "analytics/raw", comment: null };
     const { fn, calls } = makeFetchStub([jsonResponse(200, database)]);

@@ -55,13 +55,12 @@ describe("Statement.submit", () => {
       .statement("SELECT 1")
       .withStatementId("custom-id")
       .withExecTimeout("60s")
-      .withMaxParallelism(8)
       .submit();
 
     const body = parseJsonRequestBody(calls[0]!.init) as Record<string, unknown>;
     assert.equal(body["statement_id"], "custom-id");
     assert.equal(body["exec_timeout"], "60s");
-    assert.equal(body["max_parallelism"], 8);
+    assert.equal(body["max_parallelism"], undefined);
     assert.equal(body["format"], "json");
   });
 });
@@ -187,7 +186,14 @@ describe("StatementHandle.wait", () => {
   });
 
   it("throws ScopeDBError when statement fails with in-band status", async () => {
-    const { fn } = makeFetchStub([jsonResponse(200, failedStatus("query error"))]);
+    const details = {
+      code: "row_limit_exceeded",
+      message: "query returned too many rows",
+      details: { total_rows: 101, max_total_rows: 100 },
+    };
+    const { fn } = makeFetchStub([
+      jsonResponse(200, failedStatus("query error", "stmt-1", details)),
+    ]);
     const client = new Client("http://localhost:8080", { fetch: fn });
     const handle = new StatementHandle(client, "stmt-1");
 
@@ -197,9 +203,27 @@ describe("StatementHandle.wait", () => {
         assert.ok(err instanceof ScopeDBError);
         assert.equal(err.kind, "StatementFailed");
         assert.ok(err.message.includes("query error"), `message was: ${err.message}`);
+        assert.deepEqual(err.statementDetails, details);
         return true;
       },
     );
+  });
+
+  it("rejects an unknown statement status instead of polling again", async () => {
+    const malformed = { ...pendingStatus(), status: "paused" };
+    const { fn, calls } = makeFetchStub([jsonResponse(200, malformed)]);
+    const client = new Client("http://localhost:8080", { fetch: fn });
+    const handle = new StatementHandle(client, "stmt-1");
+
+    await assert.rejects(
+      () => handle.wait(noDelay),
+      (error: unknown) => {
+        assert.ok(error instanceof ScopeDBError);
+        assert.match(error.message, /statement response has an invalid body/);
+        return true;
+      },
+    );
+    assert.equal(calls.length, 1);
   });
 
   it("throws ScopeDBError when statement is cancelled with in-band status", async () => {
