@@ -9,6 +9,9 @@
 
 ### Changed
 
+- `IngestStream` now closes admission synchronously during idempotent shutdown,
+  flushes from the first-row deadline under continuous traffic, and seals a
+  batch before the next record would exceed its target size.
 - Direct caller-encoded table appends now use the same gzip compression and
   8 MiB uncompressed request limit as `AppendStream` batches.
 - Preserve structured failed-statement details, validate successful statement
