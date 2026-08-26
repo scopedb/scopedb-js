@@ -168,6 +168,8 @@ export class IngestStreamBuilder {
 
 export class IngestStream {
   private fatal: FatalState | null = null;
+  private accepting = true;
+  private shutdownOperation: Promise<IngestResult | null> | undefined;
   private readonly queue: AsyncBoundedQueue<BatchCommand>;
   private readonly pendingBytes: PendingBytesBudget;
   private readonly task: Promise<void>;
@@ -188,7 +190,7 @@ export class IngestStream {
 
   /** Enqueues a single record for batched ingestion. Blocks when backpressure is applied. */
   async send(record: unknown): Promise<void> {
-    this.checkFatal();
+    this.checkUsable();
     const payload = serializeRecord(record);
     const payloadBytes = byteLength(payload);
     const bytes = payloadBytes + 1; // +1 for newline separator
@@ -198,6 +200,11 @@ export class IngestStream {
       reservation = await this.pendingBytes.acquire(bytes);
     } catch (cause) {
       throw this.mapPendingBytesError(cause, bytes);
+    }
+
+    if (!this.accepting || this.fatal !== null) {
+      reservation.release();
+      throw this.closedOrFatalError();
     }
 
     try {
@@ -222,7 +229,7 @@ export class IngestStream {
    * Returns the ingest result for the flushed batch, or `null` if there was nothing to flush.
    */
   async flush(): Promise<IngestResult | null> {
-    this.checkFatal();
+    this.checkUsable();
     const ack = new Deferred<IngestResult | null>();
     try {
       await this.queue.send({ type: "flush", ack });
@@ -240,7 +247,16 @@ export class IngestStream {
    *
    * Returns the ingest result for the final batch, or `null` if there were no pending records.
    */
-  async shutdown(): Promise<IngestResult | null> {
+  shutdown(): Promise<IngestResult | null> {
+    if (this.shutdownOperation === undefined) {
+      this.accepting = false;
+      this.pendingBytes.close();
+      this.shutdownOperation = this.shutdownInner();
+    }
+    return this.shutdownOperation;
+  }
+
+  private async shutdownInner(): Promise<IngestResult | null> {
     const ack = new Deferred<IngestResult | null>();
     try {
       await this.queue.send({ type: "shutdown", ack });
@@ -255,18 +271,34 @@ export class IngestStream {
   private async runWorker(): Promise<void> {
     const rows: BufferedRecord[] = [];
     let currentBytes = 0;
+    let batchDeadlineMs: number | null = null;
+    const resetBatch = () => {
+      currentBytes = 0;
+      batchDeadlineMs = null;
+    };
 
     try {
       for (;;) {
-        const command = await this.queue.receive(this.flushIntervalMs);
+        const timeoutMs = batchDeadlineMs === null
+          ? -1
+          : Math.max(0, batchDeadlineMs - Date.now());
+        if (timeoutMs === 0) {
+          try {
+            await this.flushPending(rows, resetBatch);
+          } catch (cause) {
+            this.setFatal(asFatalState(cause));
+            break;
+          }
+          continue;
+        }
+
+        const command = await this.queue.receive(timeoutMs);
         if (command === QUEUE_TIMEOUT) {
           if (rows.length === 0) {
             continue;
           }
           try {
-            await this.flushPending(rows, () => {
-              currentBytes = 0;
-            });
+            await this.flushPending(rows, resetBatch);
           } catch (cause) {
             this.setFatal(asFatalState(cause));
             break;
@@ -276,9 +308,7 @@ export class IngestStream {
 
         if (command === QUEUE_CLOSED) {
           try {
-            await this.flushPending(rows, () => {
-              currentBytes = 0;
-            });
+            await this.flushPending(rows, resetBatch);
           } catch (cause) {
             this.setFatal(asFatalState(cause));
           }
@@ -287,7 +317,24 @@ export class IngestStream {
 
         switch (command.type) {
           case "record":
-            if (rows.length > 0) {
+            if (
+              rows.length > 0 &&
+              currentBytes + 1 + command.record.bytes > this.batchBytes
+            ) {
+              try {
+                // The current record has already been dequeued, so retry merging
+                // must not pull later records ahead of it.
+                await this.flushPending(rows, resetBatch, false);
+              } catch (cause) {
+                command.record.reservation.release();
+                this.setFatal(asFatalState(cause));
+                return;
+              }
+            }
+
+            if (rows.length === 0) {
+              batchDeadlineMs = Date.now() + this.flushIntervalMs;
+            } else {
               currentBytes += 1;
             }
             currentBytes += command.record.bytes;
@@ -295,9 +342,7 @@ export class IngestStream {
 
             if (currentBytes >= this.batchBytes) {
               try {
-                await this.flushPending(rows, () => {
-                  currentBytes = 0;
-                });
+                await this.flushPending(rows, resetBatch);
               } catch (cause) {
                 this.setFatal(asFatalState(cause));
                 return;
@@ -306,9 +351,7 @@ export class IngestStream {
             break;
           case "flush":
             try {
-              command.ack.resolve(await this.flushPending(rows, () => {
-                currentBytes = 0;
-              }));
+              command.ack.resolve(await this.flushPending(rows, resetBatch));
             } catch (cause) {
               const error = asScopeDBError(cause);
               this.setFatal(asFatalState(error));
@@ -318,9 +361,7 @@ export class IngestStream {
             break;
           case "shutdown":
             try {
-              command.ack.resolve(await this.flushPending(rows, () => {
-                currentBytes = 0;
-              }));
+              command.ack.resolve(await this.flushPending(rows, resetBatch));
             } catch (cause) {
               const error = asScopeDBError(cause);
               this.setFatal(asFatalState(error));
@@ -332,6 +373,7 @@ export class IngestStream {
     } finally {
       this.queue.close();
       this.pendingBytes.close();
+      this.accepting = false;
       releaseRows(rows);
       this.drainQueued();
     }
@@ -340,6 +382,7 @@ export class IngestStream {
   private async flushPending(
     rows: BufferedRecord[],
     onSuccess: () => void,
+    mergeQueued = true,
   ): Promise<IngestResult | null> {
     if (rows.length === 0) {
       return null;
@@ -364,7 +407,9 @@ export class IngestStream {
           if (backoffMs > 0) {
             await sleep(backoffMs);
           }
-          const merged = this.mergeQueuedRecords(rows, payloadBytes);
+          const merged = mergeQueued
+            ? this.mergeQueuedRecords(rows, payloadBytes)
+            : 0;
           if (merged > 0) {
             payload = rows.map((row) => row.payload).join("\n");
             payloadBytes = byteLength(payload);
@@ -407,6 +452,8 @@ export class IngestStream {
   private setFatal(fatal: FatalState): void {
     if (this.fatal === null) {
       this.fatal = fatal;
+      this.accepting = false;
+      this.pendingBytes.close();
     }
   }
 
@@ -428,6 +475,13 @@ export class IngestStream {
   private checkFatal(): void {
     if (this.fatal !== null) {
       throw fatalToError(this.fatal);
+    }
+  }
+
+  private checkUsable(): void {
+    this.checkFatal();
+    if (!this.accepting) {
+      throw this.closedOrFatalError();
     }
   }
 

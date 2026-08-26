@@ -27,6 +27,18 @@ function makeClient(responses: Response[]): { client: Client; calls: Array<{ url
   return { client: new Client("http://localhost:8080", { fetch: fn }), calls };
 }
 
+function makeSuccessfulClient(): {
+  client: Client;
+  calls: Array<{ url: string; init?: RequestInit }>;
+} {
+  const calls: Array<{ url: string; init?: RequestInit }> = [];
+  const fetch: typeof globalThis.fetch = async (input, init) => {
+    calls.push({ url: input.toString(), init });
+    return ingestOk(parseIngestRows(init).length);
+  };
+  return { client: new Client("http://localhost:8080", { fetch }), calls };
+}
+
 function ingestOk(numRows = 1): Response {
   return jsonResponse(200, { num_rows_inserted: numRows });
 }
@@ -102,6 +114,33 @@ describe("IngestStream basic send + flush", () => {
     await stream.shutdown();
     assert.equal(calls.length, 0);
   });
+
+  it("closes admission synchronously and makes shutdown idempotent", async () => {
+    const calls: Array<{ url: string; init?: RequestInit }> = [];
+    let releaseResponse!: () => void;
+    const responseGate = new Promise<void>((resolve) => {
+      releaseResponse = resolve;
+    });
+    const fetch: typeof globalThis.fetch = async (input, init) => {
+      calls.push({ url: input.toString(), init });
+      await responseGate;
+      return ingestOk(parseIngestRows(init).length);
+    };
+    const client = new Client("http://localhost:8080", { fetch });
+    const stream = client.ingestStream(TRANSFORM).build();
+
+    await stream.send({ id: 1 });
+    const first = stream.shutdown();
+    const second = stream.shutdown();
+    assert.equal(first, second);
+    await waitForCallCount(calls, 1);
+
+    await assert.rejects(() => stream.send({ id: 2 }), /ingest stream is closed/);
+    releaseResponse();
+    assert.equal((await first)?.num_rows_inserted, 1);
+    assert.equal((await second)?.num_rows_inserted, 1);
+    assert.deepEqual(parseIngestRows(calls[0]!.init), [{ id: 1 }]);
+  });
 });
 
 describe("IngestStream batching", () => {
@@ -139,6 +178,25 @@ describe("IngestStream batching", () => {
     assert.ok(calls.length >= 1, `expected at least 1 ingest call, got ${calls.length}`);
   });
 
+  it("seals a batch before the next record would exceed the target", async () => {
+    const first = { id: 1 };
+    const second = { id: 2 };
+    const targetBytes = Buffer.byteLength(JSON.stringify(first), "utf8") + 1;
+    const { client, calls } = makeSuccessfulClient();
+    const stream = client.ingestStream(TRANSFORM)
+      .batchBytes(targetBytes)
+      .flushInterval(60_000)
+      .build();
+
+    await stream.send(first);
+    await stream.send(second);
+    await stream.shutdown();
+
+    assert.equal(calls.length, 2);
+    assert.deepEqual(parseIngestRows(calls[0]!.init), [first]);
+    assert.deepEqual(parseIngestRows(calls[1]!.init), [second]);
+  });
+
   it("flush interval triggers background flush", async () => {
     // Set a short flush interval; after waiting, the worker should flush
     const { client, calls } = makeClient([ingestOk(1)]);
@@ -155,6 +213,29 @@ describe("IngestStream batching", () => {
     // The background timer should have flushed the record already
     assert.ok(calls.length >= 1, `expected timer flush, got ${calls.length} calls`);
 
+    await stream.shutdown();
+  });
+
+  it("flushes by the first-row deadline while records keep arriving", async () => {
+    const { client, calls } = makeSuccessfulClient();
+    const flushIntervalMs = 30;
+    const stream = client.ingestStream(TRANSFORM)
+      .batchBytes(1024 * 1024)
+      .flushInterval(flushIntervalMs)
+      .build();
+
+    let producerDone = false;
+    const producer = (async () => {
+      for (let id = 0; id < 20; id += 1) {
+        await stream.send({ id });
+        await new Promise<void>((resolve) => setTimeout(resolve, 5));
+      }
+      producerDone = true;
+    })();
+
+    await waitForCallCount(calls, 1);
+    assert.equal(producerDone, false, "first batch was not dispatched while producing");
+    await producer;
     await stream.shutdown();
   });
 });
