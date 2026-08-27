@@ -45,17 +45,21 @@ pnpm test
 pnpm run check
 pnpm run smoke:runtime
 pnpm run smoke:web-runtime
+pnpm run smoke:frameworks
 pnpm pack --dry-run
 ```
 
 `prepack` runs the unit, type, example, and package-entry checks. CI repeats the
-runtime smoke test on Node.js 20, 22, 24, and Bun. Framework consumers
-should additionally build the checked-in Next.js and Worker templates from the
-packed tarball.
+runtime smoke test on Node.js 20, 22, 24, and Bun. The framework smoke check
+packs the built SDK, installs only that tarball into a clean locked consumer,
+then builds and runs the checked-in Next.js and Worker templates against a
+local mock ScopeDB server.
 
 The fast `smoke:web-runtime` check only removes Node's `Buffer`; it is not a
-substitute for workerd. Until packed Next.js and Wrangler consumers run in CI,
-every release candidate must run those two fresh-consumer checks explicitly.
+substitute for workerd. `smoke:frameworks` starts a real Next.js production
+server and a real Wrangler/workerd process without `nodejs_compat`. It verifies
+query, direct append, append-stream batching, API-key propagation, application
+write authorization, and request-size rejection over HTTP.
 
 Generated `dist/`, `dist-test/`, `node_modules/`, and tarball files are not
 committed.
