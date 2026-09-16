@@ -38,7 +38,7 @@ import {
 } from "./stream-internals.js";
 
 const MAX_APPEND_ROWS = 200_000;
-const DEFAULT_BATCH_BYTES = MAX_APPEND_BODY_BYTES;
+const DEFAULT_BATCH_BYTES = 4 * 1024 * 1024;
 const DEFAULT_FLUSH_INTERVAL_MS = 1_000;
 const DEFAULT_CHANNEL_CAPACITY = 1024;
 const DEFAULT_MAX_IN_FLIGHT_REQUESTS = 4;
@@ -269,7 +269,8 @@ export class AppendStreamBuilder<
   }
 
   /**
-   * Target NDJSON payload size. A single row may exceed it, up to 8 MiB.
+   * Target NDJSON payload size (default 4 MiB, maximum 8 MiB).
+   * A single row may exceed the target, up to 8 MiB.
    * @deprecated Use `targetBatchBytes()`.
    */
   batchBytes(batchBytes: number): this {
@@ -281,7 +282,10 @@ export class AppendStreamBuilder<
     return this;
   }
 
-  /** Target NDJSON payload size. A single row may exceed it, up to 8 MiB. */
+  /**
+   * Target NDJSON payload size (default 4 MiB, maximum 8 MiB).
+   * A single row may exceed the target, up to 8 MiB.
+   */
   targetBatchBytes(targetBatchBytes: number): this {
     this.currentBatchBytes = positiveIntegerConfig(
       "targetBatchBytes",

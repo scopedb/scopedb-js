@@ -9,6 +9,8 @@
 
 ### Changed
 
+- `AppendStream` now targets 4 MiB per batch by default; the maximum
+  configurable target and uncompressed request limit remain 8 MiB.
 - `IngestStream` now closes admission synchronously during idempotent shutdown,
   flushes from the first-row deadline under continuous traffic, and seals a
   batch before the next record would exceed its target size.
