@@ -260,6 +260,10 @@ rows are not rolled back and may already have been dispatched. Call
 `shutdown()` when the accepted prefix should still commit; there is no
 transactional stream-wide abort or rollback.
 
+`AppendStream` targets 4 MiB of uncompressed NDJSON per batch by default. Set
+`targetBatchBytes` to customize the target, up to 8 MiB. A single row may exceed
+the target but must fit within the 8 MiB request limit.
+
 The default number of concurrent batches is 4. Set
 `.maxConcurrentBatches(1)` when batches must be submitted serially; concurrent
 batches do not have a defined commit order. Every table append request is

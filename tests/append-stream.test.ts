@@ -67,6 +67,27 @@ function parseAppendRows(call: FetchCall): unknown[] {
 }
 
 describe("AppendStream batching and barriers", () => {
+  for (const target of [undefined, 8 * 1024 * 1024]) {
+    it(`uses ${target ?? "the default 4 MiB"} append batch target`, async () => {
+      const { table, calls } = makeTable(
+        target === undefined ? [appendOk(1), appendOk(1)] : [appendOk(2)],
+      );
+      const builder = table.appendStream()
+        .flushInterval(60_000)
+        .maxConcurrentBatches(1);
+      if (target !== undefined) builder.targetBatchBytes(target);
+      const stream = builder.build();
+      const row = { payload: "x".repeat(2 * 1024 * 1024) };
+      await stream.send(row);
+      await stream.send(row);
+      await stream.shutdown();
+      assert.deepEqual(
+        calls.map((call) => parseAppendRows(call).length),
+        target === undefined ? [1, 1] : [2],
+      );
+    });
+  }
+
   it("batches records and aggregates results between flush barriers", async () => {
     const { table, calls } = makeTable([appendOk(3)]);
     const stream = table.appendStream().batchBytes(1024).build();
