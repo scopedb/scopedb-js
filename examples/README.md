@@ -100,7 +100,7 @@ file so its lifecycle or durability contract stays with the implementation.
 | Template | Requires | Delivery model |
 | --- | --- | --- |
 | [`templates/serverless.ts`](templates/serverless.ts) | Web-standard `Request`/`Response` and a `waitUntil()` hook | Module-level best-effort stream with lifecycle-backed barriers |
-| [`templates/audit-outbox.ts`](templates/audit-outbox.ts) | An application-owned transactional outbox | One immutable durable attempt per HTTP request, with crash-safe reconciliation |
+| [`templates/audit-outbox.ts`](templates/audit-outbox.ts) | An application-owned transactional outbox | Caller-owned source intervals with committed checkpoints and at-least-once replay |
 
 ## Framework and runtime templates
 
@@ -132,7 +132,7 @@ not make the destination automatically idempotent.
   `AppendDeliveryReport`.
 - The stream retries only the exact temporary HTTP batch explicitly marked
   `rejected`; never infer that an entire stream or source is safe to rerun.
-- A timeout or transport failure is `unknown`; do not blindly replay it.
+- A timeout or transport failure is `unknown`; transient outcomes are retried and may produce duplicates.
 - `shutdown()` permanently closes the stream after settling the accepted
   prefix. It is not an abort or rollback.
 - Stop and join producer tasks before shutdown.

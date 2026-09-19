@@ -9,6 +9,11 @@
 
 ### Changed
 
+- Append streams retry transient unknown outcomes with bounded elapsed time and
+  jitter, honor Retry-After as a lower bound, and default every attempt to 30 seconds.
+  Replays may duplicate committed rows; `rejectedOnly()` keeps the previous policy.
+- Failed-stream flush waits now honor cancellation while requests finish settling.
+
 - `AppendStream` now targets 4 MiB per batch by default; the maximum
   configurable target and uncompressed request limit remain 8 MiB.
 - `IngestStream` now closes admission synchronously during idempotent shutdown,

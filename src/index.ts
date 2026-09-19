@@ -24,7 +24,7 @@ export type {
   TableCatalogListOptions,
   TableReference,
 } from "./client.js";
-export { AppendStream, AppendStreamBuilder } from "./append-stream.js";
+export { AppendStream, AppendStreamBuilder, AppendRetryExhaustedError } from "./append-stream.js";
 export type {
   AppendAdmissionResult,
   AppendBarrierResult,

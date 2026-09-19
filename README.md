@@ -200,22 +200,24 @@ fatal stream failure prevented from being delivered; ambiguous outcomes remain
 separate in `unknownRows`. `outcome` is `"partial"` when at least one row
 committed but others were lost or remain unknown. With no committed rows it is
 `"unknown"` if any batch may have committed, otherwise `"failed"`; only a
-loss-free report is `"ok"`. Never blindly replay an `"unknown"` report. In every
+loss-free report is `"ok"`. Replaying an `"unknown"` report may insert duplicates. In every
 completed report:
 
 ```text
 acceptedRows = committedRows + failedRows + unknownRows
 ```
 
-The stream automatically retries only the exact HTTP batch when its temporary
-error is explicitly marked `append_state: "rejected"`. That does not make the
-whole stream or source safe to replay: other concurrent batches may already be
-committed. A transport error or attempt timeout is `unknown`; the SDK reports
-that batch without retrying it, then continue mode can process later batches.
-Continue mode releases a failed batch after reporting it; it is not an in-memory
-retry queue. Use an external spool/outbox when the payload must remain available
-for replay or reconciliation. Safe retries honor `Retry-After`, capped by the
-configured maximum backoff.
+The stream retries transient failures, including unknown commit outcomes. Delivery
+is at least once and may produce duplicates. Defaults are eight retries, jittered
+100 ms–5 s backoff, a 30-second attempt timeout, and a five-minute batch budget.
+`Retry-After` is a lower bound. Configure `maxRetries()`, `maxElapsedTimeMs()`,
+and `attemptTimeoutMs()`; `maxRetries(0)` disables retries, and `rejectedOnly()`
+retains the previous retry policy. Exhaustion throws `AppendRetryExhaustedError`.
+
+Keep source data until a successful stop-mode barrier. On failure, settle the old
+stream with `shutdown()` and replay the unconfirmed source interval through a new
+stream. Use a durable source or outbox for crash recovery; the SDK does not retain
+failed payloads. Continue mode is best effort.
 
 ### Choose a delivery path
 
@@ -226,7 +228,7 @@ configured maximum backoff.
 | Backfill or file import | Bounded backpressure and concurrent strict batches | [`bulk-import.ts`](examples/patterns/bulk-import.ts) |
 | Long-running logs and events | Continue-mode stream with observable loss | [`telemetry.ts`](examples/patterns/telemetry.ts) |
 | Fetch-style Serverless | Warm stream settled through a lifecycle hook | [`serverless.ts`](examples/templates/serverless.ts) |
-| Durable audit records | One durable attempt per request; ambiguous commits require reconciliation | [`audit-outbox.ts`](examples/templates/audit-outbox.ts) |
+| Durable audit records | Caller-owned source interval; checkpoint after committed delivery | [`audit-outbox.ts`](examples/templates/audit-outbox.ts) |
 
 For long-running telemetry, `trySend()` attempts local admission without
 waiting; a `true` result still does not mean a remote commit. A `false` result
@@ -240,13 +242,9 @@ as `waitUntil()`; a per-attempt `attemptTimeoutMs()` does not bound the whole
 barrier or a shared backlog. A report from a module-level stream can cover
 concurrent invocations, so it is not an attribution receipt for one event.
 
-For audit data, an in-memory stream is not a durable queue and stable IDs do not
-automatically provide idempotency. One durable outbox checkpoint should map to
-one size-validated NDJSON request unless the application stores per-request
-receipts. An `unknown` result may already have committed and must not be blindly
-replayed. Persist `READY -> ATTEMPTING` before the request; after a crash, route
-an incomplete `ATTEMPTING` record to reconciliation instead of appending it
-again.
+For audit data, persist the source interval before sending and advance its
+checkpoint only after a successful stop-mode barrier. Restart replays the
+unconfirmed interval, which can duplicate events already committed.
 
 An `AbortSignal` passed to `send()` or `sendAll()` cancels only rows still
 waiting for local admission. Already accepted rows remain in the stream. For
@@ -274,8 +272,7 @@ Remote append failures and ambiguous commit outcomes throw `AppendRowsError`.
 Its `appendState`, `rowErrors`, and `rowErrorsTruncated` fields preserve the
 structured response. An `appendState` of `"unknown"` means the commit outcome
 cannot be determined; retrying the same payload may insert duplicates. The
-stream retries only the exact temporary HTTP batch that the server explicitly
-marks as `"rejected"`.
+stream retries transient unknown outcomes as well as explicit temporary rejections.
 
 ## Browse the Catalog
 
