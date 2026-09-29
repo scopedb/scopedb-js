@@ -145,7 +145,6 @@ interface RetryConfig {
   initialBackoffMs: number;
   maxBackoffMs: number;
   maxElapsedTimeMs: number;
-  rejectedOnly: boolean;
 }
 
 interface AppendStreamConfig<Policy extends AppendFailurePolicy> {
@@ -243,7 +242,6 @@ export class AppendStreamBuilder<
     initialBackoffMs: DEFAULT_INITIAL_BACKOFF_MS,
     maxBackoffMs: DEFAULT_MAX_BACKOFF_MS,
     maxElapsedTimeMs: 300_000,
-    rejectedOnly: false,
   };
 
   /** @internal */
@@ -394,15 +392,6 @@ export class AppendStreamBuilder<
     this.currentRetry.maxElapsedTimeMs = positiveIntegerConfig(
       "maxElapsedTimeMs", maxElapsedTimeMs, MAX_TIMER_MS,
     );
-    return this;
-  }
-
-  /** Retry only explicit temporary rejections instead of transient unknown outcomes. */
-  rejectedOnly(rejectedOnly = true): this {
-    if (typeof rejectedOnly !== "boolean") {
-      throw configError("rejectedOnly must be a boolean");
-    }
-    this.currentRetry.rejectedOnly = rejectedOnly;
     return this;
   }
 
@@ -1017,7 +1006,6 @@ export class AppendStream<Policy extends AppendFailurePolicy = "stop"> {
 
   private isRetryable(error: AppendRowsError): boolean {
     if (error.appendState === "rejected") return error.isTemporary();
-    if (this.config.retry.rejectedOnly) return false;
     const status = error.httpStatus ?? 0;
     return status === 0 || (status >= 200 && status < 300) ||
       status === 408 || status === 429 || status >= 500;

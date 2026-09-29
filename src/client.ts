@@ -677,7 +677,18 @@ function normalizeEndpoint(endpoint: string | URL): URL {
 }
 
 async function responseToError(response: Response): Promise<ScopeDBError> {
-  const body = await response.text();
+  const retryableByStatus = response.status === 408 || response.status === 429 ||
+    response.status >= 500;
+  let body: string;
+  try {
+    body = await response.text();
+  } catch (cause) {
+    return new ScopeDBError("Unexpected", "failed to read response body", {
+      cause,
+      ...responseMetadata(response),
+      status: retryableByStatus ? "temporary" : "permanent",
+    });
+  }
   let message = body.length > 0
     ? body
     : response.statusText || `HTTP ${response.status}`;
@@ -708,8 +719,7 @@ async function responseToError(response: Response): Promise<ScopeDBError> {
     // Retrying an append with an unknown commit outcome can insert duplicates.
     return error.setPersistent();
   }
-  const retryable = serverRetryable ??
-    (response.status === 408 || response.status === 429 || response.status >= 500);
+  const retryable = serverRetryable ?? retryableByStatus;
   if (retryable) {
     return error.setTemporary();
   }

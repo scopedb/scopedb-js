@@ -207,12 +207,18 @@ completed report:
 acceptedRows = committedRows + failedRows + unknownRows
 ```
 
+Barrier row counts describe logical input rows, not the number of stored copies.
+A committed retry settles the batch as committed, with no unknown rows, even
+when an earlier attempt may also have committed. A later rejected attempt cannot
+disprove an earlier unknown commit, so that batch remains unknown unless a retry
+confirms a commit.
+
 The stream retries transient failures, including unknown commit outcomes. Delivery
 is at least once and may produce duplicates. Defaults are eight retries, jittered
 100 ms–5 s backoff, a 30-second attempt timeout, and a five-minute batch budget.
 `Retry-After` is a lower bound. Configure `maxRetries()`, `maxElapsedTimeMs()`,
-and `attemptTimeoutMs()`; `maxRetries(0)` disables retries, and `rejectedOnly()`
-retains the previous retry policy. Exhaustion throws `AppendRetryExhaustedError`.
+and `attemptTimeoutMs()`; `maxRetries(0)` disables retries.
+Exhaustion throws `AppendRetryExhaustedError`.
 
 Keep source data until a successful stop-mode barrier. On failure, settle the old
 stream with `shutdown()` and replay the unconfirmed source interval through a new
@@ -273,6 +279,9 @@ Its `appendState`, `rowErrors`, and `rowErrorsTruncated` fields preserve the
 structured response. An `appendState` of `"unknown"` means the commit outcome
 cannot be determined; retrying the same payload may insert duplicates. The
 stream retries transient unknown outcomes as well as explicit temporary rejections.
+If an error response body cannot be read, the append outcome remains unknown.
+The SDK preserves its HTTP status, request ID, and `Retry-After` headers so
+stream retries still distinguish transient failures from permanent HTTP errors.
 
 ## Browse the Catalog
 

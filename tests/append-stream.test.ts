@@ -413,9 +413,9 @@ describe("AppendStream concurrency", () => {
 });
 
 describe("AppendStream retry safety", () => {
-  it("retries only an explicitly rejected temporary append with the same payload", async () => {
+  it("retries an explicitly rejected temporary append with the same payload", async () => {
     const { table, calls } = makeTable([appendRejected(), appendOk(1)]);
-    const stream = table.appendStream().rejectedOnly()
+    const stream = table.appendStream()
       .maxRetries(1)
       .initialBackoff(0)
       .maxBackoff(0)
@@ -434,7 +434,7 @@ describe("AppendStream retry safety", () => {
 
   it("safely retries an explicitly rejected append body timeout", async () => {
     const { table, calls } = makeTable([appendRejected(408), appendOk(1)]);
-    const stream = table.appendStream().rejectedOnly()
+    const stream = table.appendStream()
       .maxRetries(1)
       .initialBackoff(0)
       .build();
@@ -448,7 +448,7 @@ describe("AppendStream retry safety", () => {
     const rejected = appendRejected(429);
     rejected.headers.set("Retry-After", "0.02");
     const { table, calls } = makeTable([rejected, appendOk(1)]);
-    const stream = table.appendStream().rejectedOnly()
+    const stream = table.appendStream()
       .maxRetries(1)
       .initialBackoff(0)
       .maxBackoff(100)
@@ -463,8 +463,8 @@ describe("AppendStream retry safety", () => {
   });
 
   it("cancels another batch's retry delay when the stream becomes fatal", async () => {
-    const { table, calls } = makeTable([appendRejected(), appendUnknown()]);
-    const stream = table.appendStream().rejectedOnly()
+    const { table, calls } = makeTable([appendRejected(), appendRejected(422)]);
+    const stream = table.appendStream()
       .batchBytes(1)
       .maxInFlightRequests(2)
       .maxRetries(1)
@@ -485,37 +485,36 @@ describe("AppendStream retry safety", () => {
       "fatal append should interrupt another batch's retry backoff",
     );
     assert.equal(calls.length, 2);
-    assert.equal(stream.stats().failedRows, 1);
-    assert.equal(stream.stats().unknownRows, 1);
+    assert.equal(stream.stats().failedRows, 2);
+    assert.equal(stream.stats().unknownRows, 0);
     assert.equal(stream.stats().retries, 0);
     await assert.rejects(() => stream.shutdown(), AppendRowsError);
   });
 
-  it("does not retry an unknown outcome with rejectedOnly", async () => {
-    const { table, calls } = makeTable([appendUnknown()]);
-    const stream = table.appendStream().rejectedOnly()
-      .maxRetries(8)
+  it("retries a transient unknown outcome with the same payload by default", async () => {
+    const { table, calls } = makeTable([appendUnknown(), appendOk(1)]);
+    const stream = table.appendStream()
       .initialBackoff(0)
       .build();
 
     await stream.send({ id: 1 });
-    await assert.rejects(
-      () => stream.flush(),
-      (error: unknown) => {
-        assert.ok(error instanceof AppendRowsError);
-        assert.equal(error.appendState, "unknown");
-        assert.ok(error.isPersistent());
-        return true;
-      },
+    assert.equal((await stream.flush())?.num_rows_inserted, 1);
+    await stream.shutdown();
+
+    assert.equal(calls.length, 2);
+    assert.equal(
+      requestBodyText(calls[0]!.init),
+      requestBodyText(calls[1]!.init),
     );
-    await assert.rejects(() => stream.shutdown(), AppendRowsError);
-    assert.equal(calls.length, 1);
+    assert.equal(stream.stats().committedRows, 1);
+    assert.equal(stream.stats().unknownRows, 0);
+    assert.equal(stream.stats().retries, 1);
   });
 
-  it("treats an invalid success response as unknown and does not retry", async () => {
+  it("treats an invalid success response as unknown when retries are disabled", async () => {
     const { table, calls } = makeTable([jsonResponse(200, {})]);
-    const stream = table.appendStream().rejectedOnly()
-      .maxRetries(8)
+    const stream = table.appendStream()
+      .maxRetries(0)
       .initialBackoff(0)
       .build();
 
@@ -531,10 +530,10 @@ describe("AppendStream retry safety", () => {
     assert.equal(calls.length, 1);
   });
 
-  it("treats a transport failure as unknown and does not retry", async () => {
+  it("treats a transport failure as unknown when retries are disabled", async () => {
     const { table, calls } = makeTable([]);
-    const stream = table.appendStream().rejectedOnly()
-      .maxRetries(8)
+    const stream = table.appendStream()
+      .maxRetries(0)
       .initialBackoff(0)
       .build();
 
@@ -556,7 +555,7 @@ describe("AppendStream retry safety", () => {
     finalResponse.headers.set("X-Request-Id", "req-retry-exhausted");
     finalResponse.headers.set("Retry-After", "0");
     const { table, calls } = makeTable([appendRejected(), finalResponse]);
-    const stream = table.appendStream().rejectedOnly()
+    const stream = table.appendStream()
       .maxRetries(1)
       .initialBackoff(0)
       .maxBackoff(0)
@@ -581,7 +580,7 @@ describe("AppendStream retry safety", () => {
 
   it("stops before dispatching queued batches after a fatal append", async () => {
     const { table, calls } = makeTable([appendUnknown()]);
-    const stream = table.appendStream().rejectedOnly()
+    const stream = table.appendStream()
       .batchBytes(1)
       .maxInFlightRequests(1)
       .maxRetries(0)
@@ -978,7 +977,7 @@ describe("AppendStream best-effort delivery", () => {
     }
   });
 
-  it("does not retry an unknown batch but continues with a new batch", async () => {
+  it("continues with a new batch after an unknown outcome when retries are disabled", async () => {
     const errors: ScopeDBError[] = [];
     const { table, calls } = makeTable([appendUnknown(), appendOk(1)]);
     const stream = table.appendStream({ failurePolicy: "continue" })
@@ -987,7 +986,7 @@ describe("AppendStream best-effort delivery", () => {
       })
       .batchBytes(1)
       .maxInFlightRequests(1)
-      .maxRetries(8).rejectedOnly()
+      .maxRetries(0)
       .initialBackoff(0)
       .build();
 
@@ -1250,7 +1249,7 @@ describe("AppendStream best-effort delivery", () => {
     const { table, calls } = makeTable([appendOk(0)]);
     const stream = table.appendStream({ failurePolicy: "continue" })
       .batchBytes(1)
-      .maxRetries(8).rejectedOnly()
+      .maxRetries(0)
       .build();
 
     await stream.send({ id: 1 });
