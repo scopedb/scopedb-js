@@ -26,6 +26,12 @@
   object conversions, and treat committed append row-count mismatches as an
   unknown commit outcome.
 
+### Fixed
+
+- Preserve HTTP status, request ID, `Retry-After`, and the original cause when
+  reading an error response body fails. Append streams no longer retry known
+  authentication failures as transport failures in this case.
+
 ## 0.2.2 - 2026-08-22
 
 ### Changed
