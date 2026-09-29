@@ -1,8 +1,7 @@
 # ScopeDB JavaScript SDK examples
 
-Every example is self-contained and imports the public `scopedb` package entry.
-Start with a quickstart, then move to a production pattern only when its delivery
-tradeoffs match the workload.
+The runnable examples import the public `scopedb` package entry. Start with a
+quickstart, then choose an example for your application.
 
 The SDK is for trusted server-side code. Never expose `SCOPEDB_API_KEY` from a
 browser bundle or a Next.js Client Component.
@@ -30,9 +29,8 @@ These can run against a reachable ScopeDB server without modifying data.
 
 ## Before running a write example
 
-Write examples intentionally refuse to start without `SCOPEDB_TABLE`. Use a
-disposable, non-production table and do not point them at a production endpoint
-unless the writes are intentional.
+Write examples require `SCOPEDB_TABLE`. Create a table for the example and
+select it with this environment variable.
 
 The append, stream, telemetry, Serverless, and transform examples can share this
 superset schema:
@@ -70,37 +68,35 @@ $env:SCOPEDB_TABLE = "sdk_example_events"
 
 ## Append quickstarts
 
-Use these to learn the two basic write paths before copying a tuned pattern.
+Choose between sending an NDJSON string and letting the SDK batch objects:
 
 | Example | Choose it when | Run |
 | --- | --- | --- |
-| [`append.ts`](append.ts) | The caller already owns one exact NDJSON payload | `pnpm run example:append` |
-| [`append-stream.ts`](append-stream.ts) | The SDK should asynchronously batch object rows | `pnpm run example:append-stream` |
+| [`append.ts`](append.ts) | You already have an NDJSON string | `pnpm run example:append` |
+| [`append-stream.ts`](append-stream.ts) | You want to write JavaScript objects | `pnpm run example:append-stream` |
 
-`append.ts` sends exactly one request. `append-stream.ts` uses the default strict
-policy without tuning knobs: `sendAll()` waits only for local admission and
-does not confirm a remote commit, while a successful `shutdown()` confirms its
-accepted prefix committed.
+`append-stream.ts` uses default settings. It adds records with `sendAll()` and
+calls `shutdown()` to wait for writing to finish.
 
-## Runnable production patterns
+## More runnable examples
 
-These are complete demos but make workload-specific tradeoffs.
+These examples show common ways to write data:
 
-| Example | Workload | Important boundary | Run |
-| --- | --- | --- | --- |
-| [`patterns/bulk-import.ts`](patterns/bulk-import.ts) | Files and backfills | Bounded concurrency, but no durable resume or whole-job rollback | `pnpm run example:append-bulk` |
-| [`patterns/telemetry.ts`](patterns/telemetry.ts) | Long-running logs and events | Best effort; drops and remote loss are observable but payloads are not retained | `pnpm run example:append-telemetry` |
-| [`ingest-transform.ts`](ingest-transform.ts) | SQL transformation before insert | Uses the transform-oriented ingest API instead of table append | `pnpm run example:ingest-transform` |
+| Example | Use it for | Run |
+| --- | --- | --- |
+| [`patterns/bulk-import.ts`](patterns/bulk-import.ts) | Writing many records with `sendAll()` | `pnpm run example:append-bulk` |
+| [`patterns/telemetry.ts`](patterns/telemetry.ts) | Writing logs and events with a continue-mode stream | `pnpm run example:append-telemetry` |
+| [`ingest-transform.ts`](ingest-transform.ts) | Transforming JSON with ScopeQL before inserting it | `pnpm run example:ingest-transform` |
 
 ## Integration templates
 
-Templates are type-checked but are not directly executable. Copy the entire
-file so its lifecycle or durability contract stays with the implementation.
+Templates are type-checked but are not directly executable. Copy a template
+into your application and provide the integrations listed below.
 
-| Template | Requires | Delivery model |
+| Template | Requires | Shows |
 | --- | --- | --- |
-| [`templates/serverless.ts`](templates/serverless.ts) | Web-standard `Request`/`Response` and a `waitUntil()` hook | Module-level best-effort stream with lifecycle-backed barriers |
-| [`templates/audit-outbox.ts`](templates/audit-outbox.ts) | An application-owned transactional outbox | Caller-owned source intervals with committed checkpoints and at-least-once replay |
+| [`templates/serverless.ts`](templates/serverless.ts) | Web-standard `Request`/`Response` and a `waitUntil()` hook | Writing request events from an HTTP handler |
+| [`templates/audit-outbox.ts`](templates/audit-outbox.ts) | Implementations of `AuditOutbox.readUnconfirmed()` and `checkpoint()` | Sending saved records and updating the source checkpoint |
 
 ## Framework and runtime templates
 
@@ -113,31 +109,8 @@ surface as the runnable examples.
 | Cloudflare Workers | [`frameworks/cloudflare-worker/worker.ts`](frameworks/cloudflare-worker/worker.ts) | Uses Web APIs without `nodejs_compat`; configure both the ScopeDB key and the separate application write token as secrets |
 | Bun | Use any runnable ESM example | Install with `bun add scopedb`; no Bun-specific SDK surface is required |
 
-The framework POST templates require `APP_WRITE_TOKEN` in addition to the
-ScopeDB credential. It is a minimal application-level guard for the copyable
-example, not a replacement for your normal session, authorization, rate-limit,
-and abuse controls.
-
-For audit delivery, the outbox must persist `READY -> ATTEMPTING` before the
-network call. Crash recovery routes an incomplete `ATTEMPTING` record to
-reconciliation and never appends that same attempt again. Stable event IDs do
-not make the destination automatically idempotent.
-
-## Delivery contract
-
-- `send()`, `sendAll()`, and a `true` result from `trySend()` mean only that
-  local memory admitted the row; they do not mean the row committed remotely.
-- A successful strict barrier confirms its accepted prefix committed.
-- A continue-mode barrier is settlement; always inspect its
-  `AppendDeliveryReport`.
-- The stream retries only the exact temporary HTTP batch explicitly marked
-  `rejected`; never infer that an entire stream or source is safe to rerun.
-- A timeout or transport failure is `unknown`; transient outcomes are retried and may produce duplicates.
-- `shutdown()` permanently closes the stream after settling the accepted
-  prefix. It is not an abort or rollback.
-- Stop and join producer tasks before shutdown.
-- Use `sendAll()` rather than creating one Promise per row with `Promise.all()`.
-- An in-memory stream is not a durable queue; audit delivery needs an outbox.
+The framework POST templates require `APP_WRITE_TOKEN` for incoming requests,
+in addition to the ScopeDB credential used by the server.
 
 ## Developing the examples
 

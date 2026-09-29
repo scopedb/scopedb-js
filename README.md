@@ -125,163 +125,62 @@ const description = await table.describe();
 console.log(description.columns);
 ```
 
-## Streaming Writes with NDJSON
+## Append Rows
 
-The streaming write API accepts newline-delimited JSON. The table helper
-uses `scopedb` and `public` when the database or schema is not specified.
-The destination table must already exist. Use an explicit disposable table for
-the snippets before pointing any write path at production.
+Use an append stream to write JavaScript objects to an existing table. The
+SDK groups them into batches automatically. This example uses a table named
+`sdk_example_events` with `id int` and `name string` columns:
 
 ```ts
-import { Client } from "scopedb";
-
 const table = client.table("sdk_example_events", {
   database: "scopedb",
   schema: "public",
 });
+const stream = table.appendStream().build();
 
-const result = await table.append(
-  [
-    JSON.stringify({ id: 1, name: "first" }),
-    JSON.stringify({ id: 2, name: "second" }),
-  ].join("\n"),
-);
-
-console.log(result.num_rows_inserted);
-```
-
-For continuous producers, use the asynchronous append stream. It serializes
-each record as one NDJSON line, batches by size or time, applies byte-based
-backpressure, and sends a bounded number of append requests concurrently.
-
-```ts
-const stream = table
-  .appendStream()
-  .targetBatchBytes(4 * 1024 * 1024)
-  .maxBatchRows(10_000)
-  .flushIntervalMs(1_000)
-  .maxConcurrentBatches(4)
-  .maxBufferedBytes(64 * 1024 * 1024)
-  .build();
-
-const accepted = await stream.sendAll([
-  { id: 1, name: "first" },
+await stream.send({ id: 1, name: "first" });
+await stream.sendAll([
   { id: 2, name: "second" },
+  { id: 3, name: "third" },
 ]);
-console.log(accepted.acceptedRows);
 
-// A commit barrier for all rows accepted before flush().
-await stream.flush();
+// Optional: wait for the current writes while keeping the stream open.
+// await stream.flush();
 
-// Flushes remaining rows and waits for all in-flight requests. Repeated calls
-// return the same promise.
+// When finished, wait for remaining writes and close the stream.
 await stream.shutdown();
 ```
 
-`send()` waits only for local admission capacity; it does not wait for a remote
-commit. `sendAll()` consumes an iterable or async iterable one row at a time
-with the same admission backpressure. Avoid creating one promise per row with
-`Promise.all()`: those promises and their serialized rows can outgrow the
-stream's bounded buffer. `flush()` and `shutdown()` are the remote delivery
-barriers.
+`send()` and `sendAll()` add records to the SDK's pending writes. Call
+`shutdown()` when you are done sending to wait for writing to finish.
+`sendAll()` accepts an iterable or async iterable. Use `flush()` when you need
+to wait for the current writes and then continue using the stream.
 
-More precisely, a successful barrier in the default `"stop"` mode confirms
-that its accepted prefix committed. In `"continue"` mode it is a settlement
-barrier: inspect its report because some batches may be rejected, unknown, or
-dropped while later batches continue.
+### Continue after a failed batch
 
-The default `failurePolicy` is `"stop"`, which preserves fail-fast behavior
-and returns the existing `AppendRowsResult | null` from barriers. Best-effort
-telemetry must opt in when creating the stream with
-`.appendStream({ failurePolicy: "continue" })`. Its barriers return an
-`AppendDeliveryReport` with committed, failed, unknown, and locally dropped row
-counts. `failedRows` includes explicitly rejected rows and rows that a local
-fatal stream failure prevented from being delivered; ambiguous outcomes remain
-separate in `unknownRows`. `outcome` is `"partial"` when at least one row
-committed but others were lost or remain unknown. With no committed rows it is
-`"unknown"` if any batch may have committed, otherwise `"failed"`; only a
-loss-free report is `"ok"`. Replaying an `"unknown"` report may insert duplicates. In every
-completed report:
+To keep processing later batches when one fails, set `failurePolicy` to
+`"continue"` and check the report returned by `flush()` or `shutdown()`:
 
-```text
-acceptedRows = committedRows + failedRows + unknownRows
+```ts
+const stream = table.appendStream({ failurePolicy: "continue" }).build();
+
+await stream.sendAll([
+  { id: 4, name: "fourth" },
+  { id: 5, name: "fifth" },
+]);
+
+const report = await stream.shutdown();
+console.log(report);
 ```
 
-Barrier row counts describe logical input rows, not the number of stored copies.
-A committed retry settles the batch as committed, with no unknown rows, even
-when an earlier attempt may also have committed. A later rejected attempt cannot
-disprove an earlier unknown commit, so that batch remains unknown unless a retry
-confirms a commit.
+### Append an NDJSON string
 
-The stream retries transient failures, including unknown commit outcomes. Delivery
-is at least once and may produce duplicates. Defaults are eight retries, jittered
-100 ms–5 s backoff, a 30-second attempt timeout, and a five-minute batch budget.
-`Retry-After` is a lower bound. Configure `maxRetries()`, `maxElapsedTimeMs()`,
-and `attemptTimeoutMs()`; `maxRetries(0)` disables retries.
-Exhaustion throws `AppendRetryExhaustedError`.
+If you already have newline-delimited JSON, pass it to `table.append()`:
 
-Keep source data until a successful stop-mode barrier. On failure, settle the old
-stream with `shutdown()` and replay the unconfirmed source interval through a new
-stream. Use a durable source or outbox for crash recovery; the SDK does not retain
-failed payloads. Continue mode is best effort.
-
-### Choose a delivery path
-
-| Workload | Admission and delivery | Example |
-| --- | --- | --- |
-| One exact NDJSON payload | Caller owns request boundaries | [`append.ts`](examples/append.ts) |
-| Basic asynchronous batching | SDK owns batch boundaries; default strict barriers | [`append-stream.ts`](examples/append-stream.ts) |
-| Backfill or file import | Bounded backpressure and concurrent strict batches | [`bulk-import.ts`](examples/patterns/bulk-import.ts) |
-| Long-running logs and events | Continue-mode stream with observable loss | [`telemetry.ts`](examples/patterns/telemetry.ts) |
-| Fetch-style Serverless | Warm stream settled through a lifecycle hook | [`serverless.ts`](examples/templates/serverless.ts) |
-| Durable audit records | Caller-owned source interval; checkpoint after committed delivery | [`audit-outbox.ts`](examples/templates/audit-outbox.ts) |
-
-For long-running telemetry, `trySend()` attempts local admission without
-waiting; a `true` result still does not mean a remote commit. A `false` result
-can mean a full buffer, open circuit, invalid or oversized input, or a closed
-stream; `stats().droppedByReason` separates those causes. Continue mode's
-default circuit opens after five consecutive availability failures and probes
-again after 30 seconds. Its default attempt timeout is also 30 seconds.
-
-For Serverless, register the real `flush()` promise with a lifecycle hook such
-as `waitUntil()`; a per-attempt `attemptTimeoutMs()` does not bound the whole
-barrier or a shared backlog. A report from a module-level stream can cover
-concurrent invocations, so it is not an attribution receipt for one event.
-
-For audit data, persist the source interval before sending and advance its
-checkpoint only after a successful stop-mode barrier. Restart replays the
-unconfirmed interval, which can duplicate events already committed.
-
-An `AbortSignal` passed to `send()` or `sendAll()` cancels only rows still
-waiting for local admission. Already accepted rows remain in the stream. For
-`flush()` and `shutdown()`, aborting stops the caller's wait but does not cancel
-an in-flight append, because doing so would create another unknown outcome.
-Lifetime results remain available from `stats()`; the latest completed
-continue-mode barrier is also exposed as `stats().lastReport`.
-
-If `sendAll()` is cancelled or its input iterator throws, previously accepted
-rows are not rolled back and may already have been dispatched. Call
-`shutdown()` when the accepted prefix should still commit; there is no
-transactional stream-wide abort or rollback.
-
-`AppendStream` targets 4 MiB of uncompressed NDJSON per batch by default. Set
-`targetBatchBytes` to customize the target, up to 8 MiB. A single row may exceed
-the target but must fit within the 8 MiB request limit.
-
-The default number of concurrent batches is 4. Set
-`.maxConcurrentBatches(1)` when batches must be submitted serially; concurrent
-batches do not have a defined commit order. Every table append request is
-limited to 8 MiB of uncompressed NDJSON and 200,000 rows; `AppendStream` splits
-automatically at either limit.
-
-Remote append failures and ambiguous commit outcomes throw `AppendRowsError`.
-Its `appendState`, `rowErrors`, and `rowErrorsTruncated` fields preserve the
-structured response. An `appendState` of `"unknown"` means the commit outcome
-cannot be determined; retrying the same payload may insert duplicates. The
-stream retries transient unknown outcomes as well as explicit temporary rejections.
-If an error response body cannot be read, the append outcome remains unknown.
-The SDK preserves its HTTP status, request ID, and `Retry-After` headers so
-stream retries still distinguish transient failures from permanent HTTP errors.
+```ts
+const result = await table.append('{"id":6,"name":"sixth"}\n');
+console.log(result.num_rows_inserted);
+```
 
 ## Browse the Catalog
 
@@ -378,7 +277,7 @@ await stream.shutdown();
 
 ## Examples
 
-See the runnable instructions and delivery rules in
+See the runnable instructions in
 [`examples/README.md`](examples/README.md).
 
 All examples import the public `scopedb` package entry and are checked with:
