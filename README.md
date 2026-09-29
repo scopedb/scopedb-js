@@ -217,8 +217,8 @@ The stream retries transient failures, including unknown commit outcomes. Delive
 is at least once and may produce duplicates. Defaults are eight retries, jittered
 100 ms–5 s backoff, a 30-second attempt timeout, and a five-minute batch budget.
 `Retry-After` is a lower bound. Configure `maxRetries()`, `maxElapsedTimeMs()`,
-and `attemptTimeoutMs()`; `maxRetries(0)` disables retries, and `rejectedOnly()`
-retains the previous retry policy. Exhaustion throws `AppendRetryExhaustedError`.
+and `attemptTimeoutMs()`; `maxRetries(0)` disables retries.
+Exhaustion throws `AppendRetryExhaustedError`.
 
 Keep source data until a successful stop-mode barrier. On failure, settle the old
 stream with `shutdown()` and replay the unconfirmed source interval through a new
