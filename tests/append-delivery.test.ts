@@ -24,7 +24,7 @@ const ok=()=>Response.json({append_state:'committed',num_rows_inserted:1});
 const failure=(state='unknown',status=503,headers={})=>Response.json({message:'failure',append_state:state,row_errors:[],row_errors_truncated:false},{status,headers});
 const table=(fetch:typeof globalThis.fetch)=>new Client('http://localhost:8080',{fetch}).table('events');
 
-for(const kind of ['lost ACK','invalid ACK','unknown 503','unstructured 503','timeout']) {
+for(const kind of ['lost ACK','invalid ACK','unknown 503','unstructured 503']) {
   it(`retries ${kind} with the original payload`,async()=>{
     const bodies:unknown[]=[];
     const stream=table(async(_url,init)=>{
@@ -34,11 +34,7 @@ for(const kind of ['lost ACK','invalid ACK','unknown 503','unstructured 503','ti
       if(kind==='invalid ACK')return Response.json({});
       if(kind==='unknown 503')return failure();
       if(kind==='unstructured 503')return new Response('unavailable',{status:503});
-      return await new Promise<Response>((_resolve,reject)=>{
-        const signal=init!.signal!;
-        if(signal.aborted)reject(signal.reason);
-        else signal.addEventListener('abort',()=>reject(signal.reason),{once:true});
-      });
+      throw new Error(`unexpected response kind: ${kind}`);
     }).appendStream().attemptTimeoutMs(100).initialBackoff(0).build();
     await stream.send({id:1});const result=await stream.shutdown();
     assert.equal(result?.num_rows_inserted,1);assert.equal(bodies.length,2);
@@ -46,6 +42,29 @@ for(const kind of ['lost ACK','invalid ACK','unknown 503','unstructured 503','ti
     assert.equal(stream.stats().unknownRows,0);assert.equal(stream.stats().pendingBytes,0);
   });
 }
+it('does not replay a client timeout even with a retry budget',async()=>{
+  let calls=0;
+  const stream=table(async(_url,init)=>{
+    calls++;
+    if(calls>1)return ok();
+    return await new Promise<Response>((_resolve,reject)=>{
+      const signal=init!.signal!;
+      if(signal.aborted)reject(signal.reason);
+      else signal.addEventListener('abort',()=>reject(signal.reason),{once:true});
+    });
+  }).appendStream().attemptTimeoutMs(100).initialBackoff(0).build();
+  await stream.send({id:1});
+  await assert.rejects(stream.shutdown(),(error:unknown)=>{
+    assert.ok(error instanceof AppendRowsError);
+    assert.deepEqual(error.writeDetails,{reason:'timeout',outcome:'unknown'});
+    assert.equal(error.retryable,false);
+    return true;
+  });
+  assert.equal(calls,1);
+  assert.equal(stream.stats().retries,0);
+  assert.equal(stream.stats().unknownRows,1);
+  assert.equal(stream.stats().pendingBytes,0);
+});
 it('keeps unknown sticky after a permanent rejection and preserves diagnostics',async()=>{
   let calls=0;
   const stream=table(async()=>++calls===1?failure():failure('rejected',422,{'X-Request-Id':'last-request'}))
@@ -84,7 +103,11 @@ it('bounds a stalled request by the total elapsed budget',async()=>{
     const abort=()=>{aborted=true;reject(signal.reason);};
     if(signal.aborted)abort();else signal.addEventListener('abort',abort,{once:true});
   })).appendStream().attemptTimeoutMs(1000).maxElapsedTimeMs(80).build();
-  await stream.send({id:1});await assert.rejects(stream.shutdown(),AppendRetryExhaustedError);
+  await stream.send({id:1});await assert.rejects(stream.shutdown(),(error:unknown)=>{
+    assert.ok(error instanceof AppendRetryExhaustedError);
+    assert.deepEqual(error.writeDetails,{reason:'timeout',outcome:'unknown'});
+    return true;
+  });
   assert.ok(aborted);assert.equal(stream.stats().unknownRows,1);
 });
 it('disables retries with maxRetries(0)',async()=>{

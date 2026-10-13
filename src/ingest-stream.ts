@@ -45,13 +45,6 @@ const DEFAULT_INITIAL_BACKOFF_MS = 100;
 const DEFAULT_MAX_BACKOFF_MS = 5_000;
 
 
-type FatalStatus = "permanent" | "temporary" | "persistent";
-
-interface FatalState {
-  message: string;
-  status: FatalStatus;
-}
-
 interface RetryConfig {
   maxRetries: number;
   initialBackoffMs: number;
@@ -167,7 +160,7 @@ export class IngestStreamBuilder {
 }
 
 export class IngestStream {
-  private fatal: FatalState | null = null;
+  private fatal: ScopeDBError | null = null;
   private accepting = true;
   private shutdownOperation: Promise<IngestResult | null> | undefined;
   private readonly queue: AsyncBoundedQueue<BatchCommand>;
@@ -286,7 +279,7 @@ export class IngestStream {
           try {
             await this.flushPending(rows, resetBatch);
           } catch (cause) {
-            this.setFatal(asFatalState(cause));
+            this.setFatal(asScopeDBError(cause));
             break;
           }
           continue;
@@ -300,7 +293,7 @@ export class IngestStream {
           try {
             await this.flushPending(rows, resetBatch);
           } catch (cause) {
-            this.setFatal(asFatalState(cause));
+            this.setFatal(asScopeDBError(cause));
             break;
           }
           continue;
@@ -310,7 +303,7 @@ export class IngestStream {
           try {
             await this.flushPending(rows, resetBatch);
           } catch (cause) {
-            this.setFatal(asFatalState(cause));
+            this.setFatal(asScopeDBError(cause));
           }
           break;
         }
@@ -327,7 +320,7 @@ export class IngestStream {
                 await this.flushPending(rows, resetBatch, false);
               } catch (cause) {
                 command.record.reservation.release();
-                this.setFatal(asFatalState(cause));
+                this.setFatal(asScopeDBError(cause));
                 return;
               }
             }
@@ -344,7 +337,7 @@ export class IngestStream {
               try {
                 await this.flushPending(rows, resetBatch);
               } catch (cause) {
-                this.setFatal(asFatalState(cause));
+                this.setFatal(asScopeDBError(cause));
                 return;
               }
             }
@@ -354,7 +347,7 @@ export class IngestStream {
               command.ack.resolve(await this.flushPending(rows, resetBatch));
             } catch (cause) {
               const error = asScopeDBError(cause);
-              this.setFatal(asFatalState(error));
+              this.setFatal(error);
               command.ack.reject(error);
               return;
             }
@@ -364,7 +357,7 @@ export class IngestStream {
               command.ack.resolve(await this.flushPending(rows, resetBatch));
             } catch (cause) {
               const error = asScopeDBError(cause);
-              this.setFatal(asFatalState(error));
+              this.setFatal(error);
               command.ack.reject(error);
             }
             return;
@@ -449,7 +442,7 @@ export class IngestStream {
     }
   }
 
-  private setFatal(fatal: FatalState): void {
+  private setFatal(fatal: ScopeDBError): void {
     if (this.fatal === null) {
       this.fatal = fatal;
       this.accepting = false;
@@ -474,7 +467,7 @@ export class IngestStream {
 
   private checkFatal(): void {
     if (this.fatal !== null) {
-      throw fatalToError(this.fatal);
+      throw this.fatal;
     }
   }
 
@@ -487,7 +480,7 @@ export class IngestStream {
 
   private closedOrFatalError(): ScopeDBError {
     if (this.fatal !== null) {
-      return fatalToError(this.fatal);
+      return this.fatal;
     }
     return new ScopeDBError("Unexpected", "ingest stream is closed").setPersistent();
   }
@@ -538,32 +531,6 @@ function retryExhaustedError(retries: number, cause: ScopeDBError): ScopeDBError
     .withContext("retries", retries)
     .withContext("last_error", cause.message)
     .setPersistent();
-}
-
-function asFatalState(cause: unknown): FatalState {
-  const error = asScopeDBError(cause);
-  let status: FatalStatus = "permanent";
-  if (error.isTemporary()) {
-    status = "temporary";
-  } else if (error.isPersistent()) {
-    status = "persistent";
-  }
-  return {
-    message: error.message,
-    status,
-  };
-}
-
-function fatalToError(fatal: FatalState): ScopeDBError {
-  const error = new ScopeDBError("Unexpected", fatal.message);
-  switch (fatal.status) {
-    case "temporary":
-      return error.setTemporary();
-    case "persistent":
-      return error.setPersistent();
-    case "permanent":
-      return error.setPermanent();
-  }
 }
 
 function asScopeDBError(cause: unknown): ScopeDBError {

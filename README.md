@@ -127,6 +127,30 @@ console.log(description.columns);
 
 ## Append Rows
 
+Every table append and transform-ingest HTTP request has a client timeout of
+30 seconds by default. Its budget starts after local encoding, compression, and
+request preparation and covers one HTTP attempt through reading the complete
+response body. Set `ClientOptions.writeTimeoutMs` to a positive integer to change
+it. Direct `table.append()`, `client.insert()`, and `client.ingest()` calls can override it
+with `{ timeoutMs: 60_000 }`. Streams inherit the client timeout unless an append
+stream explicitly sets `attemptTimeoutMs()`. Caller `AbortSignal` cancellation
+still applies. Each attempt gets its own timeout; admission, retry backoff, and
+an entire `flush()`/`shutdown()` barrier are not bounded by it. A timeout or
+in-flight cancellation does not roll back a write: its commit outcome can be
+unknown, and the SDK does not automatically retry it.
+
+Client timeouts after an HTTP attempt begins preserve the existing error kind and cause
+and add `error.writeDetails` with `{ reason: "timeout", outcome: "unknown" }`
+and `error.retryable === false`. In-flight caller cancellation uses the
+`"cancelled"` reason; a caller `TimeoutError` deadline uses `"timeout"`.
+Cancellation before sending preserves the original abort reason. The structured
+details remain available on subsequent errors returned by the stream and batch
+failure events. A server HTTP 408 is still a server response; an explicitly
+rejected append follows the existing safe retry policy. Reconcile a timed-out
+or cancelled write before replaying it. Append streams retain their existing
+at-least-once retry policy for other transient unknown outcomes; those retries
+may duplicate committed rows.
+
 Use an append stream to write JavaScript objects to an existing table. The
 SDK groups them into batches automatically. This example uses a table named
 `sdk_example_events` with `id int` and `name string` columns:
@@ -249,6 +273,15 @@ void main();
 
 This is also a write path: create the target first and use a disposable table
 while evaluating the example.
+
+Transform ingest does not report a rejected-versus-unknown commit state. Failed
+requests are therefore never automatically retried, including HTTP 429/5xx,
+transport errors, timeouts, and invalid success responses. A failed stream closes
+admission and rejects its pending `flush()` and `shutdown()` barriers. Later
+operations preserve the terminal error's HTTP status, request ID, and
+`Retry-After` diagnostics. Check the destination before replaying data that may
+already have committed; use a durable outbox when payloads must survive process
+failure.
 
 ```ts
 import { Client } from "scopedb";

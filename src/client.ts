@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-import { AppendRowsError, ScopeDBError, asScopeDBError } from "./errors.js";
+import { AppendRowsError, ScopeDBError, asScopeDBError, writeErrorDetailsFromCause } from "./errors.js";
 import { IngestStreamBuilder } from "./ingest-stream.js";
 import type {
   AppendRowError,
@@ -39,11 +39,21 @@ import type {
 import type { ResultSet } from "./result.js";
 import { Statement, StatementHandle } from "./statement.js";
 import type { WaitOptions } from "./statement.js";
-import { MAX_APPEND_BODY_BYTES, byteLength } from "./stream-internals.js";
+import {
+  MAX_APPEND_BODY_BYTES,
+  MAX_TIMER_MS,
+  byteLength,
+  positiveIntegerConfig,
+} from "./stream-internals.js";
 import { Table, type TableOptions } from "./table.js";
 
 export interface RequestOptions {
   signal?: AbortSignal;
+}
+
+export interface WriteOptions extends RequestOptions {
+  /** Overrides the client's write timeout for this request, in milliseconds. */
+  timeoutMs?: number;
 }
 
 export interface CatalogListOptions extends RequestOptions {
@@ -73,6 +83,14 @@ export interface TableReference extends SchemaReference {
 
 export interface ClientOptions {
   fetch?: typeof globalThis.fetch;
+  /**
+   * Timeout for each table append or transform-ingest request, including its
+   * response body, in milliseconds. Defaults to 30,000 and must be positive.
+   * The budget starts after local encoding, compression, and request preparation.
+   * Stream attemptTimeoutMs settings override this default. A timeout does not
+   * roll back the write; its commit outcome can be unknown.
+   */
+  writeTimeoutMs?: number;
   /** Default headers sent with every request. */
   headers?: HeadersInit;
   /**
@@ -95,8 +113,14 @@ export class Client {
   private readonly endpoint: URL;
   private readonly fetchFn: typeof globalThis.fetch;
   private readonly defaultHeaders: Headers;
+  private readonly writeTimeoutMs: number;
 
   constructor(endpoint: string | URL, options: ClientOptions = {}) {
+    this.writeTimeoutMs = positiveIntegerConfig(
+      "writeTimeoutMs",
+      options.writeTimeoutMs ?? 30_000,
+      MAX_TIMER_MS,
+    );
     try {
       this.endpoint = normalizeEndpoint(endpoint);
     } catch (cause) {
@@ -371,7 +395,7 @@ export class Client {
     schema: string,
     table: string,
     ndjson: string,
-    options: RequestOptions = {},
+    options: WriteOptions = {},
   ): Promise<AppendRowsResult> {
     options.signal?.throwIfAborted();
     const uncompressedBytes = byteLength(ndjson);
@@ -390,99 +414,33 @@ export class Client {
     }
     const expectedRows = countNDJSONRows(ndjson);
     const { body } = await gzipJsonRequestBody(ndjson);
-    return this.sendAppendRows(database, schema, table, body, expectedRows, options);
-  }
-
-  private async sendAppendRows(
-    database: string,
-    schema: string,
-    table: string,
-    body: ArrayBuffer,
-    expectedRows: number,
-    options: RequestOptions,
-  ): Promise<AppendRowsResult> {
-    // A request that has not started cannot have an ambiguous commit outcome.
-    // Keep this check outside the catch block below so the caller's abort reason
-    // is preserved instead of being wrapped as AppendRowsError("unknown").
-    options.signal?.throwIfAborted();
-    const url = this.resourceUrl([
-      "databases",
-      database,
-      "schemas",
-      schema,
-      "tables",
-      table,
-      "rows",
-    ]);
-    try {
-      const headers = new Headers({
-        "Content-Type": "application/x-ndjson",
-        "Content-Encoding": "gzip",
-      });
-      const response = await this.request(url, {
+    const url = this.resourceUrl(["databases", database, "schemas", schema, "tables", table, "rows"]);
+    return this.writeRequest(
+      "append",
+      url,
+      {
         method: "POST",
-        headers,
+        headers: { "Content-Type": "application/x-ndjson", "Content-Encoding": "gzip" },
         body,
-        signal: options.signal,
-      });
-      const result: unknown = await parseJsonResponse(response);
-      if (!isAppendRowsResult(result)) {
-        throw new ScopeDBError(
-          "Unexpected",
-          "append response has an invalid body",
-          responseMetadata(response),
-        );
-      }
-      if (result.num_rows_inserted !== expectedRows) {
-        const message =
-          `table append response reported ${result.num_rows_inserted} inserted rows for a ${expectedRows}-row request`;
-        throw new AppendRowsError(
-          {
-            message,
-            append_state: "unknown",
-            row_errors: [],
-            row_errors_truncated: false,
-          },
-          message,
-          responseMetadata(response),
-        ).setPersistent();
-      }
-      return result;
-    } catch (cause) {
-      if (cause instanceof AppendRowsError) {
-        throw cause;
-      }
-      const error = asScopeDBError(
-        "Unexpected",
-        "failed to append rows",
-        cause,
-      );
-
-      // Once the request leaves the client, a transport or intermediary failure
-      // (including an invalid success response) cannot prove whether the append
-      // committed. Retrying could duplicate rows.
-      throw new AppendRowsError(
-        {
-          message: error.message,
-          append_state: "unknown",
-          row_errors: [],
-          row_errors_truncated: false,
-        },
-        error.message,
-        {
-          cause: error,
-          httpStatus: error.httpStatus,
-          requestId: error.requestId,
-          retryAfterMs: error.retryAfterMs,
-        },
-      ).setPersistent();
-    }
+      },
+      options,
+      (value) => {
+        const result = expectResponse(value, isAppendRowsResult, "append response");
+        if (result.num_rows_inserted !== expectedRows) {
+          throw new ScopeDBError(
+            "Unexpected",
+            `table append response reported ${result.num_rows_inserted} inserted rows for a ${expectedRows}-row request`,
+          );
+        }
+        return result;
+      },
+    );
   }
 
   async insert(
     rows: string,
     transform: string,
-    options: RequestOptions = {},
+    options: WriteOptions = {},
   ): Promise<IngestResult> {
     return this.ingest(
       {
@@ -544,48 +502,151 @@ export class Client {
 
   async ingest(
     request: IngestRequest,
-    options: RequestOptions = {},
+    options: WriteOptions = {},
   ): Promise<IngestResult> {
-    return expectResponse(
-      await this.requestJson("v1/ingest", {
-        method: "POST",
-        body: JSON.stringify(request),
-        signal: options.signal,
-      }),
-      isIngestResult,
-      "ingest response",
+    const init = await this.prepareJsonRequest({
+      method: "POST",
+      body: JSON.stringify(request),
+      signal: options.signal,
+    });
+    return this.writeRequest(
+      "ingest",
+      "v1/ingest",
+      init,
+      options,
+      (value) => expectResponse(value, isIngestResult, "ingest response"),
     );
   }
 
-  private async requestJson<T>(
-    path: string | URL,
-    init: RequestInit,
-  ): Promise<T> {
-    let requestInit = init;
-    if (init.body !== undefined) {
-      init.signal?.throwIfAborted();
-      if (typeof init.body !== "string") {
-        throw new ScopeDBError(
-          "Unexpected",
-          "JSON request body must be a string before compression",
-        );
-      }
-
-      const { body, uncompressedBytes } = await gzipJsonRequestBody(init.body);
-      const headers = new Headers(init.headers);
-      headers.set("Content-Encoding", "gzip");
-      headers.set(
-        "X-ScopeDB-Uncompressed-Content-Length",
-        String(uncompressedBytes),
-      );
-      requestInit = { ...init, body, headers };
+  private async requestJson<T>(path: string | URL, init: RequestInit): Promise<T> {
+    const response = await this.request(path, await this.prepareJsonRequest(init));
+    if (!response.ok) {
+      throw await responseToError(response);
     }
-
-    const response = await this.request(path, requestInit);
     return parseJsonResponse<T>(response);
   }
 
+  private async prepareJsonRequest(init: RequestInit): Promise<RequestInit> {
+    if (init.body === undefined) {
+      return init;
+    }
+    init.signal?.throwIfAborted();
+    if (typeof init.body !== "string") {
+      throw new ScopeDBError("Unexpected", "JSON request body must be a string before compression");
+    }
+    const { body, uncompressedBytes } = await gzipJsonRequestBody(init.body);
+    const headers = new Headers(init.headers);
+    headers.set("Content-Encoding", "gzip");
+    headers.set("X-ScopeDB-Uncompressed-Content-Length", String(uncompressedBytes));
+    return { ...init, body, headers };
+  }
+
+  private async writeRequest<T>(
+    operation: "append" | "ingest",
+    path: string | URL,
+    init: RequestInit,
+    options: WriteOptions,
+    decode: (value: unknown) => T,
+  ): Promise<T> {
+    // Cancellation before sending cannot have an ambiguous commit outcome.
+    const signal = options.signal;
+    signal?.throwIfAborted();
+    const timeoutMs = positiveIntegerConfig(
+      "timeoutMs",
+      options.timeoutMs ?? this.writeTimeoutMs,
+      MAX_TIMER_MS,
+    );
+    const prepared = this.prepareRequest(path, init);
+    signal?.throwIfAborted();
+    const controller = new AbortController();
+    const abort = () => controller.abort(
+      new ScopeDBError("Unexpected", "write request cancelled; commit outcome is unknown", {
+        cause: signal?.reason,
+        writeDetails: {
+          reason: signal?.reason instanceof DOMException && signal.reason.name === "TimeoutError"
+            ? "timeout"
+            : "cancelled",
+          outcome: "unknown",
+        },
+      }).setPersistent(),
+    );
+    signal?.addEventListener("abort", abort, { once: true });
+    const timer = setTimeout(() => controller.abort(
+      new ScopeDBError("Unexpected", "write request timed out; commit outcome is unknown", {
+        cause: new DOMException("write request timed out", "TimeoutError"),
+        writeDetails: { reason: "timeout", outcome: "unknown" },
+      }).withContext("write_timeout_ms", timeoutMs).setPersistent(),
+    ), timeoutMs);
+    let rejectAborted!: () => void;
+    const aborted = new Promise<never>((_resolve, reject) => {
+      rejectAborted = () => reject(controller.signal.reason);
+      controller.signal.addEventListener("abort", rejectAborted, { once: true });
+    });
+    let response: Response | undefined;
+    let responseFailure: ScopeDBError | undefined;
+    try {
+      return await Promise.race([
+        (async () => {
+          response = await this.sendRequest(prepared.url, { ...prepared.init, signal: controller.signal });
+          if (!response.ok) {
+            responseFailure = await responseToError(response);
+            throw responseFailure;
+          }
+          return decode(await parseJsonResponse<unknown>(response));
+        })(),
+        aborted,
+      ]);
+    } catch (cause) {
+      const error = asScopeDBError(
+        "Unexpected",
+        operation === "append" ? "failed to append rows" : "failed to ingest data",
+        cause,
+      );
+      const writeDetails = error.writeDetails ?? writeErrorDetailsFromCause(error);
+      if (responseFailure !== undefined && cause === responseFailure && writeDetails === undefined) {
+        if (operation === "ingest") {
+          // Transform ingest has no commit state; an HTTP retry hint cannot make replay safe.
+          throw error.setPermanent();
+        }
+        if (error instanceof AppendRowsError) {
+          throw error;
+        }
+      }
+      const metadata = response === undefined ? undefined : responseMetadata(response);
+      const errorOptions = {
+        cause: error,
+        httpStatus: error.httpStatus ?? metadata?.httpStatus,
+        requestId: error.requestId ?? metadata?.requestId,
+        retryAfterMs: error.retryAfterMs ?? metadata?.retryAfterMs,
+        writeDetails,
+      };
+      const message = operation === "append"
+        ? error.message
+        : "ingest request interrupted; commit outcome is unknown";
+      const unknown = operation === "append"
+        ? new AppendRowsError(
+          { message, append_state: "unknown", row_errors: [], row_errors_truncated: false },
+          message,
+          errorOptions,
+        )
+        : new ScopeDBError("Unexpected", message, errorOptions);
+      for (const [key, value] of error.context()) {
+        unknown.withContext(key, value);
+      }
+      throw unknown.setPersistent();
+    } finally {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", abort);
+      controller.signal.removeEventListener("abort", rejectAborted);
+    }
+  }
+
   private async request(path: string | URL, init: RequestInit): Promise<Response> {
+    const prepared = this.prepareRequest(path, init);
+    return this.sendRequest(prepared.url, prepared.init);
+  }
+
+  private prepareRequest(path: string | URL, init: RequestInit): { url: URL; init: RequestInit } {
     const headers = new Headers(this.defaultHeaders);
     headers.set("Accept", "application/json");
     if (init.body !== undefined) {
@@ -596,22 +657,18 @@ export class Client {
 
     const url = path instanceof URL ? path : this.makeUrl(path);
 
-    let response: Response;
+    return { url, init: { ...init, cache: init.cache ?? "no-store", headers } };
+  }
+
+  private async sendRequest(url: URL, init: RequestInit): Promise<Response> {
     try {
-      response = await this.fetchFn(url, {
-        ...init,
-        cache: init.cache ?? "no-store",
-        headers,
-      });
+      return await this.fetchFn(url, init);
     } catch (cause) {
+      if (init.signal?.aborted === true) {
+        throw init.signal.reason;
+      }
       throw asScopeDBError("Unexpected", `failed to send request to ${url}`, cause).setTemporary();
     }
-
-    if (response.ok) {
-      return response;
-    }
-
-    throw await responseToError(response);
   }
 
   private makeUrl(path: string): URL {
