@@ -240,156 +240,32 @@ describe("IngestStream batching", () => {
   });
 });
 
-describe("IngestStream retry / backoff", () => {
-  it("retries on temporary errors and succeeds", async () => {
-    // 2 temporary errors then success
-    const { client, calls } = makeClient([ingestTemp(), ingestTemp(), ingestOk(1)]);
-    const stream = client.ingestStream(TRANSFORM)
-      .batchBytes(1024 * 1024)
-      .maxRetries(3)
-      .initialBackoff(0)
-      .maxBackoff(0)
-      .build();
+describe("IngestStream failed writes", () => {
+  for (const [status, response] of [
+    [503, ingestTemp],
+    [429, ingestRateLimited],
+    [400, ingestPerm],
+  ] as const) {
+    it(`does not replay an HTTP ${status} failure despite a retry budget`, async () => {
+      const { client, calls } = makeClient([response(), ingestOk(1)]);
+      const stream = client.ingestStream(TRANSFORM)
+        .batchBytes(1024 * 1024)
+        .maxRetries(5)
+        .initialBackoff(0)
+        .maxBackoff(0)
+        .build();
 
-    await stream.send({ v: 1 });
-    const result = await stream.flush();
-    await stream.shutdown();
-
-    assert.equal(calls.length, 3);
-    assert.ok(result !== null);
-    assert.equal(result.num_rows_inserted, 1);
-  });
-
-  it("merges queued records into a rate-limited batch before retrying", async () => {
-    const { client, calls } = makeClient([ingestRateLimited(), ingestOk(2)]);
-    const stream = client.ingestStream(TRANSFORM)
-      .batchBytes(1024 * 1024)
-      .maxRetries(1)
-      .initialBackoff(50)
-      .maxBackoff(50)
-      .build();
-
-    await stream.send({ v: 1 });
-    const flushing = stream.flush();
-    await waitForCallCount(calls, 1);
-    await stream.send({ v: 2 });
-
-    const result = await flushing;
-    await stream.shutdown();
-
-    assert.ok(result !== null);
-    assert.equal(calls.length, 2);
-    assert.deepEqual(parseIngestRows(calls[0]!.init), [{ v: 1 }]);
-    assert.deepEqual(parseIngestRows(calls[1]!.init), [{ v: 1 }, { v: 2 }]);
-  });
-
-  it("leaves queue-head records for the next batch when the retry batch is full", async () => {
-    const first = { v: 1 };
-    const second = { v: 2 };
-    const third = { v: 3 };
-    const batchBytes = Buffer.byteLength(JSON.stringify(first), "utf8") +
-      1 + Buffer.byteLength(JSON.stringify(second), "utf8");
-    const { client, calls } = makeClient([
-      ingestRateLimited(),
-      ingestOk(2),
-      ingestOk(1),
-    ]);
-    const stream = client.ingestStream(TRANSFORM)
-      .batchBytes(batchBytes)
-      .maxRetries(1)
-      .initialBackoff(50)
-      .maxBackoff(50)
-      .build();
-
-    await stream.send(first);
-    const flushing = stream.flush();
-    await waitForCallCount(calls, 1);
-    await stream.send(second);
-    await stream.send(third);
-
-    await flushing;
-    await stream.shutdown();
-
-    assert.equal(calls.length, 3);
-    assert.deepEqual(parseIngestRows(calls[1]!.init), [first, second]);
-    assert.deepEqual(parseIngestRows(calls[2]!.init), [third]);
-    const retryRows = parseJsonRequestBody(calls[1]!.init) as {
-      data: { rows: string };
-    };
-    assert.ok(Buffer.byteLength(retryRows.data.rows, "utf8") <= batchBytes);
-  });
-
-  it("does not merge records across a queued flush command", async () => {
-    const { client, calls } = makeClient([
-      ingestRateLimited(),
-      ingestOk(1),
-      ingestOk(1),
-    ]);
-    const stream = client.ingestStream(TRANSFORM)
-      .batchBytes(1024 * 1024)
-      .maxRetries(1)
-      .initialBackoff(50)
-      .maxBackoff(50)
-      .build();
-
-    await stream.send({ v: 1 });
-    const firstFlush = stream.flush();
-    await waitForCallCount(calls, 1);
-    const flushBarrier = stream.flush();
-    await stream.send({ v: 2 });
-
-    await firstFlush;
-    assert.equal(await flushBarrier, null);
-    await stream.shutdown();
-
-    assert.equal(calls.length, 3);
-    assert.deepEqual(parseIngestRows(calls[1]!.init), [{ v: 1 }]);
-    assert.deepEqual(parseIngestRows(calls[2]!.init), [{ v: 2 }]);
-  });
-
-  it("marks stream fatal after retry budget exhausted", async () => {
-    // 3 temporary errors, maxRetries=2 → exhausted after 3 tries (initial + 2 retries)
-    const { client } = makeClient([ingestTemp(), ingestTemp(), ingestTemp()]);
-    const stream = client.ingestStream(TRANSFORM)
-      .batchBytes(1024 * 1024)
-      .maxRetries(2)
-      .initialBackoff(0)
-      .maxBackoff(0)
-      .build();
-
-    await stream.send({ v: 1 });
-
-    await assert.rejects(
-      () => stream.flush(),
-      (err: unknown) => {
-        assert.ok(err instanceof ScopeDBError, `expected ScopeDBError, got ${String(err)}`);
+      await stream.send({ v: 1 });
+      await assert.rejects(stream.flush(), (error: unknown) => {
+        assert.ok(error instanceof ScopeDBError);
+        assert.equal(error.retryable, false);
         return true;
-      },
-    );
-  });
-
-  it("does not retry on permanent errors", async () => {
-    // permanent error → no retry, immediate fatal
-    const { client, calls } = makeClient([ingestPerm()]);
-    const stream = client.ingestStream(TRANSFORM)
-      .batchBytes(1024 * 1024)
-      .maxRetries(5)
-      .initialBackoff(0)
-      .build();
-
-    await stream.send({ v: 1 });
-
-    await assert.rejects(
-      () => stream.flush(),
-      (err: unknown) => {
-        assert.ok(err instanceof ScopeDBError);
-        return true;
-      },
-    );
-
-    // Only one ingest attempt was made
-    assert.equal(calls.length, 1);
-  });
+      });
+      await assert.rejects(stream.shutdown());
+      await assert.rejects(stream.send({ v: 2 }));
+      assert.equal(calls.length, 1);
+    });
+  }
 });
 
 async function waitForCallCount(
@@ -450,7 +326,7 @@ describe("IngestStream fatal error propagation", () => {
     );
   });
 
-  it("rejects a shutdown barrier queued behind a failing flush", async () => {
+  it("settles queued barriers after a failed write without replaying later rows", async () => {
     const calls: Array<{ url: string; init?: RequestInit }> = [];
     let releaseResponse!: () => void;
     const responseGate = new Promise<void>((resolve) => {
@@ -459,23 +335,29 @@ describe("IngestStream fatal error propagation", () => {
     const fetch: typeof globalThis.fetch = async (input, init) => {
       calls.push({ url: input.toString(), init });
       await responseGate;
-      return ingestPerm();
+      return ingestTemp();
     };
     const client = new Client("http://localhost:8080", { fetch });
-    const stream = client.ingestStream(TRANSFORM).build();
+    const stream = client.ingestStream(TRANSFORM).maxRetries(5).build();
 
     await stream.send({ v: 1 });
     const flushing = stream.flush();
     await waitForCallCount(calls, 1);
+    await stream.send({ v: 2 });
+    const nextFlush = stream.flush();
     const shutdown = stream.shutdown();
-    const settling = Promise.allSettled([flushing, shutdown]);
+    const settling = Promise.allSettled([flushing, nextFlush, shutdown]);
 
     releaseResponse();
     const results = await settling;
 
-    assert.equal(results[0]!.status, "rejected");
-    assert.equal(results[1]!.status, "rejected");
-    assert.ok(results[1]!.reason instanceof ScopeDBError);
+    for (const result of results) {
+      assert.equal(result.status, "rejected");
+      assert.ok(result.reason instanceof ScopeDBError);
+      assert.equal(result.reason.retryable, false);
+    }
+    assert.equal(calls.length, 1);
+    assert.deepEqual(parseIngestRows(calls[0]!.init), [{ v: 1 }]);
   });
 });
 

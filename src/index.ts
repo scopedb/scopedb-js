@@ -23,6 +23,7 @@ export type {
   SchemaReference,
   TableCatalogListOptions,
   TableReference,
+  WriteOptions,
 } from "./client.js";
 export { AppendStream, AppendStreamBuilder, AppendRetryExhaustedError } from "./append-stream.js";
 export type {
@@ -43,6 +44,8 @@ export type {
   ErrorKind,
   ErrorStatus,
   ScopeDBErrorOptions,
+  WriteErrorDetails,
+  WriteErrorReason,
 } from "./errors.js";
 export { IngestStream, IngestStreamBuilder } from "./ingest-stream.js";
 export type {

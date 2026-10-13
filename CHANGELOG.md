@@ -9,9 +9,25 @@
 
 ### Changed
 
-- Append streams retry transient unknown outcomes with bounded elapsed time and
-  jitter, honor Retry-After as a lower bound, and default every attempt to 30 seconds.
-  Replays may duplicate committed rows.
+- Table append and transform-ingest requests now have a configurable
+  `ClientOptions.writeTimeoutMs`, defaulting to 30 seconds including response-body
+  reads. Direct writes accept `WriteOptions.timeoutMs`; streams inherit the client
+  timeout unless an append stream explicitly sets `attemptTimeoutMs()`. Timeout
+  and in-flight cancellation outcomes remain unknown and are never automatically
+  retried, regardless of the caller's abort reason.
+- Failed transform-ingest requests no longer trigger automatic retries that
+  could duplicate committed rows. Transport failures and invalid success
+  responses report an unknown commit outcome and preserve response diagnostics.
+- Ingest streams preserve terminal failure diagnostics in subsequent
+  `send()`, `flush()`, and `shutdown()` calls.
+- The write timeout starts after local encoding, compression, and request
+  preparation. `ScopeDBError.writeDetails` exposes a `timeout` or `cancelled`
+  reason and an `unknown` outcome while preserving existing kinds, causes,
+  HTTP diagnostics, and subsequent stream errors.
+- Append streams retry transient unknown outcomes other than client timeouts or
+  cancellations with bounded elapsed time and jitter, honor Retry-After as a
+  lower bound, and default every attempt to 30 seconds. Replays may duplicate
+  committed rows.
 - Failed-stream flush waits now honor cancellation while requests finish settling.
 
 - `AppendStream` now targets 4 MiB per batch by default; the maximum

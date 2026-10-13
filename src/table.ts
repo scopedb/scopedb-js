@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-import type { Client, RequestOptions } from "./client.js";
+import type { Client, RequestOptions, WriteOptions } from "./client.js";
 import {
   AppendStreamBuilder,
   type AppendFailurePolicy,
@@ -95,7 +95,7 @@ export class Table {
   }
 
   /** Appends at most 8 MiB of uncompressed newline-delimited JSON. */
-  async append(ndjson: string, options: RequestOptions = {}): Promise<AppendRowsResult> {
+  async append(ndjson: string, options: WriteOptions = {}): Promise<AppendRowsResult> {
     return this.client.appendRows(
       this.databaseName ?? "scopedb",
       this.schemaName ?? "public",

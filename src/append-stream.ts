@@ -46,7 +46,6 @@ const DEFAULT_MAX_PENDING_BYTES = 64 * 1024 * 1024;
 const DEFAULT_MAX_RETRIES = 8;
 const DEFAULT_INITIAL_BACKOFF_MS = 100;
 const DEFAULT_MAX_BACKOFF_MS = 5_000;
-const DEFAULT_ATTEMPT_TIMEOUT_MS = 30_000;
 const DEFAULT_CIRCUIT_FAILURE_THRESHOLD = 5;
 const DEFAULT_CIRCUIT_COOLDOWN_MS = 30_000;
 
@@ -487,8 +486,7 @@ export class AppendStreamBuilder<
       maxInFlightRequests: this.currentMaxInFlightRequests,
       retry: { ...this.currentRetry },
       failurePolicy: this.failurePolicy,
-      attemptTimeoutMs: this.currentAttemptTimeoutMs ??
-        DEFAULT_ATTEMPT_TIMEOUT_MS,
+      attemptTimeoutMs: this.currentAttemptTimeoutMs,
       circuitBreaker: this.currentCircuitBreaker === false
         ? false
         : { ...this.currentCircuitBreaker },
@@ -943,7 +941,9 @@ export class AppendStream<Policy extends AppendFailurePolicy = "stop"> {
     let ambiguous = false;
     const deadline = performance.now() + this.config.retry.maxElapsedTimeMs;
     const elapsed = new AbortController();
-    const timer = setTimeout(() => elapsed.abort(), this.config.retry.maxElapsedTimeMs);
+    const timer = setTimeout(() => elapsed.abort(
+      new DOMException("append time budget expired", "TimeoutError"),
+    ), this.config.retry.maxElapsedTimeMs);
     const waitSignal = AbortSignal.any([elapsed.signal, this.fatalController.signal]);
     let lastError: AppendRowsError | undefined;
     try {
@@ -952,12 +952,10 @@ export class AppendStream<Policy extends AppendFailurePolicy = "stop"> {
         if (elapsed.signal.aborted || performance.now() >= deadline) {
           throw retryExhaustedError(retries, lastError ?? unknownError(asStreamError(new Error("append time budget expired"))));
         }
-        const attempt = new AbortController();
-        const attemptTimer = setTimeout(() => attempt.abort(), this.config.attemptTimeoutMs ?? DEFAULT_ATTEMPT_TIMEOUT_MS);
-        const signal = AbortSignal.any([attempt.signal, elapsed.signal]);
         try {
           const result = await this.config.client.appendRows(
-            this.config.database, this.config.schema, this.config.table, payload, { signal },
+            this.config.database, this.config.schema, this.config.table, payload,
+            { signal: elapsed.signal, timeoutMs: this.config.attemptTimeoutMs },
           );
           if (result.num_rows_inserted !== batch.length) {
             throw rowCountMismatchError(batch.length, result.num_rows_inserted);
@@ -966,8 +964,8 @@ export class AppendStream<Policy extends AppendFailurePolicy = "stop"> {
         } catch (cause) {
           const original = asStreamError(cause);
           const error = original instanceof AppendRowsError ? original : unknownError(original);
-          if (attempt.signal.aborted) {
-            error.withContext("attempt_timeout_ms", this.config.attemptTimeoutMs ?? DEFAULT_ATTEMPT_TIMEOUT_MS);
+          if (error.context().has("write_timeout_ms") && this.config.attemptTimeoutMs !== undefined) {
+            error.withContext("attempt_timeout_ms", this.config.attemptTimeoutMs);
           }
           ambiguous ||= error.appendState === "unknown";
           lastError = error;
@@ -976,8 +974,6 @@ export class AppendStream<Policy extends AppendFailurePolicy = "stop"> {
           }
           if (!this.isRetryable(error)) throw error;
           if (retries >= this.config.retry.maxRetries) throw retryExhaustedError(retries, error);
-        } finally {
-          clearTimeout(attemptTimer);
         }
         // Equal jitter; Retry-After remains a floor even beyond maxBackoffMs.
         const jitter = backoffMs / 2 + Math.random() * backoffMs / 2;
@@ -1005,6 +1001,7 @@ export class AppendStream<Policy extends AppendFailurePolicy = "stop"> {
   }
 
   private isRetryable(error: AppendRowsError): boolean {
+    if (error.writeDetails !== undefined) return false;
     if (error.appendState === "rejected") return error.isTemporary();
     const status = error.httpStatus ?? 0;
     return status === 0 || (status >= 200 && status < 300) ||
@@ -1435,6 +1432,7 @@ function unknownError(cause: ScopeDBError): AppendRowsError {
   const error = new ErrorClass(payload, cause.message, {
     cause, httpStatus: cause.httpStatus, requestId: cause.requestId,
     retryAfterMs: cause.retryAfterMs,
+    writeDetails: cause.writeDetails,
   }).setPersistent();
   for (const [key, value] of cause.context()) error.withContext(key, value);
   return error;
@@ -1457,6 +1455,7 @@ function retryExhaustedError(
       httpStatus: cause.httpStatus,
       requestId: cause.requestId,
       retryAfterMs: cause.retryAfterMs,
+      writeDetails: cause.writeDetails,
     },
   )
     .withContext("retries", retries)

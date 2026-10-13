@@ -16,6 +16,7 @@
 
 import type {
   AppendRowError,
+  AppendState,
   AppendRowsErrorPayload,
   StatementErrorDetails,
 } from "./protocol.js";
@@ -29,6 +30,15 @@ export type ErrorKind =
   | "AppendRowsFailed";
 export type ErrorStatus = "permanent" | "temporary" | "persistent";
 
+/** The client-side reason an in-flight write was interrupted. */
+export type WriteErrorReason = "timeout" | "cancelled";
+
+/** An unknown write outcome may have committed and must not be automatically replayed. */
+export interface WriteErrorDetails {
+  readonly reason: WriteErrorReason;
+  readonly outcome: AppendState;
+}
+
 export interface ScopeDBErrorOptions {
   cause?: unknown;
   status?: ErrorStatus;
@@ -40,6 +50,8 @@ export interface ScopeDBErrorOptions {
   retryAfterMs?: number;
   /** Structured server failure for a failed statement. */
   statementDetails?: StatementErrorDetails;
+  /** Client timeout or cancellation details after sending began. */
+  writeDetails?: WriteErrorDetails;
 }
 
 export class ScopeDBError extends Error {
@@ -48,6 +60,7 @@ export class ScopeDBError extends Error {
   readonly requestId?: string;
   readonly retryAfterMs?: number;
   readonly statementDetails?: StatementErrorDetails;
+  readonly writeDetails?: WriteErrorDetails;
   private errorStatus: ErrorStatus;
   private readonly errorContext: Map<string, string>;
 
@@ -63,6 +76,7 @@ export class ScopeDBError extends Error {
     this.requestId = options?.requestId;
     this.retryAfterMs = options?.retryAfterMs;
     this.statementDetails = options?.statementDetails;
+    this.writeDetails = options?.writeDetails;
     this.errorStatus = options?.status ?? "permanent";
     this.errorContext = new Map();
   }
@@ -115,6 +129,10 @@ export class ScopeDBError extends Error {
   override toString(): string {
     let s = `ScopeDBError [${this.kind}/${this.errorStatus}]: ${this.message}`;
     const metadata = new Map(this.errorContext);
+    if (this.writeDetails !== undefined) {
+      metadata.set("write_reason", this.writeDetails.reason);
+      metadata.set("write_outcome", this.writeDetails.outcome);
+    }
     if (this.httpStatus !== undefined) {
       metadata.set("http_status", String(this.httpStatus));
     }
@@ -161,4 +179,22 @@ export function asScopeDBError(
     return cause;
   }
   return new ScopeDBError(kind, message, { cause });
+}
+
+export function writeErrorDetailsFromCause(cause: unknown): WriteErrorDetails | undefined {
+  const visited = new Set<unknown>();
+  while (cause instanceof Error && !visited.has(cause)) {
+    visited.add(cause);
+    const code = "code" in cause ? cause.code : undefined;
+    if (
+      (cause instanceof DOMException && cause.name === "TimeoutError") ||
+      code === "UND_ERR_CONNECT_TIMEOUT" ||
+      code === "UND_ERR_HEADERS_TIMEOUT" ||
+      code === "UND_ERR_BODY_TIMEOUT"
+    ) {
+      return { reason: "timeout", outcome: "unknown" };
+    }
+    cause = cause.cause;
+  }
+  return undefined;
 }
