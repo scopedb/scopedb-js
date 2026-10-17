@@ -138,12 +138,27 @@ describe("Client.cancelStatement", () => {
 
     assert.equal(calls.length, 1);
     const call = calls[0]!;
-    assert.ok(call.url.endsWith("/v1/statements/stmt-1/cancel"), `unexpected URL: ${call.url}`);
+    assert.ok(call.url.endsWith("/v1/statements/stmt-1/cancel?format=json"), `unexpected URL: ${call.url}`);
     assert.equal((call.init as RequestInit).method, "POST");
   });
 });
 
 describe("Client error mapping", () => {
+  it("preserves known and future HTTP codes while accepting message-only 0.5 errors", async () => {
+    for (const code of [undefined, "not_found", "future_error"]) {
+      const { fn } = makeFetchStub([jsonResponse(404, { code, message: "missing" })]);
+      const client = new Client("http://localhost:8080", { fetch: fn });
+      await assert.rejects(client.fetchStatement("missing"), (error: unknown) => {
+        assert.ok(error instanceof ScopeDBError);
+        assert.equal(error.code, code);
+        assert.equal(error.message, "missing");
+        assert.equal(error.httpStatus, 404);
+        assert.equal(error.retryable, false);
+        return true;
+      });
+    }
+  });
+
   it("throws permanent ScopeDBError on 404 with JSON body", async () => {
     const { fn } = makeFetchStub([jsonResponse(404, { message: "not found" })]);
     const client = new Client("http://localhost:8080", { fetch: fn });

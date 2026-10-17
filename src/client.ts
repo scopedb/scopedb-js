@@ -16,6 +16,8 @@
 
 import { AppendRowsError, ScopeDBError, asScopeDBError, writeErrorDetailsFromCause } from "./errors.js";
 import { IngestStreamBuilder } from "./ingest-stream.js";
+import { decodeCancellation, decodeStatement } from "./legacy.js";
+import { isDataType } from "./protocol.js";
 import type {
   AppendRowError,
   AppendRowsErrorPayload,
@@ -27,9 +29,7 @@ import type {
   IngestResult,
   SchemaResource,
   StatementCancelResult,
-  StatementErrorDetails,
   StatementRequest,
-  StatementResultSet,
   StatementStatus,
   TableColumnSpec,
   TableDistinctSpec,
@@ -457,14 +457,12 @@ export class Client {
     request: StatementRequest,
     options: RequestOptions = {},
   ): Promise<StatementStatus> {
-    return expectResponse(
+    return decodeStatement(
       await this.requestJson("v1/statements", {
         method: "POST",
         body: JSON.stringify(request),
         signal: options.signal,
       }),
-      isStatementStatus,
-      "statement response",
     );
   }
 
@@ -475,13 +473,11 @@ export class Client {
   ): Promise<StatementStatus> {
     const url = this.resourceUrl(["statements", statementId]);
     url.searchParams.set("format", "json");
-    return expectResponse(
+    return decodeStatement(
       await this.requestJson(url, {
         method: "GET",
         signal: options.signal,
       }),
-      isStatementStatus,
-      "statement response",
     );
   }
 
@@ -490,13 +486,13 @@ export class Client {
     statementId: string,
     options: RequestOptions = {},
   ): Promise<StatementCancelResult> {
-    return expectResponse(
-      await this.requestJson(this.resourceUrl(["statements", statementId, "cancel"]), {
+    const url = this.resourceUrl(["statements", statementId, "cancel"]);
+    url.searchParams.set("format", "json");
+    return decodeCancellation(
+      await this.requestJson(url, {
         method: "POST",
         signal: options.signal,
       }),
-      isStatementCancelResult,
-      "statement cancellation response",
     );
   }
 
@@ -615,6 +611,7 @@ export class Client {
       const metadata = response === undefined ? undefined : responseMetadata(response);
       const errorOptions = {
         cause: error,
+        code: error.code,
         httpStatus: error.httpStatus ?? metadata?.httpStatus,
         requestId: error.requestId ?? metadata?.requestId,
         retryAfterMs: error.retryAfterMs ?? metadata?.retryAfterMs,
@@ -752,11 +749,13 @@ async function responseToError(response: Response): Promise<ScopeDBError> {
   let appendPayload: AppendRowsErrorPayload | undefined;
   let requestId = response.headers.get("x-request-id") ?? undefined;
   let serverRetryable: boolean | undefined;
+  let code: string | undefined;
   try {
     const payload: unknown = JSON.parse(body);
     const parsed = parseErrorPayload(payload);
     if (parsed !== undefined) {
       message = parsed.message;
+      code = parsed.code;
       requestId = parsed.requestId ?? requestId;
       serverRetryable = parsed.retryable;
       appendPayload = asAppendRowsErrorPayload(parsed.raw, parsed.message);
@@ -767,6 +766,7 @@ async function responseToError(response: Response): Promise<ScopeDBError> {
 
   const metadata = {
     ...responseMetadata(response),
+    ...(code === undefined ? {} : { code }),
     ...(requestId === undefined ? {} : { requestId }),
   };
   const error = appendPayload === undefined
@@ -808,6 +808,7 @@ function responseMetadata(response: Response): {
 }
 
 interface ParsedErrorPayload {
+  code?: string;
   message: string;
   requestId?: string;
   retryable?: boolean;
@@ -822,6 +823,7 @@ function parseErrorPayload(value: unknown): ParsedErrorPayload | undefined {
   if (typeof value["message"] === "string") {
     return {
       message: value["message"],
+      ...(typeof value["code"] === "string" ? { code: value["code"] } : {}),
       ...(typeof value["request_id"] === "string"
         ? { requestId: value["request_id"] }
         : {}),
@@ -838,6 +840,7 @@ function parseErrorPayload(value: unknown): ParsedErrorPayload | undefined {
   }
   return {
     message: nested["message"],
+    ...(typeof nested["code"] === "string" ? { code: nested["code"] } : {}),
     ...(typeof value["request_id"] === "string"
       ? { requestId: value["request_id"] }
       : {}),
@@ -1078,126 +1081,10 @@ function isTableDistinctSpec(value: unknown): value is TableDistinctSpec {
     isStringArray(value["by"]);
 }
 
-function isStatementStatus(value: unknown): value is StatementStatus {
-  if (
-    !isRecord(value) ||
-    typeof value["statement_id"] !== "string" ||
-    typeof value["created_at"] !== "string" ||
-    !isStatementProgress(value["progress"])
-  ) {
-    return false;
-  }
-
-  switch (value["status"]) {
-    case "pending":
-    case "running":
-      return true;
-    case "finished":
-      return isStatementResultSet(value["result_set"]);
-    case "failed":
-      return typeof value["message"] === "string" &&
-        (value["error"] === undefined || isStatementErrorDetails(value["error"]));
-    case "cancelled":
-      return typeof value["message"] === "string";
-    default:
-      return false;
-  }
-}
-
-const STATEMENT_PROGRESS_FIELDS = [
-  "total_percentage",
-  "nanos_from_submitted",
-  "nanos_from_started",
-  "total_stages",
-  "total_partitions",
-  "total_rows",
-  "total_compressed_bytes",
-  "total_uncompressed_bytes",
-  "scanned_stages",
-  "scanned_partitions",
-  "scanned_rows",
-  "scanned_compressed_bytes",
-  "scanned_uncompressed_bytes",
-  "skipped_partitions",
-  "skipped_rows",
-  "skipped_compressed_bytes",
-  "skipped_uncompressed_bytes",
-] as const;
-
-function isStatementProgress(value: unknown): boolean {
-  return isRecord(value) && STATEMENT_PROGRESS_FIELDS.every((field) =>
-    typeof value[field] === "number" && Number.isFinite(value[field])
-  );
-}
-
-function isStatementResultSet(value: unknown): value is StatementResultSet {
-  if (
-    !isRecord(value) ||
-    value["format"] !== "json" ||
-    !isRecord(value["metadata"]) ||
-    !Array.isArray(value["metadata"]["fields"]) ||
-    !value["metadata"]["fields"].every(isFieldSchemaPayload) ||
-    !Number.isSafeInteger(value["metadata"]["num_rows"]) ||
-    (value["metadata"]["num_rows"] as number) < 0 ||
-    !Array.isArray(value["rows"])
-  ) {
-    return false;
-  }
-  const fields = value["metadata"]["fields"];
-  const rows = value["rows"];
-  return rows.length === value["metadata"]["num_rows"] && rows.every((row) =>
-    Array.isArray(row) &&
-    row.length === fields.length &&
-    row.every((cell) => cell === null || typeof cell === "string")
-  );
-}
-
-function isFieldSchemaPayload(value: unknown): boolean {
-  return isRecord(value) &&
-    typeof value["name"] === "string" &&
-    isDataType(value["data_type"]);
-}
-
-function isStatementErrorDetails(value: unknown): value is StatementErrorDetails {
-  return isRecord(value) &&
-    typeof value["code"] === "string" &&
-    typeof value["message"] === "string";
-}
-
-function isStatementCancelResult(value: unknown): value is StatementCancelResult {
-  return isRecord(value) &&
-    typeof value["statement_id"] === "string" &&
-    typeof value["created_at"] === "string" &&
-    typeof value["message"] === "string" &&
-    (value["status"] === "finished" ||
-      value["status"] === "failed" ||
-      value["status"] === "cancelled");
-}
-
 function isIngestResult(value: unknown): value is IngestResult {
   return isRecord(value) &&
     Number.isSafeInteger(value["num_rows_inserted"]) &&
     (value["num_rows_inserted"] as number) >= 0;
-}
-
-const DATA_TYPES = new Set<DataType>([
-  "int",
-  "uint",
-  "u_int",
-  "float",
-  "timestamp",
-  "interval",
-  "boolean",
-  "string",
-  "binary",
-  "array",
-  "object",
-  "any",
-  "null",
-]);
-
-function isDataType(value: unknown): value is DataType {
-  return typeof value === "string" && DATA_TYPES.has(value as DataType);
 }
 
 function isCanonicalDataType(

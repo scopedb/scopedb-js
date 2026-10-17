@@ -1430,7 +1430,7 @@ function unknownError(cause: ScopeDBError): AppendRowsError {
   const ErrorClass = cause instanceof AppendRetryExhaustedError
     ? AppendRetryExhaustedError : AppendRowsError;
   const error = new ErrorClass(payload, cause.message, {
-    cause, httpStatus: cause.httpStatus, requestId: cause.requestId,
+    cause, code: cause.code, httpStatus: cause.httpStatus, requestId: cause.requestId,
     retryAfterMs: cause.retryAfterMs,
     writeDetails: cause.writeDetails,
   }).setPersistent();
@@ -1452,6 +1452,7 @@ function retryExhaustedError(
     "append stream batch exhausted retry budget",
     {
       cause,
+      code: cause.code,
       httpStatus: cause.httpStatus,
       requestId: cause.requestId,
       retryAfterMs: cause.retryAfterMs,

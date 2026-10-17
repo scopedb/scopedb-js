@@ -63,6 +63,7 @@
     "example:ingest-transform": "pnpm run example -- ingest-transform",
     "example:statement": "pnpm run example -- statement",
     "prepack": "pnpm run test && pnpm run check",
+    "test:integration": "tsc -p tsconfig.test.json && node --test dist-test/tests/integration/*.test.js",
     "test": "tsc -p tsconfig.test.json --noEmit && tsc -p tsconfig.test.json && node --test dist-test/tests/*.test.js"
   },
   "devDependencies": {

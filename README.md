@@ -35,6 +35,31 @@ pnpm add scopedb
 # or: bun add scopedb
 ```
 
+## Upgrading a ScopeDB 0.5 deployment
+
+This compatibility release supports ScopeDB 0.5.28 and ScopeDB 0.6 deployments
+that retain the legacy HTTP endpoints. Upgrade the SDK while still running
+0.5.28, verify the application, and then upgrade the server to 0.6 with those
+endpoints enabled. Catalog pagination, table append, transform ingest, and
+`withExecTimeout()` keep their existing request contracts; statement responses
+from either version are accepted.
+
+Restart catalog pagination after the server upgrade; page tokens are opaque and
+are not portable between versions. A later SDK release can adopt native 0.6
+catalog and ingest APIs and drop the compatibility adapter. Keep the server's
+legacy endpoints until all clients have migrated to that release.
+
+From a source checkout, run the same HTTP workflow against each disposable test
+server. It creates and drops uniquely named tables in `scopedb.public`:
+
+```sh
+SCOPEDB_ENDPOINT=http://localhost:6543 pnpm test:integration
+```
+
+Set `SCOPEDB_API_KEY` when the endpoint requires authentication. The workflow
+covers catalog reads, pagination, gzip writes, both streaming writers, statement
+polling, cancellation, execution timeout, and error responses.
+
 ## Create a Client
 
 ```ts

@@ -9,6 +9,11 @@
 
 ### Changed
 
+- Support ScopeDB 0.5.28 and 0.6 with legacy HTTP endpoints through the same
+  client API. Preserve complete 0.6 cancellation results and fetch missing
+  result or failure details after short 0.5 cancellation responses.
+- Expose server error codes as `ScopeDBError.code`, including unknown codes.
+
 - Table append and transform-ingest requests now have a configurable
   `ClientOptions.writeTimeoutMs`, defaulting to 30 seconds including response-body
   reads. Direct writes accept `WriteOptions.timeoutMs`; streams inherit the client

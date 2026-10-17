@@ -155,6 +155,7 @@ describe("unreadable HTTP error responses", () => {
 
   it("keeps an unreadable append outcome unknown after a rejected retry", async () => {
     const rejected = jsonResponse(422, {
+      code: "future_append_error",
       message: "invalid row",
       append_state: "rejected",
       row_errors: [{ row_index: 0, column: "id", message: "invalid id" }],
@@ -174,6 +175,7 @@ describe("unreadable HTTP error responses", () => {
       assert.equal(error.appendState, "unknown");
       assert.equal(error.httpStatus, 422);
       assert.equal(error.requestId, "rejected-request");
+      assert.equal(error.code, "future_append_error");
       assert.deepEqual(error.rowErrors, [
         { row_index: 0, column: "id", message: "invalid id" },
       ]);

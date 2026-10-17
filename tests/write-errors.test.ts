@@ -98,12 +98,13 @@ for (const [name, write] of Object.entries(writes)) {
     for (const status of [400, 408, 429, 500, 503]) {
       const client = new Client("https://example.com", {
         fetch: async () => new Response(JSON.stringify({
-          message: "ingest unavailable", request_id: "server-request", retryable: true,
+          code: "future_ingest_error", message: "ingest unavailable", request_id: "server-request", retryable: true,
         }), { status, headers: { "X-Request-ID": "header-request", "Retry-After": "2" } }),
       });
       await assert.rejects(write(client), (error: unknown) => {
         assert.ok(error instanceof ScopeDBError);
         assert.equal(error.message, "ingest unavailable");
+        assert.equal(error.code, "future_ingest_error");
         assert.equal(error.retryable, false);
         assert.equal(error.httpStatus, status);
         assert.equal(error.requestId, "server-request");
@@ -151,7 +152,7 @@ it("ingest streams retain HTTP failure diagnostics in subsequent operations", as
     fetch: async () => {
       requests++;
       return new Response(JSON.stringify({
-        message: "ingest unavailable", request_id: "failed-ingest", retryable: true,
+        code: "future_ingest_error", message: "ingest unavailable", request_id: "failed-ingest", retryable: true,
       }), { status: 503, headers: { "Retry-After": "2" } });
     },
   });
@@ -168,6 +169,7 @@ it("ingest streams retain HTTP failure diagnostics in subsequent operations", as
       assert.equal(error.message, "ingest unavailable");
       assert.equal(error.httpStatus, 503);
       assert.equal(error.requestId, "failed-ingest");
+      assert.equal(error.code, "future_ingest_error");
       assert.equal(error.retryAfterMs, 2_000);
       assert.equal(error.retryable, false);
       return true;

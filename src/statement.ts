@@ -16,6 +16,7 @@
 
 import type { Client, RequestOptions } from "./client.js";
 import { ScopeDBError } from "./errors.js";
+import { cancellationResult, cancellationStatus } from "./legacy.js";
 import type {
   ResultFormat,
   StatementCancelResult,
@@ -100,6 +101,8 @@ export class Statement {
 }
 
 export class StatementHandle {
+  private cancelResult?: StatementCancelResult;
+
   constructor(
     private readonly client: Client,
     readonly statementId: string,
@@ -155,6 +158,7 @@ export class StatementHandle {
           return ResultSet.fromStatementResultSet(this.currentStatus.result_set);
         case "failed":
           throw new ScopeDBError("StatementFailed", this.currentStatus.message, {
+            code: this.currentStatus.error?.code,
             statementDetails: this.currentStatus.error,
           });
         case "cancelled":
@@ -176,77 +180,18 @@ export class StatementHandle {
   }
 
   async cancel(options: RequestOptions = {}): Promise<StatementCancelResult> {
-    if (this.currentStatus !== undefined) {
-      switch (this.currentStatus.status) {
-        case "finished":
-          return {
-            statement_id: this.currentStatus.statement_id,
-            created_at: this.currentStatus.created_at,
-            status: "finished",
-            message: "statement is finished",
-          };
-        case "failed":
-          return {
-            statement_id: this.currentStatus.statement_id,
-            created_at: this.currentStatus.created_at,
-            status: "failed",
-            message: "statement is failed",
-          };
-        case "cancelled":
-          return {
-            statement_id: this.currentStatus.statement_id,
-            created_at: this.currentStatus.created_at,
-            status: "cancelled",
-            message: "statement is cancelled",
-          };
-        case "pending":
-        case "running":
-          break;
-      }
+    if (this.cancelResult !== undefined) {
+      return this.cancelResult;
+    }
+    if (this.currentStatus !== undefined && statementIsTerminated(this.currentStatus)) {
+      return cancellationResult(this.currentStatus);
     }
 
     const result = await this.client.cancelStatement(this.statementId, options);
-    if (result.status === "failed") {
-      this.currentStatus = {
-        status: "failed",
-        statement_id: result.statement_id,
-        created_at: result.created_at,
-        progress: emptyProgress(),
-        message: result.message,
-      };
-    } else if (result.status === "cancelled") {
-      this.currentStatus = {
-        status: "cancelled",
-        statement_id: result.statement_id,
-        created_at: result.created_at,
-        progress: emptyProgress(),
-        message: result.message,
-      };
-    }
+    this.cancelResult = result;
+    this.currentStatus = cancellationStatus(result) ?? this.currentStatus;
     return result;
   }
-}
-
-function emptyProgress(): StatementEstimatedProgress {
-  return {
-    total_percentage: 0,
-    nanos_from_submitted: 0,
-    nanos_from_started: 0,
-    total_stages: 0,
-    total_partitions: 0,
-    total_rows: 0,
-    total_compressed_bytes: 0,
-    total_uncompressed_bytes: 0,
-    scanned_stages: 0,
-    scanned_partitions: 0,
-    scanned_rows: 0,
-    scanned_compressed_bytes: 0,
-    scanned_uncompressed_bytes: 0,
-    skipped_partitions: 0,
-    skipped_rows: 0,
-    skipped_compressed_bytes: 0,
-    skipped_uncompressed_bytes: 0,
-  };
 }
 
 async function sleep(ms: number, signal?: AbortSignal): Promise<void> {

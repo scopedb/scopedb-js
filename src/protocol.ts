@@ -226,3 +226,113 @@ export function statementIsTerminated(status: StatementStatus): boolean {
     status.status === "cancelled"
   );
 }
+
+export function isStatementStatus(value: unknown): value is StatementStatus {
+  if (
+    !isRecord(value) ||
+    typeof value["statement_id"] !== "string" ||
+    typeof value["created_at"] !== "string" ||
+    !isStatementProgress(value["progress"])
+  ) {
+    return false;
+  }
+
+  switch (value["status"]) {
+    case "pending":
+    case "running":
+      return true;
+    case "finished":
+      return isStatementResultSet(value["result_set"]);
+    case "failed":
+      return typeof value["message"] === "string" &&
+        (value["error"] === undefined || isStatementErrorDetails(value["error"]));
+    case "cancelled":
+      return typeof value["message"] === "string";
+    default:
+      return false;
+  }
+}
+
+const STATEMENT_PROGRESS_FIELDS = [
+  "total_percentage",
+  "nanos_from_submitted",
+  "nanos_from_started",
+  "total_stages",
+  "total_partitions",
+  "total_rows",
+  "total_compressed_bytes",
+  "total_uncompressed_bytes",
+  "scanned_stages",
+  "scanned_partitions",
+  "scanned_rows",
+  "scanned_compressed_bytes",
+  "scanned_uncompressed_bytes",
+  "skipped_partitions",
+  "skipped_rows",
+  "skipped_compressed_bytes",
+  "skipped_uncompressed_bytes",
+] as const;
+
+function isStatementProgress(value: unknown): boolean {
+  return isRecord(value) && STATEMENT_PROGRESS_FIELDS.every((field) =>
+    typeof value[field] === "number" && Number.isFinite(value[field])
+  );
+}
+
+function isStatementResultSet(value: unknown): value is StatementResultSet {
+  if (
+    !isRecord(value) ||
+    value["format"] !== "json" ||
+    !isRecord(value["metadata"]) ||
+    !Array.isArray(value["metadata"]["fields"]) ||
+    !value["metadata"]["fields"].every(isFieldSchemaPayload) ||
+    !Number.isSafeInteger(value["metadata"]["num_rows"]) ||
+    (value["metadata"]["num_rows"] as number) < 0 ||
+    !Array.isArray(value["rows"])
+  ) {
+    return false;
+  }
+  const fields = value["metadata"]["fields"];
+  const rows = value["rows"];
+  return rows.length === value["metadata"]["num_rows"] && rows.every((row) =>
+    Array.isArray(row) &&
+    row.length === fields.length &&
+    row.every((cell) => cell === null || typeof cell === "string")
+  );
+}
+
+function isFieldSchemaPayload(value: unknown): boolean {
+  return isRecord(value) &&
+    typeof value["name"] === "string" &&
+    isDataType(value["data_type"]);
+}
+
+function isStatementErrorDetails(value: unknown): value is StatementErrorDetails {
+  return isRecord(value) &&
+    typeof value["code"] === "string" &&
+    typeof value["message"] === "string";
+}
+
+const DATA_TYPES = new Set<DataType>([
+  "int",
+  "uint",
+  "u_int",
+  "float",
+  "timestamp",
+  "interval",
+  "boolean",
+  "string",
+  "binary",
+  "array",
+  "object",
+  "any",
+  "null",
+]);
+
+export function isDataType(value: unknown): value is DataType {
+  return typeof value === "string" && DATA_TYPES.has(value as DataType);
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
