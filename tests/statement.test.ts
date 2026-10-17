@@ -21,6 +21,7 @@ import { ScopeDBError } from "../src/errors.js";
 import { StatementHandle } from "../src/statement.js";
 import {
   cancelledStatus,
+  emptyProgress,
   emptyResultSet,
   failedStatus,
   finishedStatus,
@@ -289,7 +290,7 @@ describe("StatementHandle.cancel", () => {
     const result = await handle.cancel();
 
     assert.equal(calls.length, 1);
-    assert.ok(calls[0]!.url.endsWith("/cancel"), `unexpected URL: ${calls[0]!.url}`);
+    assert.ok(calls[0]!.url.endsWith("/cancel?format=json"), `unexpected URL: ${calls[0]!.url}`);
     assert.equal(result.status, "cancelled");
   });
 
@@ -345,21 +346,67 @@ describe("StatementHandle.cancel", () => {
     assert.equal(result.status, "cancelled");
   });
 
-  it("updates internal status after cancel returns failed", async () => {
-    const cancelResult = {
-      statement_id: "stmt-1",
-      created_at: "2024-01-01T00:00:00Z",
-      status: "failed" as const,
-      message: "execution failed",
-    };
-    const { fn } = makeFetchStub([jsonResponse(200, cancelResult)]);
-    const client = new Client("http://localhost:8080", { fetch: fn });
-    const handle = new StatementHandle(client, "stmt-1", "json", pendingStatus());
+  for (const status of ["finished", "failed"] as const) {
+    it(`fetches the complete ${status} snapshot after a short 0.5 cancel response`, async () => {
+      const cancelResult = {
+        statement_id: "stmt-1", created_at: "2024-01-01T00:00:00Z",
+        status, message: `statement is ${status}`,
+      };
+      const details = { code: "future_failure", message: "actual failure", details: { limit: 2 } };
+      const snapshot = status === "finished"
+        ? finishedStatus(emptyResultSet()) : failedStatus("actual failure", "stmt-1", details);
+      const { fn, calls } = makeFetchStub([
+        jsonResponse(200, cancelResult), jsonResponse(200, snapshot),
+      ]);
+      const handle = new Client("http://localhost:8080", { fetch: fn }).statementHandle("stmt-1");
+      const cancelled = await handle.cancel();
+      assert.equal(handle.lastStatus(), undefined);
+      assert.deepEqual(await handle.cancel(), cancelled);
+      if (status === "finished") {
+        assert.equal((await handle.wait(noDelay)).numRows(), 0);
+      } else {
+        await assert.rejects(handle.wait(noDelay), (error: unknown) => {
+          assert.ok(error instanceof ScopeDBError);
+          assert.equal(error.message, "actual failure");
+          assert.deepEqual(error.statementDetails, details);
+          return true;
+        });
+      }
+      assert.deepEqual(await handle.cancel(), cancelled);
+      assert.equal(calls.length, 2);
+    });
+  }
 
-    await handle.cancel();
-
-    assert.equal(handle.lastStatus()?.status, "failed");
-  });
+  for (const status of ["finished", "failed", "cancelled"] as const) {
+    it(`caches the complete 0.6 ${status} cancellation without fetching again`, async () => {
+      const progress = { ...emptyProgress(), scanned_rows: 17 };
+      const details = { code: "future_failure", message: "actual failure", details: { limit: 2 } };
+      const snapshot = {
+        statement_id: "stmt-1", created_at: "2024-01-01T00:00:00Z", progress, status,
+        ...(status === "finished" ? { result_set: emptyResultSet() } : {}),
+        ...(status === "failed" ? { error: details } : {}),
+      };
+      const { fn, calls } = makeFetchStub([jsonResponse(200, snapshot)]);
+      const handle = new Client("http://localhost:8080", { fetch: fn }).statementHandle("stmt-1");
+      const cancelled = await handle.cancel();
+      assert.equal(cancelled.status, status);
+      assert.equal((await handle.status()).status, status);
+      assert.deepEqual(handle.progress(), progress);
+      if (status === "finished") {
+        assert.equal((await handle.wait(noDelay)).numRows(), 0);
+      } else {
+        await assert.rejects(handle.wait(noDelay), (error: unknown) => {
+          assert.ok(error instanceof ScopeDBError);
+          assert.equal(error.kind, "StatementFailed");
+          assert.equal(error.message, status === "failed" ? "actual failure" : "statement is cancelled");
+          assert.deepEqual(error.statementDetails, status === "failed" ? details : undefined);
+          return true;
+        });
+      }
+      assert.equal(await handle.cancel(), cancelled);
+      assert.equal(calls.length, 1);
+    });
+  }
 
   it("updates internal status after cancel returns cancelled", async () => {
     const cancelResult = {
@@ -375,6 +422,40 @@ describe("StatementHandle.cancel", () => {
     await handle.cancel();
 
     assert.equal(handle.lastStatus()?.status, "cancelled");
+  });
+});
+
+describe("0.6 statement responses", () => {
+  for (const operation of ["submit", "fetch"] as const) {
+    it(`preserves failures without a top-level message from ${operation}`, async () => {
+      const error = { code: "future_failure", message: "specific failure", details: { a: 1 } };
+      const { fn } = makeFetchStub([jsonResponse(200, {
+        ...pendingStatus(), status: "failed", error,
+      })]);
+      const client = new Client("http://localhost:8080", { fetch: fn });
+      const handle = operation === "submit"
+        ? await client.statement("invalid").submit() : client.statementHandle("stmt-1");
+      await assert.rejects(handle.wait(noDelay), (cause: unknown) => {
+        assert.ok(cause instanceof ScopeDBError);
+        assert.equal(cause.message, error.message);
+        assert.equal(cause.code, error.code);
+        assert.deepEqual(cause.statementDetails, error);
+        return true;
+      });
+    });
+  }
+
+  it("rejects malformed cancellation snapshots instead of caching success", async () => {
+    for (const body of [
+      { ...pendingStatus(), status: "finished", message: "finished" },
+      { ...pendingStatus(), status: "failed", error: { message: "missing code" } },
+      { ...pendingStatus(), status: "cancelled", progress: null },
+    ]) {
+      const { fn } = makeFetchStub([jsonResponse(200, body)]);
+      const handle = new Client("http://localhost:8080", { fetch: fn }).statementHandle("stmt-1");
+      await assert.rejects(handle.cancel(), /invalid body/);
+      assert.equal(handle.lastStatus(), undefined);
+    }
   });
 });
 

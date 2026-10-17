@@ -42,6 +42,8 @@ export interface WriteErrorDetails {
 export interface ScopeDBErrorOptions {
   cause?: unknown;
   status?: ErrorStatus;
+  /** Server error code, preserved even when unknown to this SDK. */
+  code?: string;
   /** HTTP response status, when the error came from the server. */
   httpStatus?: number;
   /** Request identifier returned by ScopeDB or an intermediary. */
@@ -56,6 +58,7 @@ export interface ScopeDBErrorOptions {
 
 export class ScopeDBError extends Error {
   readonly kind: ErrorKind;
+  readonly code?: string;
   readonly httpStatus?: number;
   readonly requestId?: string;
   readonly retryAfterMs?: number;
@@ -72,6 +75,7 @@ export class ScopeDBError extends Error {
     super(message, options?.cause === undefined ? undefined : { cause: options.cause });
     this.name = "ScopeDBError";
     this.kind = kind;
+    this.code = options?.code;
     this.httpStatus = options?.httpStatus;
     this.requestId = options?.requestId;
     this.retryAfterMs = options?.retryAfterMs;
