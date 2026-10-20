@@ -1,0 +1,62 @@
+name: Publish
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write # create the GitHub Release
+  id-token: write # npm trusted publishing (OIDC) and provenance
+
+jobs:
+  npm:
+    name: npm publish
+    runs-on: ubuntu-latest
+    # Matches the environment required by the npm trusted publisher config;
+    # also enables protection rules (e.g. required reviewers) on the release.
+    environment: release
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: pnpm
+          # Writes an .npmrc reading NODE_AUTH_TOKEN; with no NPM_TOKEN secret
+          # set, the npm CLI authenticates through the OIDC token instead.
+          registry-url: https://registry.npmjs.org
+      - name: Verify the tag matches the package version
+        run: |
+          tag_version="${GITHUB_REF_NAME#v}"
+          pkg_version="$(node -p "require('./package.json').version")"
+          if [ "$tag_version" != "$pkg_version" ]; then
+            echo "::error::Tag ${GITHUB_REF_NAME} does not match package.json version ${pkg_version}."
+            exit 1
+          fi
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm test
+      - run: pnpm run check
+      - run: node scripts/smoke-runtime.mjs --without-buffer
+      # Trusted publishing requires npm CLI >= 11.5.1; the npm bundled with
+      # the runner's Node.js may be older.
+      - name: Update npm CLI for trusted publishing
+        run: npm install --global npm@latest
+      - name: Publish to npm
+        run: npm publish --provenance --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+      - name: Extract release notes
+        run: |
+          version="$(node -p "require('./package.json').version")"
+          awk -v version="$version" '
+            index($0, "## " version " - ") == 1 { found = 1; print; next }
+            found && /^## / { exit }
+            found { print }
+          ' CHANGELOG.md > release-notes.md
+          if [ ! -s release-notes.md ]; then
+            echo "See [CHANGELOG.md](https://github.com/scopedb/scopedb-js/blob/${GITHUB_REF_NAME}/CHANGELOG.md) for details." > release-notes.md
+          fi
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release create "${GITHUB_REF_NAME}" --title "${GITHUB_REF_NAME}" --notes-file release-notes.md --verify-tag
