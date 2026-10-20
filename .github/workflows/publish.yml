@@ -12,6 +12,9 @@ jobs:
   npm:
     name: npm publish
     runs-on: ubuntu-latest
+    # Matches the environment required by the npm trusted publisher config;
+    # also enables protection rules (e.g. required reviewers) on the release.
+    environment: release
     steps:
       - uses: actions/checkout@v7
       - uses: pnpm/action-setup@v6
