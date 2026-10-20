@@ -4,6 +4,8 @@ All significant changes to the ScopeDB JavaScript SDK are documented in this fil
 
 ## Unreleased
 
+## v0.3.0 (2026-10-21)
+
 ### Breaking Changes
 
 * Removed the statement `maxParallelism` option. Execution timeout remains the only exposed statement execution control.
