@@ -41,7 +41,7 @@ Releases are automated: pushing a `v*` tag runs the full check suite, publishes
 to npm with provenance, and creates the GitHub Release.
 
 1. Open a release pull request that bumps `package.json` and moves the
-   `Unreleased` CHANGELOG.md entries under a `## X.Y.Z - YYYY-MM-DD` heading.
+   `Unreleased` CHANGELOG.md entries under a `## vX.Y.Z (YYYY-MM-DD)` heading.
 2. After merging, tag the release commit and push the tag:
 
    ```sh
@@ -54,12 +54,25 @@ to npm with provenance, and creates the GitHub Release.
    below, publishes `scopedb@X.Y.Z` to npm with `--provenance`, and creates a
    GitHub Release from the CHANGELOG.md section.
 
+Changelog entries follow the shared ScopeDB format: version headings are
+`## vX.Y.Z (YYYY-MM-DD)`, entries use `*` bullets with one item per source
+line, and sections appear in the order `### Breaking Changes`,
+`### New Features`, `### Bug Fixes`, `### Improvements`. Write each entry as
+one coherent user-observable change compared with the latest release tag,
+including migration guidance for breaking changes; deprecations are described
+in the entry that introduces their replacements rather than in a separate
+section. Exclude tests, refactors, documentation, and CI changes that users
+cannot observe.
+
 One-time setup on npmjs.com: under the `scopedb` package settings, add a
 GitHub Actions **Trusted Publisher** for organization `scopedb`, repository
-`scopedb-js`, workflow filename `publish.yml`. The workflow then authenticates
-through OIDC and no npm token is required. If trusted publishing is not
-configured, store an npm granular access token with publish rights as the
-`NPM_TOKEN` repository secret instead; the publish step falls back to it.
+`scopedb-js`, workflow filename `publish.yml`, environment name `release`
+(matching the publish job's `environment: release` declaration), with direct
+`npm publish` allowed (the workflow does not use staged publishing). These
+fields cannot be changed once the connection is created. The workflow then
+authenticates through OIDC and no npm token is required. If trusted publishing
+is not configured, store an npm granular access token with publish rights as
+the `NPM_TOKEN` repository secret instead; the publish step falls back to it.
 
 Never retry a failed publish by moving a tag: once npm accepts a version it is
 immutable. Bump the version and tag again instead.
