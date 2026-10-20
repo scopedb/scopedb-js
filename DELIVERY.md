@@ -66,10 +66,13 @@ cannot observe.
 
 One-time setup on npmjs.com: under the `scopedb` package settings, add a
 GitHub Actions **Trusted Publisher** for organization `scopedb`, repository
-`scopedb-js`, workflow filename `publish.yml`. The workflow then authenticates
-through OIDC and no npm token is required. If trusted publishing is not
-configured, store an npm granular access token with publish rights as the
-`NPM_TOKEN` repository secret instead; the publish step falls back to it.
+`scopedb-js`, workflow filename `publish.yml`, environment name `release`
+(matching the publish job's `environment: release` declaration), with direct
+`npm publish` allowed (the workflow does not use staged publishing). These
+fields cannot be changed once the connection is created. The workflow then
+authenticates through OIDC and no npm token is required. If trusted publishing
+is not configured, store an npm granular access token with publish rights as
+the `NPM_TOKEN` repository secret instead; the publish step falls back to it.
 
 Never retry a failed publish by moving a tag: once npm accepts a version it is
 immutable. Bump the version and tag again instead.
