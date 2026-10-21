@@ -1,19 +1,21 @@
 {
   "name": "scopedb",
   "version": "0.2.2",
-  "description": "A TypeScript-first ScopeDB client for server-side JavaScript runtimes",
+  "description": "The official server-side JavaScript client for ScopeDB, with TypeScript support",
   "keywords": [
     "scopedb",
     "scopeql",
     "database",
     "analytics",
-    "observability",
+    "sdk",
+    "javascript",
     "typescript",
+    "nodejs",
     "nextjs",
     "bun",
     "serverless"
   ],
-  "homepage": "https://docs.scopedb.io/developer/nodejs",
+  "homepage": "https://www.scopedb.io",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/scopedb/scopedb-js.git"

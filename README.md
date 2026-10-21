@@ -1,7 +1,13 @@
-# ScopeDB JavaScript SDK
+# ScopeDB SDK for JavaScript
 
-This package provides a TypeScript-first ScopeDB client for trusted server-side
-JavaScript runtimes. It is ESM-only and has no runtime dependencies.
+[![Version](https://img.shields.io/npm/v/scopedb)](https://www.npmjs.com/package/scopedb) [![Docs](https://img.shields.io/badge/docs-scopedb.io-blue)](https://www.scopedb.io/docs/developer/nodejs) [![CI](https://img.shields.io/github/actions/workflow/status/scopedb/scopedb-js/ci.yml?branch=main&label=CI)](https://github.com/scopedb/scopedb-js/actions/workflows/ci.yml) [![License](https://img.shields.io/badge/license-Apache--2.0-blue)](https://www.apache.org/licenses/LICENSE-2.0)
+
+The official server-side JavaScript client for
+[ScopeDB](https://www.scopedb.io), with TypeScript support. Run ScopeQL queries,
+browse the catalog, and write rows with bounded asynchronous streams. For
+application writes, start with `table.appendStream()`.
+
+The package is ESM-only and has no runtime dependencies.
 
 ## Runtime support
 
@@ -19,48 +25,56 @@ included in a browser bundle. The [Next.js](examples/frameworks/nextjs-route-han
 and [Cloudflare Worker](examples/frameworks/cloudflare-worker/worker.ts)
 templates show the intended boundary.
 
-## ScopeQL documentation
-
-This SDK executes ScopeQL statements; the language is documented separately:
-
-- [Quickstart](https://docs.scopedb.io/guides/quickstart)
-- [Query guide](https://docs.scopedb.io/guides/query-events)
-- [Language reference](https://docs.scopedb.io/reference/)
-
 ## Installation
 
 ```sh
-pnpm add scopedb
-# or: npm install scopedb
+npm install scopedb
+# or: pnpm add scopedb
 # or: bun add scopedb
 ```
 
-## Create a Client
+## Quickstart
 
-```ts
+Set `SCOPEDB_ENDPOINT` and `SCOPEDB_API_KEY` using the [connection
+guide](https://www.scopedb.io/docs/guides/connect-to-scopedb). Save this program
+as `connect.mjs` and run `node connect.mjs`:
+
+```js
 import { Client } from "scopedb";
 
-const client = new Client(process.env.SCOPEDB_ENDPOINT!, {
-  apiKey: process.env.SCOPEDB_API_KEY!,
-});
+const endpoint = process.env.SCOPEDB_ENDPOINT;
+const apiKey = process.env.SCOPEDB_API_KEY;
+if (!endpoint || !apiKey) {
+  throw new Error("Set SCOPEDB_ENDPOINT and SCOPEDB_API_KEY.");
+}
+
+const client = new Client(endpoint, { apiKey });
+const result = await client.query("SELECT 1 AS ready");
+console.log(result.toObjects());
 ```
+
+## Documentation
+
+- [SDK guide](https://www.scopedb.io/docs/developer/nodejs)
+- [Examples](examples/README.md)
+- [Changelog](CHANGELOG.md)
+- [Report an issue](https://github.com/scopedb/scopedb-js/issues)
+
+This SDK executes ScopeQL statements; the language is documented separately:
+
+- [Quickstart](https://www.scopedb.io/docs/guides/quickstart)
+- [Query guide](https://www.scopedb.io/docs/guides/query-events)
+- [Language reference](https://www.scopedb.io/docs/reference)
+
+## Client configuration
 
 The SDK compresses JSON request bodies and table append requests with gzip by
 default using the Web Compression API. Append limits are based on the
 uncompressed NDJSON body.
 
-## Run a Statement
+## Run a statement
 
-```ts
-import { Client } from "scopedb";
-
-const client = new Client(process.env.SCOPEDB_ENDPOINT!, {
-  apiKey: process.env.SCOPEDB_API_KEY!,
-});
-
-const result = await client.query("SELECT 1 AS ready");
-console.log(result.toObjects());
-```
+Use `client.query()` to submit a statement and wait for its result.
 
 For a detached or long-running statement, keep its handle and choose between a
 local snapshot, one remote status request, or waiting for the result:
@@ -85,7 +99,7 @@ lifecycle from a previously stored statement ID. `wait()`, `query()`, and
 `execute()` accept `WaitOptions` when polling delays or cancellation need to be
 configured.
 
-## Integer Representation
+## Integer representation
 
 `int` and `uint` cells default to JS `bigint` to preserve full I64 precision.
 This is the safe default but is **not** directly JSON-serializable —
@@ -111,7 +125,7 @@ const rowsString = result.toObjects({ integerMode: "string" });
 
 The option only affects `int` / `uint` columns; other types are unchanged.
 
-## Table Helper
+## Table helper
 
 ```ts
 import { Client } from "scopedb";
@@ -125,7 +139,7 @@ const description = await table.describe();
 console.log(description.columns);
 ```
 
-## Append Rows
+## Append rows
 
 Every table append and transform-ingest HTTP request has a client timeout of
 30 seconds by default. Its budget starts after local encoding, compression, and
@@ -206,7 +220,7 @@ const result = await table.append('{"id":6,"name":"sixth"}\n');
 console.log(result.num_rows_inserted);
 ```
 
-## Browse the Catalog
+## Browse the catalog
 
 The RESTful catalog methods return database, schema, table-summary, and full
 table resources. Use async iterators for the common path; list methods remain
@@ -269,7 +283,7 @@ async function main() {
 void main();
 ```
 
-## Batched JSON Ingest
+## Batched JSON ingest
 
 This is also a write path: create the target first and use a disposable table
 while evaluating the example.
@@ -321,16 +335,22 @@ pnpm run check:examples
 
 ## Development
 
+Use the pnpm version declared in `package.json`:
+
 ```sh
+pnpm install --frozen-lockfile
 pnpm test
-pnpm run build
 pnpm run check
 ```
 
-## Delivery Notes
+The package emits TypeScript declarations from `src/index.ts`. Generated
+artifacts stay out of git, and `prepack` runs the unit, type, example, and
+package-entry checks before creating a publishable tarball.
 
-- The package is TypeScript-first and emits declarations from `src/index.ts`.
-- Generated artifacts stay out of git; `dist/`, `dist-test/`, and
-  `node_modules/` are ignored.
-- `prepack` runs unit, type, example, and package-entry checks before creating
-  a publishable tarball.
+Release history and the maintainer runbook are in [CHANGELOG.md](CHANGELOG.md)
+and [DELIVERY.md](DELIVERY.md).
+
+## License
+
+Licensed under the [Apache License, Version
+2.0](https://www.apache.org/licenses/LICENSE-2.0).
