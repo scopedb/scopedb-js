@@ -14,9 +14,9 @@ npm package includes the TypeScript examples as reference source.
 These examples show how to use the SDK. For the ScopeQL language itself, use
 the canonical documentation:
 
-- [Quickstart](https://docs.scopedb.io/guides/quickstart)
-- [Query guide](https://docs.scopedb.io/guides/query-events)
-- [Language reference](https://docs.scopedb.io/reference/)
+- [Quickstart](https://www.scopedb.io/docs/guides/quickstart)
+- [Query guide](https://www.scopedb.io/docs/guides/query-events)
+- [Language reference](https://www.scopedb.io/docs/reference)
 
 ## Read-only quickstarts
 
