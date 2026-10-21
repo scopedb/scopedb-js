@@ -35,9 +35,52 @@ Compatibility aliases remain available for previously published names. Do not
 add wire-level request payloads to the root exports unless applications must
 construct them directly.
 
+## Releasing
+
+Releases are automated: pushing a `v*` tag runs the full check suite, publishes
+to npm with provenance, and creates the GitHub Release.
+
+1. Open a release pull request that bumps `package.json` and moves the
+   `Unreleased` CHANGELOG.md entries under a `## vX.Y.Z (YYYY-MM-DD)` heading.
+2. After merging, tag the release commit and push the tag:
+
+   ```sh
+   git tag -a vX.Y.Z -m "Release X.Y.Z" <commit>
+   git push origin vX.Y.Z
+   ```
+
+3. The `Publish` workflow (`.github/workflows/publish.yml`) fails if the tag
+   does not match the `package.json` version, then runs the required checks
+   below, publishes `scopedb@X.Y.Z` to npm with `--provenance`, and creates a
+   GitHub Release from the CHANGELOG.md section.
+
+Changelog entries follow the shared ScopeDB format: version headings are
+`## vX.Y.Z (YYYY-MM-DD)`, entries use `*` bullets with one item per source
+line, and sections appear in the order `### Breaking Changes`,
+`### New Features`, `### Bug Fixes`, `### Improvements`. Write each entry as
+one coherent user-observable change compared with the latest release tag,
+including migration guidance for breaking changes; deprecations are described
+in the entry that introduces their replacements rather than in a separate
+section. Exclude tests, refactors, documentation, and CI changes that users
+cannot observe.
+
+One-time setup on npmjs.com: under the `scopedb` package settings, add a
+GitHub Actions **Trusted Publisher** for organization `scopedb`, repository
+`scopedb-js`, workflow filename `publish.yml`, environment name `release`
+(matching the publish job's `environment: release` declaration), with direct
+`npm publish` allowed (the workflow does not use staged publishing). These
+fields cannot be changed once the connection is created. The workflow then
+authenticates through OIDC and no npm token is required. If trusted publishing
+is not configured, store an npm granular access token with publish rights as
+the `NPM_TOKEN` repository secret instead; the publish step falls back to it.
+
+Never retry a failed publish by moving a tag: once npm accepts a version it is
+immutable. Bump the version and tag again instead.
+
 ## Required checks
 
-Before publishing a package:
+The publish workflow and `prepack` run these checks; run them locally before
+tagging a release:
 
 ```sh
 pnpm install --frozen-lockfile
@@ -48,10 +91,10 @@ pnpm run smoke:web-runtime
 pnpm pack --dry-run
 ```
 
-`prepack` runs the unit, type, example, and package-entry checks. CI repeats the
-runtime smoke test on Node.js 20, 22, 24, and Bun. Framework consumers
-should additionally build the checked-in Next.js and Worker templates from the
-packed tarball.
+`prepack` runs the unit, type, example, and package-entry checks. CI repeats
+the runtime smoke test on Node.js 20, 22, 24, and Bun, and dry-runs the pack
+on every change. Framework consumers should additionally build the checked-in
+Next.js and Worker templates from the packed tarball.
 
 The fast `smoke:web-runtime` check only removes Node's `Buffer`; it is not a
 substitute for workerd. Until packed Next.js and Wrangler consumers run in CI,
