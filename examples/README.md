@@ -1,18 +1,14 @@
 # ScopeDB JavaScript SDK examples
 
-The runnable examples import the public `scopedb` package entry. Start with a
-quickstart, then choose an example for your application.
+The runnable examples import the public `scopedb` package entry. Start with a quickstart, then choose an example for your application.
 
-The SDK is for trusted server-side code. Never expose `SCOPEDB_API_KEY` from a
-browser bundle or a Next.js Client Component.
+The SDK is for trusted server-side code. Never expose `SCOPEDB_API_KEY` from a browser bundle or a Next.js Client Component.
 
-The commands below are for a source checkout of this repository. The published
-npm package includes the TypeScript examples as reference source.
+The commands below are for a source checkout of this repository. The published npm package includes the TypeScript examples as reference source.
 
 ## ScopeQL documentation
 
-These examples show how to use the SDK. For the ScopeQL language itself, use
-the canonical documentation:
+These examples show how to use the SDK. For the ScopeQL language itself, use the canonical documentation:
 
 - [Quickstart](https://www.scopedb.io/docs/guides/quickstart)
 - [Query guide](https://www.scopedb.io/docs/guides/query-events)
@@ -22,18 +18,16 @@ the canonical documentation:
 
 These can run against a reachable ScopeDB server without modifying data.
 
-| Example | Shows | Run |
-| --- | --- | --- |
+| Example                        | Shows                                                   | Run                          |
+| ------------------------------ | ------------------------------------------------------- | ---------------------------- |
 | [`statement.ts`](statement.ts) | Async statement lifecycle and JSON-safe integer results | `pnpm run example:statement` |
-| [`catalog.ts`](catalog.ts) | Complete REST catalog pagination and table metadata | `pnpm run example:catalog` |
+| [`catalog.ts`](catalog.ts)     | Complete REST catalog pagination and table metadata     | `pnpm run example:catalog`   |
 
 ## Before running a write example
 
-Write examples require `SCOPEDB_TABLE`. Create a table for the example and
-select it with this environment variable.
+Write examples require `SCOPEDB_TABLE`. Create a table for the example and select it with this environment variable.
 
-The append, stream, telemetry, Serverless, and transform examples can share this
-superset schema:
+The append, stream, telemetry, Serverless, and transform examples can share this superset schema:
 
 ```sql
 CREATE TABLE public.sdk_example_events (
@@ -55,8 +49,7 @@ Configuration is read from:
 - `SCOPEDB_SCHEMA` (defaults to `public`)
 - `SCOPEDB_TABLE` (required for writes)
 
-Set the disposable target once in the current shell before using the write
-commands below:
+Set the disposable target once in the current shell before using the write commands below:
 
 ```sh
 export SCOPEDB_TABLE=sdk_example_events
@@ -70,47 +63,43 @@ $env:SCOPEDB_TABLE = "sdk_example_events"
 
 Choose between sending an NDJSON string and letting the SDK batch objects:
 
-| Example | Choose it when | Run |
-| --- | --- | --- |
-| [`append.ts`](append.ts) | You already have an NDJSON string | `pnpm run example:append` |
+| Example                                | Choose it when                       | Run                              |
+| -------------------------------------- | ------------------------------------ | -------------------------------- |
+| [`append.ts`](append.ts)               | You already have an NDJSON string    | `pnpm run example:append`        |
 | [`append-stream.ts`](append-stream.ts) | You want to write JavaScript objects | `pnpm run example:append-stream` |
 
-`append-stream.ts` uses default settings. It adds records with `sendAll()` and
-calls `shutdown()` to wait for writing to finish.
+`append-stream.ts` uses default settings. It adds records with `sendAll()` and calls `shutdown()` to wait for writing to finish.
 
 ## More runnable examples
 
 These examples show common ways to write data:
 
-| Example | Use it for | Run |
-| --- | --- | --- |
-| [`patterns/bulk-import.ts`](patterns/bulk-import.ts) | Writing many records with `sendAll()` | `pnpm run example:append-bulk` |
-| [`patterns/telemetry.ts`](patterns/telemetry.ts) | Writing logs and events with a continue-mode stream | `pnpm run example:append-telemetry` |
-| [`ingest-transform.ts`](ingest-transform.ts) | Transforming JSON with ScopeQL before inserting it | `pnpm run example:ingest-transform` |
+| Example                                              | Use it for                                          | Run                                 |
+| ---------------------------------------------------- | --------------------------------------------------- | ----------------------------------- |
+| [`patterns/bulk-import.ts`](patterns/bulk-import.ts) | Writing many records with `sendAll()`               | `pnpm run example:append-bulk`      |
+| [`patterns/telemetry.ts`](patterns/telemetry.ts)     | Writing logs and events with a continue-mode stream | `pnpm run example:append-telemetry` |
+| [`ingest-transform.ts`](ingest-transform.ts)         | Transforming JSON with ScopeQL before inserting it  | `pnpm run example:ingest-transform` |
 
 ## Integration templates
 
-Templates are type-checked but are not directly executable. Copy a template
-into your application and provide the integrations listed below.
+Templates are type-checked but are not directly executable. Copy a template into your application and provide the integrations listed below.
 
-| Template | Requires | Shows |
-| --- | --- | --- |
-| [`templates/serverless.ts`](templates/serverless.ts) | Web-standard `Request`/`Response` and a `waitUntil()` hook | Writing request events from an HTTP handler |
+| Template                                                 | Requires                                                              | Shows                                                    |
+| -------------------------------------------------------- | --------------------------------------------------------------------- | -------------------------------------------------------- |
+| [`templates/serverless.ts`](templates/serverless.ts)     | Web-standard `Request`/`Response` and a `waitUntil()` hook            | Writing request events from an HTTP handler              |
 | [`templates/audit-outbox.ts`](templates/audit-outbox.ts) | Implementations of `AuditOutbox.readUnconfirmed()` and `checkpoint()` | Sending saved records and updating the source checkpoint |
 
 ## Framework and runtime templates
 
-These templates keep credentials on the server and use the same public SDK
-surface as the runnable examples.
+These templates keep credentials on the server and use the same public SDK surface as the runnable examples.
 
-| Runtime | Template | Notes |
-| --- | --- | --- |
-| Next.js | [`frameworks/nextjs-route-handler/route.ts`](frameworks/nextjs-route-handler/route.ts) | Route Handler with `server-only`, an application-level write token, and a bounded event shape; the Node runtime is preferred |
-| Cloudflare Workers | [`frameworks/cloudflare-worker/worker.ts`](frameworks/cloudflare-worker/worker.ts) | Uses Web APIs without `nodejs_compat`; configure both the ScopeDB key and the separate application write token as secrets |
-| Bun | Use any runnable ESM example | Install with `bun add scopedb`; no Bun-specific SDK surface is required |
+| Runtime            | Template                                                                               | Notes                                                                                                                        |
+| ------------------ | -------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
+| Next.js            | [`frameworks/nextjs-route-handler/route.ts`](frameworks/nextjs-route-handler/route.ts) | Route Handler with `server-only`, an application-level write token, and a bounded event shape; the Node runtime is preferred |
+| Cloudflare Workers | [`frameworks/cloudflare-worker/worker.ts`](frameworks/cloudflare-worker/worker.ts)     | Uses Web APIs without `nodejs_compat`; configure both the ScopeDB key and the separate application write token as secrets    |
+| Bun                | Use any runnable ESM example                                                           | Install with `bun add scopedb`; no Bun-specific SDK surface is required                                                      |
 
-The framework POST templates require `APP_WRITE_TOKEN` for incoming requests,
-in addition to the ScopeDB credential used by the server.
+The framework POST templates require `APP_WRITE_TOKEN` for incoming requests, in addition to the ScopeDB credential used by the server.
 
 ## Developing the examples
 
