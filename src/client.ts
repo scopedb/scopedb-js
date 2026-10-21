@@ -15,7 +15,6 @@
  */
 
 import { AppendRowsError, ScopeDBError, asScopeDBError, writeErrorDetailsFromCause } from "./errors.js";
-import { IngestStreamBuilder } from "./ingest-stream.js";
 import type {
   AppendRowError,
   AppendRowsErrorPayload,
@@ -23,8 +22,6 @@ import type {
   CatalogPage,
   DataType,
   DatabaseResource,
-  IngestRequest,
-  IngestResult,
   SchemaResource,
   StatementCancelResult,
   StatementErrorDetails,
@@ -84,7 +81,7 @@ export interface TableReference extends SchemaReference {
 export interface ClientOptions {
   fetch?: typeof globalThis.fetch;
   /**
-   * Timeout for each table append or transform-ingest request, including its
+   * Timeout for each table append request, including its
    * response body, in milliseconds. Defaults to 30,000 and must be positive.
    * The budget starts after local encoding, compression, and request preparation.
    * Stream attemptTimeoutMs settings override this default. A timeout does not
@@ -152,10 +149,6 @@ export class Client {
 
   table(table: string, options: TableOptions = {}): Table {
     return new Table(this, table, options);
-  }
-
-  ingestStream(statement: string): IngestStreamBuilder {
-    return new IngestStreamBuilder(this, statement);
   }
 
   /**
@@ -415,8 +408,7 @@ export class Client {
     const expectedRows = countNDJSONRows(ndjson);
     const { body } = await gzipJsonRequestBody(ndjson);
     const url = this.resourceUrl(["databases", database, "schemas", schema, "tables", table, "rows"]);
-    return this.writeRequest(
-      "append",
+    return this.appendRequest(
       url,
       {
         method: "POST",
@@ -434,21 +426,6 @@ export class Client {
         }
         return result;
       },
-    );
-  }
-
-  async insert(
-    rows: string,
-    transform: string,
-    options: WriteOptions = {},
-  ): Promise<IngestResult> {
-    return this.ingest(
-      {
-        type: "committed",
-        data: { format: "json", rows },
-        statement: transform,
-      },
-      options,
     );
   }
 
@@ -500,24 +477,6 @@ export class Client {
     );
   }
 
-  async ingest(
-    request: IngestRequest,
-    options: WriteOptions = {},
-  ): Promise<IngestResult> {
-    const init = await this.prepareJsonRequest({
-      method: "POST",
-      body: JSON.stringify(request),
-      signal: options.signal,
-    });
-    return this.writeRequest(
-      "ingest",
-      "v1/ingest",
-      init,
-      options,
-      (value) => expectResponse(value, isIngestResult, "ingest response"),
-    );
-  }
-
   private async requestJson<T>(path: string | URL, init: RequestInit): Promise<T> {
     const response = await this.request(path, await this.prepareJsonRequest(init));
     if (!response.ok) {
@@ -541,8 +500,7 @@ export class Client {
     return { ...init, body, headers };
   }
 
-  private async writeRequest<T>(
-    operation: "append" | "ingest",
+  private async appendRequest<T>(
     path: string | URL,
     init: RequestInit,
     options: WriteOptions,
@@ -599,15 +557,11 @@ export class Client {
     } catch (cause) {
       const error = asScopeDBError(
         "Unexpected",
-        operation === "append" ? "failed to append rows" : "failed to ingest data",
+        "failed to append rows",
         cause,
       );
       const writeDetails = error.writeDetails ?? writeErrorDetailsFromCause(error);
       if (responseFailure !== undefined && cause === responseFailure && writeDetails === undefined) {
-        if (operation === "ingest") {
-          // Transform ingest has no commit state; an HTTP retry hint cannot make replay safe.
-          throw error.setPermanent();
-        }
         if (error instanceof AppendRowsError) {
           throw error;
         }
@@ -620,16 +574,11 @@ export class Client {
         retryAfterMs: error.retryAfterMs ?? metadata?.retryAfterMs,
         writeDetails,
       };
-      const message = operation === "append"
-        ? error.message
-        : "ingest request interrupted; commit outcome is unknown";
-      const unknown = operation === "append"
-        ? new AppendRowsError(
-          { message, append_state: "unknown", row_errors: [], row_errors_truncated: false },
-          message,
-          errorOptions,
-        )
-        : new ScopeDBError("Unexpected", message, errorOptions);
+      const unknown = new AppendRowsError(
+        { message: error.message, append_state: "unknown", row_errors: [], row_errors_truncated: false },
+        error.message,
+        errorOptions,
+      );
       for (const [key, value] of error.context()) {
         unknown.withContext(key, value);
       }
@@ -1172,12 +1121,6 @@ function isStatementCancelResult(value: unknown): value is StatementCancelResult
     (value["status"] === "finished" ||
       value["status"] === "failed" ||
       value["status"] === "cancelled");
-}
-
-function isIngestResult(value: unknown): value is IngestResult {
-  return isRecord(value) &&
-    Number.isSafeInteger(value["num_rows_inserted"]) &&
-    (value["num_rows_inserted"] as number) >= 0;
 }
 
 const DATA_TYPES = new Set<DataType>([

@@ -86,7 +86,7 @@ These examples show common ways to write data:
 | --- | --- | --- |
 | [`patterns/bulk-import.ts`](patterns/bulk-import.ts) | Writing many records with `sendAll()` | `pnpm run example:append-bulk` |
 | [`patterns/telemetry.ts`](patterns/telemetry.ts) | Writing logs and events with a continue-mode stream | `pnpm run example:append-telemetry` |
-| [`ingest-transform.ts`](ingest-transform.ts) | Transforming JSON with ScopeQL before inserting it | `pnpm run example:ingest-transform` |
+| [`append-transform.ts`](append-transform.ts) | Shaping source fields before appending rows | `pnpm run example:append-transform` |
 
 ## Integration templates
 

@@ -127,11 +127,11 @@ console.log(description.columns);
 
 ## Append Rows
 
-Every table append and transform-ingest HTTP request has a client timeout of
+Every table append HTTP request has a client timeout of
 30 seconds by default. Its budget starts after local encoding, compression, and
 request preparation and covers one HTTP attempt through reading the complete
 response body. Set `ClientOptions.writeTimeoutMs` to a positive integer to change
-it. Direct `table.append()`, `client.insert()`, and `client.ingest()` calls can override it
+it. Direct `table.append()` calls can override it
 with `{ timeoutMs: 60_000 }`. Streams inherit the client timeout unless an append
 stream explicitly sets `attemptTimeoutMs()`. Caller `AbortSignal` cancellation
 still applies. Each attempt gets its own timeout; admission, retry backoff, and
@@ -269,44 +269,34 @@ async function main() {
 void main();
 ```
 
-## Batched JSON Ingest
+## Migrate from Ingest
 
-This is also a write path: create the target first and use a disposable table
-while evaluating the example.
+`Client.insert()`, `Client.ingest()`, `Client.ingestStream()`, `IngestStream`, `IngestStreamBuilder`, and the ingest protocol types have been removed. Use `client.table(name).append(ndjson)` for one request or `.appendStream().build()` to batch JavaScript objects. Append requires ScopeDB 0.5.6 or later.
 
-Transform ingest does not report a rejected-versus-unknown commit state. Failed
-requests are therefore never automatically retried, including HTTP 429/5xx,
-transport errors, timeouts, and invalid success responses. A failed stream closes
-admission and rejects its pending `flush()` and `shutdown()` barriers. Later
-operations preserve the terminal error's HTTP status, request ID, and
-`Retry-After` diagnostics. Check the destination before replaying data that may
-already have committed; use a durable outbox when payloads must survive process
-failure.
+Append accepts rows matching the destination columns, not a ScopeQL statement. Move field renaming, type conversion, filtering, and routing into the producer before calling `send()`. See [`append-transform.ts`](examples/append-transform.ts) for a runnable example:
 
 ```ts
-import { Client } from "scopedb";
-
-const client = new Client(process.env.SCOPEDB_ENDPOINT!, {
-  apiKey: process.env.SCOPEDB_API_KEY!,
-});
-
-const stream = client
-  .ingestStream(`
-    SELECT
-      $0["ts"]::timestamp AS occurred_at,
-      $0["name"]::string AS name
-    INSERT INTO public.sdk_example_events (occurred_at, name)
-  `)
+const source = { ts: "2026-03-13T12:00:00Z", name: "scopedb" };
+const stream = client.table("events").appendStream()
+  .maxConcurrentBatches(1)
+  .maxRetries(0)
   .build();
-
-await stream.send({
-  ts: "2026-03-13T12:00:00Z",
-  name: "scopedb",
-});
-
-await stream.flush();
-await stream.shutdown();
+try {
+  await stream.send({ occurred_at: new Date(source.ts).toISOString(), name: source.name });
+} finally {
+  const report = await stream.shutdown();
+  console.log("Committed rows:", report?.num_rows_inserted ?? 0);
+}
 ```
+
+For transformations that must run in ScopeQL, append the original event into an `object` column in a staging table, then execute a separate `FROM ... SELECT ... INSERT INTO ...` statement. Staging and transformation are separate commits; track processed batches before retrying the transformation.
+
+Review these behavior changes when migrating:
+
+- Append batches allow up to 8 MiB of uncompressed NDJSON and 200,000 rows. Reduce an old ingest batch-byte target above 8 MiB.
+- `flush()` and `shutdown()` in the default stop policy return `AppendRowsResult | null`: read `num_rows_inserted`, with `null` for an empty barrier. The continue policy returns an `AppendDeliveryReport` for activity since the previous report; check `outcome` and `committedRows`. Direct `append()` returns `AppendRowsResult`.
+- Append streams send up to four batches concurrently by default. Use `.maxConcurrentBatches(1)` for sequential requests; queries still require `ORDER BY` for ordered results.
+- Append streams may retry transient unknown outcomes, which can duplicate rows. Use `.maxRetries(0)` to preserve the old stream's no-replay behavior. Client timeouts and cancellations are never retried. Direct `append()` makes one attempt.
 
 ## Examples
 

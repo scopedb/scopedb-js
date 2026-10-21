@@ -130,21 +130,6 @@ export interface StatementCancelResult {
   created_at: string;
 }
 
-export type IngestType = "committed" | "buffered";
-
-export interface IngestRequest {
-  type: IngestType;
-  data: {
-    format: "json";
-    rows: string;
-  };
-  statement: string;
-}
-
-export interface IngestResult {
-  num_rows_inserted: number;
-}
-
 /** The commit outcome used by table append responses and client-side write interruptions. */
 export type AppendState = "committed" | "rejected" | "unknown";
 

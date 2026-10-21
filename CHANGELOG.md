@@ -6,12 +6,13 @@ All significant changes to the ScopeDB JavaScript SDK are documented in this fil
 
 ### Breaking Changes
 
+* Removed `Client.insert()`, `Client.ingest()`, `Client.ingestStream()`, the ingest stream exports, and ingest protocol types. Use table `append()` or `appendStream()` and shape rows before sending them. See the [migration guide](README.md#migrate-from-ingest) for transformations, batch limits, delivery reports, concurrency, and retries.
+
 * Removed the statement `maxParallelism` option. Execution timeout remains the only exposed statement execution control.
-* Failed transform-ingest requests no longer trigger automatic retries that could duplicate committed rows. Transport failures and invalid success responses report an unknown commit outcome and preserve response diagnostics; reconcile or retry deliberately instead of relying on automatic replay.
 
 ### New Features
 
-* Table append and transform-ingest requests now have a configurable `ClientOptions.writeTimeoutMs`, defaulting to 30 seconds including response-body reads and starting after local encoding, compression, and request preparation. Direct writes accept `WriteOptions.timeoutMs`; streams inherit the client timeout unless an append stream explicitly sets `attemptTimeoutMs()`. Timeout and in-flight cancellation report a `timeout` or `cancelled` reason with an `unknown` outcome through `ScopeDBError.writeDetails`, preserving existing kinds, causes, HTTP diagnostics, and subsequent stream errors, and are never automatically retried, regardless of the caller's abort reason.
+* Table append requests now have a configurable `ClientOptions.writeTimeoutMs`, defaulting to 30 seconds including response-body reads and starting after local encoding, compression, and request preparation. Direct writes accept `WriteOptions.timeoutMs`; streams inherit the client timeout unless an append stream explicitly sets `attemptTimeoutMs()`. Timeout and in-flight cancellation report a `timeout` or `cancelled` reason with an `unknown` outcome through `ScopeDBError.writeDetails`, preserving existing kinds, causes, HTTP diagnostics, and subsequent stream errors, and are never automatically retried, regardless of the caller's abort reason.
 
 ### Bug Fixes
 
@@ -22,8 +23,6 @@ All significant changes to the ScopeDB JavaScript SDK are documented in this fil
 * Append streams retry transient unknown outcomes other than client timeouts or cancellations with bounded elapsed time and jitter, honor `Retry-After` as a lower bound, and default every attempt to 30 seconds. Replays may duplicate committed rows.
 * `AppendStream` now targets 4 MiB per batch by default; the maximum configurable target and uncompressed request limit remain 8 MiB.
 * Direct caller-encoded table appends now use the same gzip compression and 8 MiB uncompressed request limit as `AppendStream` batches.
-* `IngestStream` now closes admission synchronously during idempotent shutdown, flushes from the first-row deadline under continuous traffic, and seals a batch before the next record would exceed its target size.
-* Ingest streams preserve terminal failure diagnostics in subsequent `send()`, `flush()`, and `shutdown()` calls, and failed-stream flush waits now honor cancellation while requests finish settling.
 * Preserve structured failed-statement details, validate successful statement and catalog responses at runtime, reject duplicate result column names in object conversions, and treat committed append row-count mismatches as an unknown commit outcome.
 
 ## v0.2.2 (2026-08-22)

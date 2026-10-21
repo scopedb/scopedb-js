@@ -23,14 +23,6 @@ import { jsonResponse, pendingStatus } from "./helpers.js";
 const writes = {
   append: (client: Client, options?: WriteOptions) =>
     client.table("events").append('{"id":1}', options),
-  insert: (client: Client, options?: WriteOptions) =>
-    client.insert('{"id":1}', "SELECT $0 INSERT INTO events", options),
-  ingest: (client: Client, options?: WriteOptions) =>
-    client.ingest({
-      type: "committed",
-      data: { format: "json", rows: '{"id":1}' },
-      statement: "SELECT $0 INSERT INTO events",
-    }, options),
 };
 
 function stalledFetch(response?: Response, honorCancellation = false) {
@@ -343,14 +335,12 @@ for (const [name, write] of Object.entries(writes)) {
   });
 }
 
-for (const mode of ["stop", "continue", "ingest"] as const) {
+for (const mode of ["stop", "continue"] as const) {
   it(`${mode} streams inherit the client timeout and settle without retrying`, async (t) => {
     t.mock.timers.enable({ apis: ["setTimeout"] });
     const transport = stalledFetch();
     const client = new Client("https://example.com", { fetch: transport.fetch, writeTimeoutMs: 50 });
-    const stream = mode === "ingest"
-      ? client.ingestStream("SELECT $0 INSERT INTO events").build()
-      : client.table("events").appendStream({ failurePolicy: mode }).build();
+    const stream = client.table("events").appendStream({ failurePolicy: mode }).build();
     await stream.send({ id: 1 });
     const shutdown = stream.shutdown();
     const settled = mode === "continue"
@@ -388,44 +378,6 @@ for (const failurePolicy of ["stop", "continue"] as const) {
     assert.equal(stream.stats().retries, 0);
   });
 }
-
-it("ingest timeouts settle queued barriers and blocked senders with their diagnostics", async (t) => {
-  t.mock.timers.enable({ apis: ["setTimeout"] });
-  const response = new Response(new ReadableStream<Uint8Array>({}), {
-    status: 200, headers: { "X-Request-ID": "timed-out-ingest" },
-  });
-  const transport = stalledFetch(response);
-  const client = new Client("https://example.com", { fetch: transport.fetch, writeTimeoutMs: 50 });
-  const stream = client.ingestStream("SELECT $0 INSERT INTO events").maxPendingBytes(9).build();
-  await stream.send({ id: 1 });
-  const flushing = stream.flush();
-  const blockedSend = stream.send({ id: 2 });
-  const nextFlush = stream.flush();
-  const settling = Promise.allSettled([flushing, blockedSend, nextFlush]);
-  await transport.ready;
-  await nextTurn();
-  t.mock.timers.tick(50);
-
-  const checkTimeout = (error: unknown): true => {
-    unknownTimeout(error);
-    assert.ok(error instanceof ScopeDBError);
-    assert.equal(error.httpStatus, 200);
-    assert.equal(error.requestId, "timed-out-ingest");
-    assert.ok(error.cause instanceof ScopeDBError);
-    assert.ok(error.cause.cause instanceof DOMException);
-    assert.equal(error.cause.cause.name, "TimeoutError");
-    return true;
-  };
-  for (const result of await settling) {
-    assert.equal(result.status, "rejected");
-    if (result.status === "rejected") {
-      checkTimeout(result.reason);
-    }
-  }
-  await assert.rejects(stream.flush(), checkTimeout);
-  await assert.rejects(stream.shutdown(), checkTimeout);
-  assert.equal(transport.signals.length, 1);
-});
 
 it("write timeout configuration is validated before sending", async () => {
   for (const writeTimeoutMs of [0, -1, NaN, Infinity, 0.5, 2_147_483_648]) {

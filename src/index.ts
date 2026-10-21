@@ -47,7 +47,6 @@ export type {
   WriteErrorDetails,
   WriteErrorReason,
 } from "./errors.js";
-export { IngestStream, IngestStreamBuilder } from "./ingest-stream.js";
 export type {
   AppendRowError,
   AppendRowsErrorPayload,
@@ -56,7 +55,6 @@ export type {
   CatalogPage,
   DataType,
   DatabaseResource,
-  IngestResult,
   SchemaResource,
   StatementCancelResult,
   StatementEstimatedProgress,
