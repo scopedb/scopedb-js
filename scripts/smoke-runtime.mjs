@@ -19,14 +19,14 @@ const calls = [];
 const fetch = async (input, init) => {
   const url = new URL(input instanceof Request ? input.url : input);
   calls.push({ url, init });
-  if (url.pathname.endsWith("/rows")) {
+  if (url.pathname.endsWith("/ingest")) {
     const rows = (await requestText(init)).split("\n").length;
     return Response.json({
-      append_state: "committed",
+      status: "committed",
       num_rows_inserted: rows,
     });
   }
-  return Response.json({ items: [{ name: "scopedb", comment: null }] });
+  return Response.json({ databases: [{ name: "scopedb", schemas: [] }] }, { headers: { ETag: '"v1"' } });
 };
 
 const client = new Client("http://127.0.0.1:6543", {
@@ -34,11 +34,8 @@ const client = new Client("http://127.0.0.1:6543", {
   fetch,
 });
 
-const databases = [];
-for await (const database of client.iterateDatabases()) {
-  databases.push(database.name);
-}
-check(databases.length === 1 && databases[0] === "scopedb", "catalog iterator");
+const { definition } = await client.catalog().get();
+check(definition.databases?.[0]?.name === "scopedb", "declarative catalog");
 
 const stream = client.table("events").appendStream()
   .maxBatchRows(10)

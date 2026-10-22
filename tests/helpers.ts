@@ -54,10 +54,10 @@ export function makeFetchStub(responses: Response[]): FetchStub {
   return { fn, calls };
 }
 
-export function jsonResponse(status: number, body: unknown): Response {
+export function jsonResponse(status: number, body: unknown, headers: HeadersInit = {}): Response {
   return new Response(JSON.stringify(body), {
     status,
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...headers },
   });
 }
 
@@ -95,6 +95,7 @@ export function requestBodyText(init: RequestInit | undefined): string {
 export function emptyProgress(): StatementEstimatedProgress {
   return {
     total_percentage: 0,
+    compute_seconds: 0,
     nanos_from_submitted: 0,
     nanos_from_started: 0,
     total_stages: 0,
@@ -136,13 +137,12 @@ export function failedStatus(
     statement_id: statementId,
     created_at: "2024-01-01T00:00:00Z",
     progress: emptyProgress(),
-    message,
-    ...(error === undefined ? {} : { error }),
+    error: error ?? { code: "statement_failed", message },
   };
 }
 
-export function cancelledStatus(message: string, statementId = "stmt-1"): StatementStatus {
-  return { status: "cancelled", statement_id: statementId, created_at: "2024-01-01T00:00:00Z", progress: emptyProgress(), message };
+export function cancelledStatus(_message: string, statementId = "stmt-1"): StatementStatus {
+  return { status: "cancelled", statement_id: statementId, created_at: "2024-01-01T00:00:00Z", progress: emptyProgress() };
 }
 
 export function emptyResultSet(): StatementResultSet {

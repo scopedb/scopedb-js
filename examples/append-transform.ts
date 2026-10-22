@@ -16,7 +16,7 @@
 
 import { Client } from "scopedb";
 
-// Layer: specialized runnable example for transform-oriented ingest.
+// Shape source fields before sending rows through the Append API.
 // Requires SCOPEDB_TABLE and the disposable schema from examples/README.md.
 
 const tableName = process.env["SCOPEDB_TABLE"];
@@ -37,22 +37,22 @@ const target = client.table(tableName, {
   schema: process.env["SCOPEDB_SCHEMA"] ?? "public",
 });
 
-// Prefer table.append()/appendStream() for rows already shaped like the target
-// table. IngestStream remains useful when each JSON record needs SQL transforms.
-// Table.identifier() safely quotes every configured ScopeQL identifier.
-const stream = client
-  .ingestStream(`
-    SELECT
-      $0["ts"]::timestamp AS occurred_at,
-      $0["name"]::string AS name
-    INSERT INTO ${target.identifier()} (occurred_at, name)
-  `)
-  .batchBytes(1024 * 1024)
+const stream = target.appendStream()
+  .maxConcurrentBatches(1)
+  .maxRetries(0)
   .build();
 
-await stream.send({
+const source = {
   ts: "2026-03-13T12:00:00Z",
   name: "ScopeDB",
-});
+};
 
-await stream.shutdown();
+try {
+  await stream.send({
+    occurred_at: new Date(source.ts).toISOString(),
+    name: source.name,
+  });
+} finally {
+  const report = await stream.shutdown();
+  console.log("Committed rows:", report?.num_rows_inserted ?? 0);
+}

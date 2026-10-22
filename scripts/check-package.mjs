@@ -21,7 +21,7 @@ const expected = [
   [sdk, "Client"],
   [sdk, "AppendStream"],
   [sdk, "AppendRowsError"],
-  [sdk.Client.prototype, "iterateDatabases"],
+  [sdk.Client.prototype, "catalog"],
   [sdk.ResultSet.prototype, "rawRows"],
   [sdk.ResultSet.prototype, "toValues"],
   [sdk.ResultSet.prototype, "toObjects"],

@@ -21,7 +21,7 @@ const entries = new Map([
   ["append-stream", "append-stream.js"],
   ["append-bulk", "patterns/bulk-import.js"],
   ["append-telemetry", "patterns/telemetry.js"],
-  ["ingest-transform", "ingest-transform.js"],
+  ["append-transform", "append-transform.js"],
 ]);
 
 const args = process.argv.slice(2);

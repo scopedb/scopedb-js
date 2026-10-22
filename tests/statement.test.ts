@@ -54,13 +54,13 @@ describe("Statement.submit", () => {
     await client
       .statement("SELECT 1")
       .withStatementId("custom-id")
-      .withExecTimeout("60s")
+      .withMaxElapsedSeconds(60).withMaxEstimatedSeconds(3)
       .submit();
 
     const body = parseJsonRequestBody(calls[0]!.init) as Record<string, unknown>;
     assert.equal(body["statement_id"], "custom-id");
-    assert.equal(body["exec_timeout"], "60s");
-    assert.equal(body["max_parallelism"], undefined);
+    assert.equal(body["max_elapsed_seconds"], 60);
+    assert.equal(body["max_estimated_seconds"], 3);
     assert.equal(body["format"], "json");
   });
 });
@@ -202,7 +202,7 @@ describe("StatementHandle.wait", () => {
       (err: unknown) => {
         assert.ok(err instanceof ScopeDBError);
         assert.equal(err.kind, "StatementFailed");
-        assert.ok(err.message.includes("query error"), `message was: ${err.message}`);
+        assert.ok(err.message.includes("query returned too many rows"), `message was: ${err.message}`);
         assert.deepEqual(err.statementDetails, details);
         return true;
       },
@@ -236,7 +236,7 @@ describe("StatementHandle.wait", () => {
       (err: unknown) => {
         assert.ok(err instanceof ScopeDBError);
         assert.equal(err.kind, "StatementFailed");
-        assert.ok(err.message.includes("cancelled by user"), `message was: ${err.message}`);
+        assert.ok(err.message.includes("is cancelled"), `message was: ${err.message}`);
         return true;
       },
     );
@@ -275,12 +275,7 @@ describe("StatementHandle.wait", () => {
 
 describe("StatementHandle.cancel", () => {
   it("sends POST cancel when statement is still pending", async () => {
-    const cancelResult = {
-      statement_id: "stmt-1",
-      created_at: "2024-01-01T00:00:00Z",
-      status: "cancelled" as const,
-      message: "cancelled",
-    };
+    const cancelResult = cancelledStatus("cancelled");
     const pending = pendingStatus();
     const { fn, calls } = makeFetchStub([jsonResponse(200, cancelResult)]);
     const client = new Client("http://localhost:8080", { fetch: fn });
@@ -289,17 +284,12 @@ describe("StatementHandle.cancel", () => {
     const result = await handle.cancel();
 
     assert.equal(calls.length, 1);
-    assert.ok(calls[0]!.url.endsWith("/cancel"), `unexpected URL: ${calls[0]!.url}`);
+    assert.ok(calls[0]!.url.endsWith("/cancel?format=json"), `unexpected URL: ${calls[0]!.url}`);
     assert.equal(result.status, "cancelled");
   });
 
   it("sends POST cancel when statement is running", async () => {
-    const cancelResult = {
-      statement_id: "stmt-1",
-      created_at: "2024-01-01T00:00:00Z",
-      status: "cancelled" as const,
-      message: "cancelled",
-    };
+    const cancelResult = cancelledStatus("cancelled");
     const { fn, calls } = makeFetchStub([jsonResponse(200, cancelResult)]);
     const client = new Client("http://localhost:8080", { fetch: fn });
     const handle = new StatementHandle(client, "stmt-1", "json", runningStatus());
@@ -309,7 +299,7 @@ describe("StatementHandle.cancel", () => {
     assert.equal(calls.length, 1);
   });
 
-  it("returns synthetic result without HTTP call when already finished", async () => {
+  it("returns cached status without HTTP call when already finished", async () => {
     const finished = finishedStatus(emptyResultSet());
     const { fn, calls } = makeFetchStub([]);
     const client = new Client("http://localhost:8080", { fetch: fn });
@@ -321,7 +311,7 @@ describe("StatementHandle.cancel", () => {
     assert.equal(result.status, "finished");
   });
 
-  it("returns synthetic result without HTTP call when already failed", async () => {
+  it("returns cached status without HTTP call when already failed", async () => {
     const failed = failedStatus("something went wrong");
     const { fn, calls } = makeFetchStub([]);
     const client = new Client("http://localhost:8080", { fetch: fn });
@@ -333,7 +323,7 @@ describe("StatementHandle.cancel", () => {
     assert.equal(result.status, "failed");
   });
 
-  it("returns synthetic result without HTTP call when already cancelled", async () => {
+  it("returns cached status without HTTP call when already cancelled", async () => {
     const cancelled = cancelledStatus("already cancelled");
     const { fn, calls } = makeFetchStub([]);
     const client = new Client("http://localhost:8080", { fetch: fn });
@@ -346,12 +336,7 @@ describe("StatementHandle.cancel", () => {
   });
 
   it("updates internal status after cancel returns failed", async () => {
-    const cancelResult = {
-      statement_id: "stmt-1",
-      created_at: "2024-01-01T00:00:00Z",
-      status: "failed" as const,
-      message: "execution failed",
-    };
+    const cancelResult = failedStatus("execution failed");
     const { fn } = makeFetchStub([jsonResponse(200, cancelResult)]);
     const client = new Client("http://localhost:8080", { fetch: fn });
     const handle = new StatementHandle(client, "stmt-1", "json", pendingStatus());
@@ -362,12 +347,7 @@ describe("StatementHandle.cancel", () => {
   });
 
   it("updates internal status after cancel returns cancelled", async () => {
-    const cancelResult = {
-      statement_id: "stmt-1",
-      created_at: "2024-01-01T00:00:00Z",
-      status: "cancelled" as const,
-      message: "done",
-    };
+    const cancelResult = cancelledStatus("cancelled");
     const { fn } = makeFetchStub([jsonResponse(200, cancelResult)]);
     const client = new Client("http://localhost:8080", { fetch: fn });
     const handle = new StatementHandle(client, "stmt-1", "json", runningStatus());
@@ -376,6 +356,17 @@ describe("StatementHandle.cancel", () => {
 
     assert.equal(handle.lastStatus()?.status, "cancelled");
   });
+});
+
+it("retains the full result when completion races with cancellation", async () => {
+  const response = finishedStatus({ metadata: { fields: [{ name: "id", data_type: "int" }], num_rows: 1 }, format: "json", rows: [["7"]] });
+  response.progress.compute_seconds = 0.125;
+  const { fn, calls } = makeFetchStub([jsonResponse(200, response)]);
+  const handle = new Client("https://example.com", { fetch: fn }).statementHandle("stmt-1");
+  assert.deepEqual(await handle.cancel(), response);
+  assert.equal(handle.progress()?.compute_seconds, 0.125);
+  assert.equal((await handle.wait()).toObjects()[0]?.["id"], 7n);
+  assert.equal(calls.length, 1);
 });
 
 describe("Statement.executeOne", () => {

@@ -65,7 +65,7 @@ describe("unreadable HTTP error responses", () => {
       const { fn } = makeFetchStub([unreadableResponse(status, cause, "2")]);
       const client = new Client("http://localhost:8080", { fetch: fn });
 
-      await assert.rejects(client.listDatabases(), (error: unknown) => {
+      await assert.rejects(client.catalog().get(), (error: unknown) => {
         assert.ok(error instanceof ScopeDBError);
         assert.equal(error.httpStatus, status);
         assert.equal(error.requestId, "request-with-broken-body");
@@ -107,7 +107,7 @@ describe("unreadable HTTP error responses", () => {
       bodies.push(init?.body);
       return attempts.length === 1
         ? unreadableResponse(503, new Error("response body interrupted"), "0.02")
-        : jsonResponse(200, { append_state: "committed", num_rows_inserted: 1 });
+        : jsonResponse(200, { status: "committed", num_rows_inserted: 1 });
     };
     const stream = new Client("http://localhost:8080", { fetch }).table("events")
       .appendStream().maxRetries(1).initialBackoff(0).build();
@@ -154,12 +154,7 @@ describe("unreadable HTTP error responses", () => {
   });
 
   it("keeps an unreadable append outcome unknown after a rejected retry", async () => {
-    const rejected = jsonResponse(422, {
-      message: "invalid row",
-      append_state: "rejected",
-      row_errors: [{ row_index: 0, column: "id", message: "invalid id" }],
-      row_errors_truncated: false,
-    });
+    const rejected = jsonResponse(422, { message: "invalid row", code: "ingest_failure", details: { status: "rejected", row_errors: [{ row_index: 0, column: "id", message: "invalid id" }], row_errors_truncated: false } });
     rejected.headers.set("X-Request-ID", "rejected-request");
     const { fn, calls } = makeFetchStub([
       unreadableResponse(503, new Error("response body interrupted")),

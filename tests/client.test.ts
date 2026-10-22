@@ -19,6 +19,7 @@ import { describe, it } from "node:test";
 import { Client } from "../src/client.js";
 import { ScopeDBError } from "../src/errors.js";
 import {
+  cancelledStatus,
   emptyResultSet,
   finishedStatus,
   jsonResponse,
@@ -63,12 +64,12 @@ describe("Client.submitStatement", () => {
       statement: "SELECT 1",
       format: "json",
       statement_id: "my-id",
-      exec_timeout: "30s",
+      max_elapsed_seconds: 30,
     });
 
     const body = parseJsonRequestBody(calls[0]!.init) as Record<string, unknown>;
     assert.equal(body["statement_id"], "my-id");
-    assert.equal(body["exec_timeout"], "30s");
+    assert.equal(body["max_elapsed_seconds"], 30);
     assert.equal(body["max_parallelism"], undefined);
   });
 
@@ -125,12 +126,7 @@ describe("Client.fetchStatement", () => {
 
 describe("Client.cancelStatement", () => {
   it("sends POST /v1/statements/{id}/cancel", async () => {
-    const cancelResult = {
-      statement_id: "stmt-1",
-      created_at: "2024-01-01T00:00:00Z",
-      status: "cancelled",
-      message: "cancelled by user",
-    };
+    const cancelResult = cancelledStatus("cancelled");
     const { fn, calls } = makeFetchStub([jsonResponse(200, cancelResult)]);
     const client = new Client("http://localhost:8080", { fetch: fn });
 
@@ -138,7 +134,7 @@ describe("Client.cancelStatement", () => {
 
     assert.equal(calls.length, 1);
     const call = calls[0]!;
-    assert.ok(call.url.endsWith("/v1/statements/stmt-1/cancel"), `unexpected URL: ${call.url}`);
+    assert.ok(call.url.endsWith("/v1/statements/stmt-1/cancel?format=json"), `unexpected URL: ${call.url}`);
     assert.equal((call.init as RequestInit).method, "POST");
   });
 });
@@ -164,7 +160,7 @@ describe("Client error mapping", () => {
     const client = new Client("http://localhost:8080", { fetch: fn });
 
     await assert.rejects(
-      () => client.listDatabases(),
+      () => client.catalog().get(),
       (err: unknown) => {
         assert.ok(err instanceof ScopeDBError);
         assert.ok(err.isTemporary(), `expected temporary, got ${err.status()}`);
@@ -178,7 +174,7 @@ describe("Client error mapping", () => {
     const client = new Client("http://localhost:8080", { fetch: fn });
 
     await assert.rejects(
-      () => client.listDatabases(),
+      () => client.catalog().get(),
       (err: unknown) => {
         assert.ok(err instanceof ScopeDBError);
         assert.ok(err.isTemporary(), `expected temporary, got ${err.status()}`);
@@ -192,7 +188,7 @@ describe("Client error mapping", () => {
     const client = new Client("http://localhost:8080", { fetch: fn });
 
     await assert.rejects(
-      () => client.listDatabases(),
+      () => client.catalog().get(),
       (err: unknown) => {
         assert.ok(err instanceof ScopeDBError);
         assert.ok(
@@ -209,7 +205,7 @@ describe("Client error mapping", () => {
     const client = new Client("http://localhost:8080", { fetch: fn });
 
     await assert.rejects(
-      () => client.listDatabases(),
+      () => client.catalog().get(),
       (err: unknown) => {
         assert.ok(err instanceof ScopeDBError);
         return true;
@@ -233,7 +229,7 @@ describe("Client error mapping", () => {
     const client = new Client("http://localhost:8080", { fetch: fn });
 
     await assert.rejects(
-      () => client.listDatabases(),
+      () => client.catalog().get(),
       (err: unknown) => {
         assert.ok(err instanceof ScopeDBError);
         assert.equal(err.message, "capacity is unavailable");
@@ -247,10 +243,10 @@ describe("Client error mapping", () => {
   });
 
   it("disables framework fetch caching", async () => {
-    const { fn, calls } = makeFetchStub([jsonResponse(200, { items: [] })]);
+    const { fn, calls } = makeFetchStub([jsonResponse(200, { databases: [] }, { ETag: '"v1"' })]);
     const client = new Client("http://localhost:8080", { fetch: fn });
 
-    await client.listDatabases();
+    await client.catalog().get();
 
     assert.equal((calls[0]!.init as RequestInit).cache, "no-store");
   });
@@ -264,11 +260,11 @@ describe("Client fetch transport", () => {
       _init?: RequestInit,
     ): Promise<Response> {
       assert.equal(this, undefined);
-      return Promise.resolve(jsonResponse(200, { items: [] }));
+      return Promise.resolve(jsonResponse(200, { databases: [] }, { ETag: '"v1"' }));
     };
     const client = new Client("http://localhost:8080", { fetch });
 
-    assert.deepEqual(await client.listDatabases(), { items: [] });
+    assert.deepEqual(await client.catalog().get(), { definition: { databases: [] }, etag: '"v1"' });
   });
 });
 
@@ -295,24 +291,24 @@ describe("Client.query shorthand", () => {
 
 describe("ClientOptions.token", () => {
   it("sends Authorization Bearer header on every request", async () => {
-    const { fn, calls } = makeFetchStub([jsonResponse(200, { items: [] })]);
+    const { fn, calls } = makeFetchStub([jsonResponse(200, { databases: [] }, { ETag: '"v1"' })]);
     const client = new Client("http://localhost:8080", { fetch: fn, token: "my-secret" });
 
-    await client.listDatabases();
+    await client.catalog().get();
 
     const headers = (calls[0]!.init as RequestInit).headers as Headers;
     assert.equal(headers.get("Authorization"), "Bearer my-secret");
   });
 
   it("token takes precedence over explicit Authorization header", async () => {
-    const { fn, calls } = makeFetchStub([jsonResponse(200, { items: [] })]);
+    const { fn, calls } = makeFetchStub([jsonResponse(200, { databases: [] }, { ETag: '"v1"' })]);
     const client = new Client("http://localhost:8080", {
       fetch: fn,
       token: "token-wins",
       headers: { Authorization: "Bearer other" },
     });
 
-    await client.listDatabases();
+    await client.catalog().get();
 
     const headers = (calls[0]!.init as RequestInit).headers as Headers;
     assert.equal(headers.get("Authorization"), "Bearer token-wins");
@@ -332,27 +328,27 @@ describe("ClientOptions.apiKey", () => {
   });
 
   it("sends the API key as a Bearer credential", async () => {
-    const { fn, calls } = makeFetchStub([jsonResponse(200, { items: [] })]);
+    const { fn, calls } = makeFetchStub([jsonResponse(200, { databases: [] }, { ETag: '"v1"' })]);
     const client = new Client("http://localhost:8080", {
       fetch: fn,
       apiKey: "api-key",
     });
 
-    await client.listDatabases();
+    await client.catalog().get();
 
     const headers = (calls[0]!.init as RequestInit).headers as Headers;
     assert.equal(headers.get("Authorization"), "Bearer api-key");
   });
 
   it("takes precedence over the deprecated token option", async () => {
-    const { fn, calls } = makeFetchStub([jsonResponse(200, { items: [] })]);
+    const { fn, calls } = makeFetchStub([jsonResponse(200, { databases: [] }, { ETag: '"v1"' })]);
     const client = new Client("http://localhost:8080", {
       fetch: fn,
       apiKey: "api-key-wins",
       token: "old-token",
     });
 
-    await client.listDatabases();
+    await client.catalog().get();
 
     const headers = (calls[0]!.init as RequestInit).headers as Headers;
     assert.equal(headers.get("Authorization"), "Bearer api-key-wins");

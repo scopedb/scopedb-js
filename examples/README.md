@@ -21,7 +21,7 @@ These can run against a reachable ScopeDB server without modifying data.
 | Example                        | Shows                                                   | Run                          |
 | ------------------------------ | ------------------------------------------------------- | ---------------------------- |
 | [`statement.ts`](statement.ts) | Async statement lifecycle and JSON-safe integer results | `pnpm run example:statement` |
-| [`catalog.ts`](catalog.ts)     | Complete REST catalog pagination and table metadata     | `pnpm run example:catalog`   |
+| [`catalog.ts`](catalog.ts)     | Declarative catalog snapshots and table definitions     | `pnpm run example:catalog`   |
 
 ## Before running a write example
 
@@ -78,7 +78,7 @@ These examples show common ways to write data:
 | ---------------------------------------------------- | --------------------------------------------------- | ----------------------------------- |
 | [`patterns/bulk-import.ts`](patterns/bulk-import.ts) | Writing many records with `sendAll()`               | `pnpm run example:append-bulk`      |
 | [`patterns/telemetry.ts`](patterns/telemetry.ts)     | Writing logs and events with a continue-mode stream | `pnpm run example:append-telemetry` |
-| [`ingest-transform.ts`](ingest-transform.ts)         | Transforming JSON with ScopeQL before inserting it  | `pnpm run example:ingest-transform` |
+| [`append-transform.ts`](append-transform.ts)         | Shaping source fields before appending rows         | `pnpm run example:append-transform` |
 
 ## Integration templates
 

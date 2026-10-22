@@ -6,6 +6,8 @@ The official server-side JavaScript client for [ScopeDB](https://www.scopedb.io)
 
 The package is ESM-only and has no runtime dependencies.
 
+This development version requires ScopeDB 0.6.0 or later and uses its native Statement, declarative Catalog, and table ingest APIs. These changes are not yet published.
+
 ## Runtime support
 
 | Environment        | Recommended usage                                                                                |
@@ -121,7 +123,17 @@ console.log(description.columns);
 
 ## Append rows
 
-Every table append and transform-ingest HTTP request has a client timeout of 30 seconds by default. Its budget starts after local encoding, compression, and request preparation and covers one HTTP attempt through reading the complete response body. Set `ClientOptions.writeTimeoutMs` to a positive integer to change it. Direct `table.append()`, `client.insert()`, and `client.ingest()` calls can override it with `{ timeoutMs: 60_000 }`. Streams inherit the client timeout unless an append stream explicitly sets `attemptTimeoutMs()`. Caller `AbortSignal` cancellation still applies. Each attempt gets its own timeout; admission, retry backoff, and an entire `flush()`/`shutdown()` barrier are not bounded by it. A timeout or in-flight cancellation does not roll back a write: its commit outcome can be unknown, and the SDK does not automatically retry it.
+Every table append HTTP request has a client timeout of
+30 seconds by default. Its budget starts after local encoding, compression, and
+request preparation and covers one HTTP attempt through reading the complete
+response body. Set `ClientOptions.writeTimeoutMs` to a positive integer to change
+it. Direct `table.append()` calls can override it
+with `{ timeoutMs: 60_000 }`. Streams inherit the client timeout unless an append
+stream explicitly sets `attemptTimeoutMs()`. Caller `AbortSignal` cancellation
+still applies. Each attempt gets its own timeout; admission, retry backoff, and
+an entire `flush()`/`shutdown()` barrier are not bounded by it. A timeout or
+in-flight cancellation does not roll back a write: its commit outcome can be
+unknown, and the SDK does not automatically retry it.
 
 Client timeouts after an HTTP attempt begins preserve the existing error kind and cause and add `error.writeDetails` with `{ reason: "timeout", outcome: "unknown" }` and `error.retryable === false`. In-flight caller cancellation uses the `"cancelled"` reason; a caller `TimeoutError` deadline uses `"timeout"`. Cancellation before sending preserves the original abort reason. The structured details remain available on subsequent errors returned by the stream and batch failure events. A server HTTP 408 is still a server response; an explicitly rejected append follows the existing safe retry policy. Reconcile a timed-out or cancelled write before replaying it. Append streams retain their existing at-least-once retry policy for other transient unknown outcomes; those retries may duplicate committed rows.
 
@@ -176,23 +188,21 @@ console.log(result.num_rows_inserted);
 
 ## Browse the catalog
 
-The RESTful catalog methods return database, schema, table-summary, and full table resources. Use async iterators for the common path; list methods remain available when an application needs explicit page boundaries.
+Catalog reads return complete declarative definitions and opaque ETags. Select the smallest subtree you need. Apply replaces that whole subtree, including its children; omitted fields are cleared. Use a dry run and an ETag precondition to review changes and reject concurrent updates.
 
 ```ts
-for await (const database of client.iterateDatabases({ pageSize: 100 })) {
-  console.log(database.name);
-}
-
-for await (
-  const table of client.iterateTables({
-    database: "scopedb",
-    schema: "public",
-    pageSize: 100,
-  })
-) {
-  console.log(table.name);
-}
+const resource = client.catalog().table("scopedb", "public", "events");
+const snapshot = await resource.get();
+const definition = { ...snapshot.definition, comment: "Application events" };
+const preview = await resource.apply(definition, {
+  dryRun: true,
+  ifMatch: snapshot.etag,
+});
+console.log(preview.before, preview.after, preview.destructive);
+await resource.apply(definition, { ifMatch: preview.etag });
 ```
+
+Potentially destructive changes require `allowDestructive: true`. Mutations never retry automatically and use the client's `writeTimeoutMs` by default; `CatalogOptions.timeoutMs` overrides it. An interrupted or malformed mutation response has code `catalog_commit_outcome_unknown`; read the current definition before deciding whether to replay. Keep the ETag unchanged, including its quotes. Definitions use the server's snake_case field names and retain unknown fields when read and reapplied.
 
 ## Errors
 
@@ -206,6 +216,8 @@ try {
 } catch (error) {
   if (error instanceof ScopeDBError) {
     console.error({
+      code: error.code,
+      details: error.details,
       message: error.message,
       httpStatus: error.httpStatus,
       requestId: error.requestId,
@@ -233,36 +245,44 @@ async function main() {
 void main();
 ```
 
-## Batched JSON ingest
+## Migrate to ScopeDB 0.6
 
-This is also a write path: create the target first and use a disposable table while evaluating the example.
+- Replace `withExecTimeout("30s")` with `withMaxElapsedSeconds(30)`. `withMaxEstimatedSeconds(5)` independently limits estimated execution time. Both limits must be positive and finite; omit them for the server defaults. Elapsed time includes queueing.
+- Replace `list*`, `fetch*`, and `iterate*` Catalog calls with `client.catalog().get()` or a database/schema/table/view selector followed by `.get()`. There is no pagination. Read the definition from `snapshot.definition` and retain `snapshot.etag` for conditional writes.
+- `Table.describe()` returns `CatalogTable` directly. Use `data_type`, `partition_by`, `cluster_by`, `distinct`, and `retention_days`, replacing the old camelCase table description fields.
+- `cancel()` returns and caches the complete `StatementStatus`. It can contain a finished result or the original failure when completion races with cancellation. Failed statements use `error.code/message/details`; cancelled statements have no server message. Inspect `ScopeDBError.code` and `.details` without assuming the set of codes is closed. Progress includes `compute_seconds`.
+- Table `append()` and `appendStream()` use `/v1/catalog/databases/{db}/schemas/{schema}/tables/{table}/ingest`. Their delivery/report APIs remain unchanged; the wire outcome is now `status` on success and `details.status` on failure. A missing or unreadable outcome remains unknown and must not be treated as a safe rejection.
 
-Transform ingest does not report a rejected-versus-unknown commit state. Failed requests are therefore never automatically retried, including HTTP 429/5xx, transport errors, timeouts, and invalid success responses. A failed stream closes admission and rejects its pending `flush()` and `shutdown()` barriers. Later operations preserve the terminal error's HTTP status, request ID, and `Retry-After` diagnostics. Check the destination before replaying data that may already have committed; use a durable outbox when payloads must survive process failure.
+Upgrading the server from 0.5 clears statement history and saved results. Previously saved statement handles cannot be resumed.
+
+## Migrate from Ingest
+
+`Client.insert()`, `Client.ingest()`, `Client.ingestStream()`, `IngestStream`, `IngestStreamBuilder`, and the ingest protocol types have been removed. Use `client.table(name).append(ndjson)` for one request or `.appendStream().build()` to batch JavaScript objects. This SDK version requires ScopeDB 0.6.0 or later.
+
+Append accepts rows matching the destination columns, not a ScopeQL statement. Move field renaming, type conversion, filtering, and routing into the producer before calling `send()`. See [`append-transform.ts`](examples/append-transform.ts) for a runnable example:
 
 ```ts
-import { Client } from "scopedb";
-
-const client = new Client(process.env.SCOPEDB_ENDPOINT!, {
-  apiKey: process.env.SCOPEDB_API_KEY!,
-});
-
-const stream = client
-  .ingestStream(`
-    SELECT
-      $0["ts"]::timestamp AS occurred_at,
-      $0["name"]::string AS name
-    INSERT INTO public.sdk_example_events (occurred_at, name)
-  `)
+const source = { ts: "2026-03-13T12:00:00Z", name: "scopedb" };
+const stream = client.table("events").appendStream()
+  .maxConcurrentBatches(1)
+  .maxRetries(0)
   .build();
-
-await stream.send({
-  ts: "2026-03-13T12:00:00Z",
-  name: "scopedb",
-});
-
-await stream.flush();
-await stream.shutdown();
+try {
+  await stream.send({ occurred_at: new Date(source.ts).toISOString(), name: source.name });
+} finally {
+  const report = await stream.shutdown();
+  console.log("Committed rows:", report?.num_rows_inserted ?? 0);
+}
 ```
+
+For transformations that must run in ScopeQL, append the original event into an `object` column in a staging table, then execute a separate `FROM ... SELECT ... INSERT INTO ...` statement. Staging and transformation are separate commits; track processed batches before retrying the transformation.
+
+Review these behavior changes when migrating:
+
+- Append batches allow up to 8 MiB of uncompressed NDJSON and 200,000 rows. Reduce an old ingest batch-byte target above 8 MiB.
+- `flush()` and `shutdown()` in the default stop policy return `AppendRowsResult | null`: read `num_rows_inserted`, with `null` for an empty barrier. The continue policy returns an `AppendDeliveryReport` for activity since the previous report; check `outcome` and `committedRows`. Direct `append()` returns `AppendRowsResult`.
+- Append streams send up to four batches concurrently by default. Use `.maxConcurrentBatches(1)` for sequential requests; queries still require `ORDER BY` for ordered results.
+- Append streams may retry transient unknown outcomes, which can duplicate rows. Use `.maxRetries(0)` to preserve the old stream's no-replay behavior. Client timeouts and cancellations are never retried. Direct `append()` makes one attempt.
 
 ## Examples
 
@@ -291,3 +311,13 @@ Release history and the maintainer runbook are in [CHANGELOG.md](CHANGELOG.md) a
 ## License
 
 Licensed under the [Apache License, Version 2.0](https://www.apache.org/licenses/LICENSE-2.0).
+
+## Live protocol validation
+
+From a source checkout, set `SCOPEDB_ENDPOINT` and `SCOPEDB_API_KEY` to an authenticated ScopeDB 0.6 endpoint, then run:
+
+```sh
+pnpm test:integration
+```
+
+The test creates a uniquely named schema and checks dry-run, ETag conflicts, committed and rejected appends, statement errors, elapsed timeout, and a cancellation racing with completion. It deletes its schema before returning. Running cancellation is covered separately with controlled HTTP responses in the unit tests.

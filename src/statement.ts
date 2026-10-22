@@ -18,7 +18,6 @@ import type { Client, RequestOptions } from "./client.js";
 import { ScopeDBError } from "./errors.js";
 import type {
   ResultFormat,
-  StatementCancelResult,
   StatementEstimatedProgress,
   StatementStatus,
 } from "./protocol.js";
@@ -45,7 +44,8 @@ export type FetchOptions = WaitOptions;
 
 export class Statement {
   private statementIdValue?: string;
-  private execTimeoutValue?: string;
+  private maxElapsedSeconds?: number;
+  private maxEstimatedSeconds?: number;
   private readonly format: ResultFormat = "json";
 
   constructor(
@@ -58,8 +58,13 @@ export class Statement {
     return this;
   }
 
-  withExecTimeout(execTimeout: string): this {
-    this.execTimeoutValue = execTimeout;
+  withMaxElapsedSeconds(seconds: number): this {
+    this.maxElapsedSeconds = durationLimit(seconds);
+    return this;
+  }
+
+  withMaxEstimatedSeconds(seconds: number): this {
+    this.maxEstimatedSeconds = durationLimit(seconds);
     return this;
   }
 
@@ -68,13 +73,19 @@ export class Statement {
       {
         statement: this.statementText,
         statement_id: this.statementIdValue,
-        exec_timeout: this.execTimeoutValue,
+        max_elapsed_seconds: this.maxElapsedSeconds,
+        max_estimated_seconds: this.maxEstimatedSeconds,
         format: this.format,
       },
       options,
     );
 
-    return new StatementHandle(this.client, status.statement_id, this.format, status);
+    return new StatementHandle(
+      this.client,
+      status.statement_id,
+      this.format,
+      status,
+    );
   }
 
   async execute(options: WaitOptions = {}): Promise<ResultSet> {
@@ -94,7 +105,9 @@ export class Statement {
    *
    * @deprecated Use `execute()` followed by `ResultSet.first()`.
    */
-  async executeOne(options: WaitOptions = {}): Promise<Record<string, Value> | null> {
+  async executeOne(
+    options: WaitOptions = {},
+  ): Promise<Record<string, Value> | null> {
     return (await this.execute(options)).first();
   }
 }
@@ -117,7 +130,10 @@ export class StatementHandle {
   }
 
   resultSet(): ResultSet | null {
-    if (this.currentStatus === undefined || !statementIsFinished(this.currentStatus)) {
+    if (
+      this.currentStatus === undefined ||
+      !statementIsFinished(this.currentStatus)
+    ) {
       return null;
     }
     return ResultSet.fromStatementResultSet(this.currentStatus.result_set);
@@ -125,11 +141,17 @@ export class StatementHandle {
 
   /** Fetches and returns the latest status, or reuses a cached terminal status. */
   async status(options: RequestOptions = {}): Promise<StatementStatus> {
-    if (this.currentStatus !== undefined && statementIsTerminated(this.currentStatus)) {
+    if (
+      this.currentStatus !== undefined &&
+      statementIsTerminated(this.currentStatus)
+    ) {
       return this.currentStatus;
     }
 
-    this.currentStatus = await this.client.fetchStatement(this.statementId, options);
+    this.currentStatus = await this.client.fetchStatement(
+      this.statementId,
+      options,
+    );
     return this.currentStatus;
   }
 
@@ -147,18 +169,32 @@ export class StatementHandle {
       await this.status(options);
 
       if (this.currentStatus === undefined) {
-        throw new ScopeDBError("Unexpected", "statement fetch returned no status");
+        throw new ScopeDBError(
+          "Unexpected",
+          "statement fetch returned no status",
+        );
       }
 
       switch (this.currentStatus.status) {
         case "finished":
-          return ResultSet.fromStatementResultSet(this.currentStatus.result_set);
+          return ResultSet.fromStatementResultSet(
+            this.currentStatus.result_set,
+          );
         case "failed":
-          throw new ScopeDBError("StatementFailed", this.currentStatus.message, {
-            statementDetails: this.currentStatus.error,
-          });
+          throw new ScopeDBError(
+            "StatementFailed",
+            this.currentStatus.error.message,
+            {
+              code: this.currentStatus.error.code,
+              details: this.currentStatus.error.details,
+              statementDetails: this.currentStatus.error,
+            },
+          );
         case "cancelled":
-          throw new ScopeDBError("StatementFailed", this.currentStatus.message);
+          throw new ScopeDBError(
+            "StatementFailed",
+            `statement ${this.statementId} is cancelled`,
+          );
         case "pending":
         case "running":
           await sleep(delayMs, options.signal);
@@ -175,78 +211,29 @@ export class StatementHandle {
     return this.wait(options);
   }
 
-  async cancel(options: RequestOptions = {}): Promise<StatementCancelResult> {
-    if (this.currentStatus !== undefined) {
-      switch (this.currentStatus.status) {
-        case "finished":
-          return {
-            statement_id: this.currentStatus.statement_id,
-            created_at: this.currentStatus.created_at,
-            status: "finished",
-            message: "statement is finished",
-          };
-        case "failed":
-          return {
-            statement_id: this.currentStatus.statement_id,
-            created_at: this.currentStatus.created_at,
-            status: "failed",
-            message: "statement is failed",
-          };
-        case "cancelled":
-          return {
-            statement_id: this.currentStatus.statement_id,
-            created_at: this.currentStatus.created_at,
-            status: "cancelled",
-            message: "statement is cancelled",
-          };
-        case "pending":
-        case "running":
-          break;
-      }
-    }
-
-    const result = await this.client.cancelStatement(this.statementId, options);
-    if (result.status === "failed") {
-      this.currentStatus = {
-        status: "failed",
-        statement_id: result.statement_id,
-        created_at: result.created_at,
-        progress: emptyProgress(),
-        message: result.message,
-      };
-    } else if (result.status === "cancelled") {
-      this.currentStatus = {
-        status: "cancelled",
-        statement_id: result.statement_id,
-        created_at: result.created_at,
-        progress: emptyProgress(),
-        message: result.message,
-      };
-    }
-    return result;
+  /** Cancels execution and retains the complete resulting status, including results or errors. */
+  async cancel(options: RequestOptions = {}): Promise<StatementStatus> {
+    if (
+      this.currentStatus !== undefined &&
+      statementIsTerminated(this.currentStatus)
+    )
+      return this.currentStatus;
+    this.currentStatus = await this.client.cancelStatement(
+      this.statementId,
+      options,
+    );
+    return this.currentStatus;
   }
 }
 
-function emptyProgress(): StatementEstimatedProgress {
-  return {
-    total_percentage: 0,
-    nanos_from_submitted: 0,
-    nanos_from_started: 0,
-    total_stages: 0,
-    total_partitions: 0,
-    total_rows: 0,
-    total_compressed_bytes: 0,
-    total_uncompressed_bytes: 0,
-    scanned_stages: 0,
-    scanned_partitions: 0,
-    scanned_rows: 0,
-    scanned_compressed_bytes: 0,
-    scanned_uncompressed_bytes: 0,
-    skipped_partitions: 0,
-    skipped_rows: 0,
-    skipped_compressed_bytes: 0,
-    skipped_uncompressed_bytes: 0,
-  };
+function durationLimit(seconds: number): number {
+  if (!Number.isFinite(seconds) || seconds <= 0) {
+    throw new ScopeDBError(
+      "ConfigInvalid",
+      "statement duration limits must be finite and positive",
+    );
+  }
+  return seconds;
 }
 
 async function sleep(ms: number, signal?: AbortSignal): Promise<void> {

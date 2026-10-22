@@ -20,8 +20,8 @@ import {setTimeout as delay} from 'node:timers/promises';
 import {Client} from '../src/client.js';
 import {AppendRowsError} from '../src/errors.js';
 import {AppendRetryExhaustedError} from '../src/append-stream.js';
-const ok=()=>Response.json({append_state:'committed',num_rows_inserted:1});
-const failure=(state='unknown',status=503,headers={})=>Response.json({message:'failure',append_state:state,row_errors:[],row_errors_truncated:false},{status,headers});
+const ok=()=>Response.json({status:'committed',num_rows_inserted:1});
+const failure=(state='unknown',status=503,headers={})=>Response.json({ message:'failure', code: "ingest_failure", details: { status:state, row_errors:[], row_errors_truncated:false } },{status,headers});
 const table=(fetch:typeof globalThis.fetch)=>new Client('http://localhost:8080',{fetch}).table('events');
 
 for(const kind of ['lost ACK','invalid ACK','unknown 503','unstructured 503']) {

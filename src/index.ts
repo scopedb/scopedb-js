@@ -15,17 +15,12 @@
  */
 
 export { Client } from "./client.js";
-export type {
-  CatalogListOptions,
-  ClientOptions,
-  RequestOptions,
-  SchemaCatalogListOptions,
-  SchemaReference,
-  TableCatalogListOptions,
-  TableReference,
-  WriteOptions,
-} from "./client.js";
-export { AppendStream, AppendStreamBuilder, AppendRetryExhaustedError } from "./append-stream.js";
+export type { ClientOptions, RequestOptions, WriteOptions } from "./client.js";
+export {
+  AppendStream,
+  AppendStreamBuilder,
+  AppendRetryExhaustedError,
+} from "./append-stream.js";
 export type {
   AppendAdmissionResult,
   AppendBarrierResult,
@@ -47,18 +42,12 @@ export type {
   WriteErrorDetails,
   WriteErrorReason,
 } from "./errors.js";
-export { IngestStream, IngestStreamBuilder } from "./ingest-stream.js";
 export type {
   AppendRowError,
   AppendRowsErrorPayload,
   AppendRowsResult,
   AppendState,
-  CatalogPage,
   DataType,
-  DatabaseResource,
-  IngestResult,
-  SchemaResource,
-  StatementCancelResult,
   StatementEstimatedProgress,
   StatementErrorDetails,
   StatementProgress,
@@ -68,11 +57,6 @@ export type {
   StatementStatusFinished,
   StatementStatusPending,
   StatementStatusRunning,
-  TableColumnSpec,
-  TableDistinctSpec,
-  TableResource,
-  TableResourceSummary,
-  TableSpec,
 } from "./protocol.js";
 export { FieldSchema, ResultSet, Schema } from "./result.js";
 export type {
@@ -84,8 +68,17 @@ export type {
 export { Statement, StatementHandle } from "./statement.js";
 export type { FetchOptions, WaitOptions } from "./statement.js";
 export { Table } from "./table.js";
+export type { TableOptions } from "./table.js";
+
+export { Catalog, CatalogResource } from "./catalog.js";
 export type {
-  TableColumn,
-  TableDescription,
-  TableOptions,
-} from "./table.js";
+  CatalogDocument,
+  CatalogDatabase,
+  CatalogSchema,
+  CatalogTable,
+  CatalogColumn,
+  CatalogView,
+  CatalogSnapshot,
+  CatalogResult,
+  CatalogOptions,
+} from "./catalog.js";

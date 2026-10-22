@@ -62,10 +62,11 @@
     "example:append-bulk": "pnpm run example -- append-bulk",
     "example:append-telemetry": "pnpm run example -- append-telemetry",
     "example:catalog": "pnpm run example -- catalog",
-    "example:ingest-transform": "pnpm run example -- ingest-transform",
+    "example:append-transform": "pnpm run example -- append-transform",
     "example:statement": "pnpm run example -- statement",
     "prepack": "pnpm run test && pnpm run check",
-    "test": "tsc -p tsconfig.test.json --noEmit && tsc -p tsconfig.test.json && node --test dist-test/tests/*.test.js"
+    "test": "tsc -p tsconfig.test.json --noEmit && tsc -p tsconfig.test.json && node --test dist-test/tests/*.test.js",
+    "test:integration": "tsc -p tsconfig.test.json && node --test dist-test/tests/native-06.test.js"
   },
   "devDependencies": {
     "@types/node": "^25.5.0",

@@ -23,6 +23,7 @@ import type {
 
 export type ErrorKind =
   | "Unexpected"
+  | "CatalogFailed"
   | "ConfigInvalid"
   /** The statement execution was rejected by the server (failed or cancelled in-band). */
   | "StatementFailed"
@@ -40,6 +41,8 @@ export interface WriteErrorDetails {
 }
 
 export interface ScopeDBErrorOptions {
+  code?: string;
+  details?: unknown;
   cause?: unknown;
   status?: ErrorStatus;
   /** HTTP response status, when the error came from the server. */
@@ -56,6 +59,8 @@ export interface ScopeDBErrorOptions {
 
 export class ScopeDBError extends Error {
   readonly kind: ErrorKind;
+  readonly code?: string;
+  readonly details?: unknown;
   readonly httpStatus?: number;
   readonly requestId?: string;
   readonly retryAfterMs?: number;
@@ -72,6 +77,8 @@ export class ScopeDBError extends Error {
     super(message, options?.cause === undefined ? undefined : { cause: options.cause });
     this.name = "ScopeDBError";
     this.kind = kind;
+    this.code = options?.code;
+    this.details = options?.details;
     this.httpStatus = options?.httpStatus;
     this.requestId = options?.requestId;
     this.retryAfterMs = options?.retryAfterMs;

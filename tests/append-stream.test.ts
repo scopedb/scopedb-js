@@ -27,27 +27,17 @@ import { jsonResponse, makeFetchStub, requestBodyText } from "./helpers.js";
 
 function appendOk(numRows = 1): Response {
   return jsonResponse(200, {
-    append_state: "committed",
+    status: "committed",
     num_rows_inserted: numRows,
   });
 }
 
 function appendRejected(status = 503): Response {
-  return jsonResponse(status, {
-    message: "append is temporarily unavailable",
-    append_state: "rejected",
-    row_errors: [],
-    row_errors_truncated: false,
-  });
+  return jsonResponse(status, { message: "append is temporarily unavailable", code: "ingest_failure", details: { status: "rejected", row_errors: [], row_errors_truncated: false } });
 }
 
 function appendUnknown(): Response {
-  return jsonResponse(503, {
-    message: "append commit outcome is unknown",
-    append_state: "unknown",
-    row_errors: [],
-    row_errors_truncated: false,
-  });
+  return jsonResponse(503, { message: "append commit outcome is unknown", code: "ingest_failure", details: { status: "unknown", row_errors: [], row_errors_truncated: false } });
 }
 
 function makeTable(responses: Response[]) {

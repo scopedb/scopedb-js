@@ -88,7 +88,7 @@ describe("Table.drop", () => {
     // drop() calls statement(...).execute(), which does POST /v1/statements then GET
     const finished = finishedStatus(emptyResultSet());
     const { fn, calls } = makeFetchStub([
-      jsonResponse(200, { status: "pending", statement_id: "s1", created_at: "2024-01-01T00:00:00Z", progress: { total_percentage: 0, nanos_from_submitted: 0, nanos_from_started: 0, total_stages: 0, total_partitions: 0, total_rows: 0, total_compressed_bytes: 0, total_uncompressed_bytes: 0, scanned_stages: 0, scanned_partitions: 0, scanned_rows: 0, scanned_compressed_bytes: 0, scanned_uncompressed_bytes: 0, skipped_partitions: 0, skipped_rows: 0, skipped_compressed_bytes: 0, skipped_uncompressed_bytes: 0 } }),
+      jsonResponse(200, { status: "pending", statement_id: "s1", created_at: "2024-01-01T00:00:00Z", progress: { total_percentage: 0, compute_seconds: 0, nanos_from_submitted: 0, nanos_from_started: 0, total_stages: 0, total_partitions: 0, total_rows: 0, total_compressed_bytes: 0, total_uncompressed_bytes: 0, scanned_stages: 0, scanned_partitions: 0, scanned_rows: 0, scanned_compressed_bytes: 0, scanned_uncompressed_bytes: 0, skipped_partitions: 0, skipped_rows: 0, skipped_compressed_bytes: 0, skipped_uncompressed_bytes: 0 } }),
       jsonResponse(200, finished),
     ]);
     const client = new Client("http://localhost:8080", { fetch: fn });
@@ -110,9 +110,9 @@ describe("Table.drop", () => {
 });
 
 describe("Table.append", () => {
-  it("posts the NDJSON payload to the fully qualified rows endpoint", async () => {
+  it("posts the NDJSON payload to the fully qualified table ingest endpoint", async () => {
     const appendResult = { append_state: "committed", num_rows_inserted: 2 };
-    const { fn, calls } = makeFetchStub([jsonResponse(200, appendResult)]);
+    const { fn, calls } = makeFetchStub([jsonResponse(200, { status: "committed", num_rows_inserted: 2 })]);
     const client = new Client("http://localhost:8080", { fetch: fn });
     const table = client
       .table("page views?#")
@@ -126,7 +126,7 @@ describe("Table.append", () => {
     const call = calls[0]!;
     assert.equal(
       call.url,
-      "http://localhost:8080/v1/databases/analytics%2Fraw/schemas/events%202026/tables/page%20views%3F%23/rows",
+      "http://localhost:8080/v1/catalog/databases/analytics%2Fraw/schemas/events%202026/tables/page%20views%3F%23/ingest",
     );
     const init = call.init as RequestInit;
     assert.equal(init.method, "POST");
@@ -139,7 +139,7 @@ describe("Table.append", () => {
 
   it("uses the default database and schema", async () => {
     const { fn, calls } = makeFetchStub([
-      jsonResponse(200, { append_state: "committed", num_rows_inserted: 1 }),
+      jsonResponse(200, { status: "committed", num_rows_inserted: 1 }),
     ]);
     const client = new Client("http://localhost:8080", { fetch: fn });
 
@@ -147,13 +147,13 @@ describe("Table.append", () => {
 
     assert.equal(
       calls[0]!.url,
-      "http://localhost:8080/v1/databases/scopedb/schemas/public/tables/events/rows",
+      "http://localhost:8080/v1/catalog/databases/scopedb/schemas/public/tables/events/ingest",
     );
   });
 
   it("accepts the table location when the handle is created", async () => {
     const { fn, calls } = makeFetchStub([
-      jsonResponse(200, { append_state: "committed", num_rows_inserted: 1 }),
+      jsonResponse(200, { status: "committed", num_rows_inserted: 1 }),
     ]);
     const client = new Client("http://localhost:8080", { fetch: fn });
 
@@ -164,7 +164,7 @@ describe("Table.append", () => {
 
     assert.equal(
       calls[0]!.url,
-      "http://localhost:8080/v1/databases/analytics/schemas/logs/tables/events/rows",
+      "http://localhost:8080/v1/catalog/databases/analytics/schemas/logs/tables/events/ingest",
     );
   });
 
@@ -187,7 +187,7 @@ describe("Table.append", () => {
 
   it("does not start an append when the signal is already aborted", async () => {
     const { fn, calls } = makeFetchStub([
-      jsonResponse(200, { append_state: "committed", num_rows_inserted: 1 }),
+      jsonResponse(200, { status: "committed", num_rows_inserted: 1 }),
     ]);
     const client = new Client("http://localhost:8080", { fetch: fn });
     const controller = new AbortController();
@@ -205,14 +205,9 @@ describe("Table.append", () => {
 
   it("preserves row-level rejection details", async () => {
     const { fn } = makeFetchStub([
-      jsonResponse(422, {
-        message: "row validation failed",
-        append_state: "rejected",
-        row_errors: [
+      jsonResponse(422, { message: "row validation failed", code: "ingest_failure", details: { status: "rejected", row_errors: [
           { row_index: 1, column: "id", message: "expected int, got string" },
-        ],
-        row_errors_truncated: false,
-      }),
+        ], row_errors_truncated: false } }),
     ]);
     const client = new Client("http://localhost:8080", { fetch: fn });
 
@@ -233,12 +228,7 @@ describe("Table.append", () => {
 
   it("does not mark an unknown commit outcome as automatically retryable", async () => {
     const { fn } = makeFetchStub([
-      jsonResponse(503, {
-        message: "append commit outcome is unknown",
-        append_state: "unknown",
-        row_errors: [],
-        row_errors_truncated: false,
-      }),
+      jsonResponse(503, { message: "append commit outcome is unknown", code: "ingest_failure", details: { status: "unknown", row_errors: [], row_errors_truncated: false } }),
     ]);
     const client = new Client("http://localhost:8080", { fetch: fn });
 
@@ -255,7 +245,7 @@ describe("Table.append", () => {
 
   it("treats a committed response with the wrong row count as unknown", async () => {
     const { fn } = makeFetchStub([
-      jsonResponse(200, { append_state: "committed", num_rows_inserted: 2 }),
+      jsonResponse(200, { status: "committed", num_rows_inserted: 2 }),
     ]);
     const client = new Client("http://localhost:8080", { fetch: fn });
 
@@ -315,11 +305,11 @@ describe("Table.tableSchema", () => {
       ],
       partition_by: [],
       cluster_by: [],
-      distinct_on: { on: [], by: [] },
-      data_retention_days: null,
+      distinct: { on: [], by: [] },
+      retention_days: null,
       comment: null,
     };
-    const { fn, calls } = makeFetchStub([jsonResponse(200, resource)]);
+    const { fn, calls } = makeFetchStub([jsonResponse(200, resource, { ETag: '"v1"' })]);
     const client = new Client("http://localhost:8080", { fetch: fn });
     const table = client
       .table("page_views")
@@ -339,11 +329,11 @@ describe("Table.tableSchema", () => {
     assert.equal((calls[0]!.init as RequestInit).method, "GET");
     assert.equal(
       calls[0]!.url,
-      "http://localhost:8080/v1/databases/analytics/schemas/events/tables/page_views",
+      "http://localhost:8080/v1/catalog/databases/analytics/schemas/events/tables/page_views",
     );
   });
 
-  it("describes the complete table with JS-style field names", async () => {
+  it("describes the complete table as a reusable declarative definition", async () => {
     const resource = {
       database: "analytics",
       schema: "events",
@@ -353,11 +343,11 @@ describe("Table.tableSchema", () => {
       ],
       partition_by: ["day"],
       cluster_by: ["id"],
-      distinct_on: { on: ["id"], by: ["occurred_at DESC"] },
-      data_retention_days: 30,
+      distinct: { on: ["id"], by: ["occurred_at DESC"] },
+      retention_days: 30,
       comment: "page views",
     };
-    const { fn } = makeFetchStub([jsonResponse(200, resource)]);
+    const { fn } = makeFetchStub([jsonResponse(200, resource, { ETag: '"v1"' })]);
     const client = new Client("http://localhost:8080", { fetch: fn });
 
     const description = await client.table("page_views", {
@@ -365,17 +355,7 @@ describe("Table.tableSchema", () => {
       schema: "events",
     }).describe();
 
-    assert.deepEqual(description, {
-      database: "analytics",
-      schema: "events",
-      name: "page_views",
-      columns: [{ name: "id", dataType: "int", comment: "identifier" }],
-      partitionBy: ["day"],
-      clusterBy: ["id"],
-      distinctOn: { on: ["id"], by: ["occurred_at DESC"] },
-      dataRetentionDays: 30,
-      comment: "page views",
-    });
+    assert.deepEqual(description, resource);
   });
 
   it("does not let request options override the table handle identity", async () => {
@@ -386,11 +366,11 @@ describe("Table.tableSchema", () => {
       columns: [],
       partition_by: [],
       cluster_by: [],
-      distinct_on: { on: [], by: [] },
-      data_retention_days: null,
+      distinct: { on: [], by: [] },
+      retention_days: null,
       comment: null,
     };
-    const { fn, calls } = makeFetchStub([jsonResponse(200, resource)]);
+    const { fn, calls } = makeFetchStub([jsonResponse(200, resource, { ETag: '"v1"' })]);
     const client = new Client("http://localhost:8080", { fetch: fn });
     const widerOptions = {
       database: "other",
@@ -405,7 +385,7 @@ describe("Table.tableSchema", () => {
 
     assert.equal(
       calls[0]!.url,
-      "http://localhost:8080/v1/databases/analytics/schemas/events/tables/page_views",
+      "http://localhost:8080/v1/catalog/databases/analytics/schemas/events/tables/page_views",
     );
   });
 });

@@ -20,37 +20,13 @@ import {
   type AppendFailurePolicy,
   type AppendStreamOptions,
 } from "./append-stream.js";
-import type {
-  AppendRowsResult,
-  DataType,
-  TableResource,
-} from "./protocol.js";
+import type { AppendRowsResult } from "./protocol.js";
+import type { CatalogTable, CatalogOptions, CatalogResult } from "./catalog.js";
 import { FieldSchema, Schema } from "./result.js";
 
 export interface TableOptions {
   database?: string;
   schema?: string;
-}
-
-export interface TableColumn {
-  name: string;
-  dataType: Exclude<DataType, "u_int">;
-  comment: string | null;
-}
-
-export interface TableDescription {
-  database: string;
-  schema: string;
-  name: string;
-  columns: TableColumn[];
-  partitionBy: string[];
-  clusterBy: string[];
-  distinctOn: {
-    on: string[];
-    by: string[];
-  };
-  dataRetentionDays: number | null;
-  comment: string | null;
 }
 
 export class Table {
@@ -91,11 +67,16 @@ export class Table {
   }
 
   async drop(options: RequestOptions = {}): Promise<void> {
-    await this.client.statement(`DROP TABLE ${this.identifier()}`).execute(options);
+    await this.client
+      .statement(`DROP TABLE ${this.identifier()}`)
+      .execute(options);
   }
 
   /** Appends at most 8 MiB of uncompressed newline-delimited JSON. */
-  async append(ndjson: string, options: WriteOptions = {}): Promise<AppendRowsResult> {
+  async append(
+    ndjson: string,
+    options: WriteOptions = {},
+  ): Promise<AppendRowsResult> {
     return this.client.appendRows(
       this.databaseName ?? "scopedb",
       this.schemaName ?? "public",
@@ -118,9 +99,8 @@ export class Table {
   appendStream(
     options?: AppendStreamOptions<AppendFailurePolicy>,
   ): AppendStreamBuilder<AppendFailurePolicy> {
-    const failurePolicy = options === undefined
-      ? "stop"
-      : options?.failurePolicy;
+    const failurePolicy =
+      options === undefined ? "stop" : options?.failurePolicy;
     return AppendStreamBuilder.create(
       this.client,
       this.databaseName ?? "scopedb",
@@ -130,50 +110,38 @@ export class Table {
     );
   }
 
-  /** Returns this table's complete catalog metadata with JS-style field names. */
-  async describe(options: RequestOptions = {}): Promise<TableDescription> {
-    const table = await this.fetchResource(options);
-    return tableDescription(table);
+  /** Returns the table's declarative definition. */
+  async describe(options: RequestOptions = {}): Promise<CatalogTable> {
+    return (await this.resource().get(options)).definition;
   }
 
-  /** @deprecated Use `describe()` when possible. */
-  async tableSchema(options: RequestOptions = {}): Promise<Schema> {
-    const table = await this.fetchResource(options);
+  /** Replaces the complete definition; potentially destructive changes require explicit authorization. */
+  apply(
+    definition: CatalogTable,
+    options: CatalogOptions = {},
+  ): Promise<CatalogResult<CatalogTable>> {
+    return this.resource().apply(definition, options);
+  }
 
+  /** @deprecated Use `describe()`. */
+  async tableSchema(options: RequestOptions = {}): Promise<Schema> {
+    const table = await this.describe(options);
     return new Schema(
-      table.columns.map((column) => new FieldSchema(column.name, column.data_type)),
+      (table.columns ?? []).map(
+        (column) => new FieldSchema(column.name, column.data_type),
+      ),
     );
   }
 
-  private fetchResource(options: RequestOptions): Promise<TableResource> {
-    return this.client.fetchTable({
-      ...options,
-      database: this.databaseName ?? "scopedb",
-      schema: this.schemaName ?? "public",
-      table: this.tableName,
-    });
+  private resource() {
+    return this.client
+      .catalog()
+      .table(
+        this.databaseName ?? "scopedb",
+        this.schemaName ?? "public",
+        this.tableName,
+      );
   }
-}
-
-function tableDescription(table: TableResource): TableDescription {
-  return {
-    database: table.database,
-    schema: table.schema,
-    name: table.name,
-    columns: table.columns.map((column) => ({
-      name: column.name,
-      dataType: column.data_type,
-      comment: column.comment,
-    })),
-    partitionBy: [...table.partition_by],
-    clusterBy: [...table.cluster_by],
-    distinctOn: {
-      on: [...table.distinct_on.on],
-      by: [...table.distinct_on.by],
-    },
-    dataRetentionDays: table.data_retention_days,
-    comment: table.comment,
-  };
 }
 
 function quoteIdent(input: string, quote: string): string {

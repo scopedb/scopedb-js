@@ -48,6 +48,7 @@ export interface StatementResultSet {
 }
 
 export interface StatementProgress {
+  compute_seconds: number;
   total_stages: number;
   total_partitions: number;
   total_rows: number;
@@ -99,14 +100,11 @@ export interface StatementErrorDetails {
 
 export interface StatementStatusFailed extends StatementStatusBase {
   status: "failed";
-  message: string;
-  /** Structured server failure, absent when talking to an older server. */
-  error?: StatementErrorDetails;
+  error: StatementErrorDetails;
 }
 
 export interface StatementStatusCancelled extends StatementStatusBase {
   status: "cancelled";
-  message: string;
 }
 
 export type StatementStatus =
@@ -119,33 +117,11 @@ export type StatementStatus =
 export interface StatementRequest {
   statement: string;
   statement_id?: string;
-  exec_timeout?: string;
+  max_elapsed_seconds?: number;
+  max_estimated_seconds?: number;
   format: ResultFormat;
 }
 
-export interface StatementCancelResult {
-  statement_id: string;
-  status: "finished" | "failed" | "cancelled";
-  message: string;
-  created_at: string;
-}
-
-export type IngestType = "committed" | "buffered";
-
-export interface IngestRequest {
-  type: IngestType;
-  data: {
-    format: "json";
-    rows: string;
-  };
-  statement: string;
-}
-
-export interface IngestResult {
-  num_rows_inserted: number;
-}
-
-/** The commit outcome used by table append responses and client-side write interruptions. */
 export type AppendState = "committed" | "rejected" | "unknown";
 
 export interface AppendRowsResult {
@@ -159,6 +135,7 @@ export interface AppendRowError {
   message: string;
 }
 
+/** Normalized SDK diagnostics; Client decodes the server's nested details.status. */
 export interface AppendRowsErrorPayload {
   message: string;
   append_state: Exclude<AppendState, "committed">;
@@ -166,53 +143,10 @@ export interface AppendRowsErrorPayload {
   row_errors_truncated: boolean;
 }
 
-export interface CatalogPage<T> {
-  items: T[];
-  next_page_token?: string;
-}
-
-export interface DatabaseResource {
-  name: string;
-  comment: string | null;
-}
-
-export interface SchemaResource {
-  database: string;
-  name: string;
-  comment: string | null;
-}
-
-export interface TableResourceSummary {
-  database: string;
-  schema: string;
-  name: string;
-  comment: string | null;
-}
-
-export interface TableColumnSpec {
-  name: string;
-  data_type: Exclude<DataType, "u_int">;
-  comment: string | null;
-}
-
-export interface TableDistinctSpec {
-  on: string[];
-  by: string[];
-}
-
-export interface TableSpec {
-  columns: TableColumnSpec[];
-  partition_by: string[];
-  cluster_by: string[];
-  distinct_on: TableDistinctSpec;
-  data_retention_days: number | null;
-  comment: string | null;
-}
-
-export interface TableResource extends TableResourceSummary, TableSpec {}
-
 export interface ErrorPayload {
+  code: string;
   message: string;
+  details?: unknown;
 }
 
 export function statementIsFinished(status: StatementStatus): status is StatementStatusFinished {

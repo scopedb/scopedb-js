@@ -15,27 +15,17 @@
  */
 
 import { AppendRowsError, ScopeDBError, asScopeDBError, writeErrorDetailsFromCause } from "./errors.js";
-import { IngestStreamBuilder } from "./ingest-stream.js";
 import type {
   AppendRowError,
   AppendRowsErrorPayload,
   AppendRowsResult,
-  CatalogPage,
   DataType,
-  DatabaseResource,
-  IngestRequest,
-  IngestResult,
-  SchemaResource,
-  StatementCancelResult,
   StatementErrorDetails,
   StatementRequest,
   StatementResultSet,
   StatementStatus,
-  TableColumnSpec,
-  TableDistinctSpec,
-  TableResource,
-  TableResourceSummary,
 } from "./protocol.js";
+import { Catalog, type CatalogOptions } from "./catalog.js";
 import type { ResultSet } from "./result.js";
 import { Statement, StatementHandle } from "./statement.js";
 import type { WaitOptions } from "./statement.js";
@@ -56,35 +46,10 @@ export interface WriteOptions extends RequestOptions {
   timeoutMs?: number;
 }
 
-export interface CatalogListOptions extends RequestOptions {
-  /** Number of resources to return. The server accepts values from 1 to 1000. */
-  pageSize?: number;
-  /** Opaque token returned as `next_page_token` by the previous page. */
-  pageToken?: string;
-}
-
-export interface SchemaCatalogListOptions extends CatalogListOptions {
-  database: string;
-}
-
-export interface TableCatalogListOptions extends CatalogListOptions {
-  database: string;
-  schema: string;
-}
-
-export interface SchemaReference extends RequestOptions {
-  database: string;
-  schema: string;
-}
-
-export interface TableReference extends SchemaReference {
-  table: string;
-}
-
 export interface ClientOptions {
   fetch?: typeof globalThis.fetch;
   /**
-   * Timeout for each table append or transform-ingest request, including its
+   * Timeout for each table append request, including its
    * response body, in milliseconds. Defaults to 30,000 and must be positive.
    * The budget starts after local encoding, compression, and request preparation.
    * Stream attemptTimeoutMs settings override this default. A timeout does not
@@ -154,10 +119,6 @@ export class Client {
     return new Table(this, table, options);
   }
 
-  ingestStream(statement: string): IngestStreamBuilder {
-    return new IngestStreamBuilder(this, statement);
-  }
-
   /**
    * Executes a ScopeQL statement and returns all rows.
    *
@@ -173,217 +134,73 @@ export class Client {
     return this.statement(scopeql).execute(options);
   }
 
-  async listDatabases(
-    options: CatalogListOptions = {},
-  ): Promise<CatalogPage<DatabaseResource>> {
-    return expectCatalogPage(
-      await this.requestJson(this.catalogUrl(["databases"], options), {
-        method: "GET",
-        signal: options.signal,
-      }),
-      isDatabaseResource,
-      "database catalog page",
-    );
+  catalog(): Catalog {
+    return new Catalog((method, path, definition, options) =>
+      this.catalogRequest(method, path, definition, options));
   }
 
-  async fetchDatabase(
-    database: string,
-    options: RequestOptions = {},
-  ): Promise<DatabaseResource> {
-    return expectResponse(
-      await this.requestJson(this.resourceUrl(["databases", database]), {
-        method: "GET",
-        signal: options.signal,
-      }),
-      isDatabaseResource,
-      "database resource",
-    );
-  }
-
-  async listSchemas(
-    reference: SchemaCatalogListOptions,
-  ): Promise<CatalogPage<SchemaResource>>;
-  async listSchemas(
-    database: string,
-    options?: CatalogListOptions,
-  ): Promise<CatalogPage<SchemaResource>>;
-  async listSchemas(
-    databaseOrReference: string | SchemaCatalogListOptions,
-    options: CatalogListOptions = {},
-  ): Promise<CatalogPage<SchemaResource>> {
-    const [database, listOptions] = schemaListArguments(
-      databaseOrReference,
-      options,
-    );
-    return expectCatalogPage(
-      await this.requestJson(
-        this.catalogUrl(["databases", database, "schemas"], listOptions),
-        {
-          method: "GET",
-          signal: listOptions.signal,
-        },
-      ),
-      isSchemaResource,
-      "schema catalog page",
-    );
-  }
-
-  async fetchSchema(reference: SchemaReference): Promise<SchemaResource>;
-  async fetchSchema(
-    database: string,
-    schema: string,
-    options?: RequestOptions,
-  ): Promise<SchemaResource>;
-  async fetchSchema(
-    databaseOrReference: string | SchemaReference,
-    schema?: string,
-    options: RequestOptions = {},
-  ): Promise<SchemaResource> {
-    const [database, schemaName, requestOptions] = schemaReferenceArguments(
-      databaseOrReference,
-      schema,
-      options,
-    );
-    return expectResponse(
-      await this.requestJson(
-        this.resourceUrl(["databases", database, "schemas", schemaName]),
-        {
-          method: "GET",
-          signal: requestOptions.signal,
-        },
-      ),
-      isSchemaResource,
-      "schema resource",
-    );
-  }
-
-  async listTables(
-    reference: TableCatalogListOptions,
-  ): Promise<CatalogPage<TableResourceSummary>>;
-  async listTables(
-    database: string,
-    schema: string,
-    options?: CatalogListOptions,
-  ): Promise<CatalogPage<TableResourceSummary>>;
-  async listTables(
-    databaseOrReference: string | TableCatalogListOptions,
-    schema?: string,
-    options: CatalogListOptions = {},
-  ): Promise<CatalogPage<TableResourceSummary>> {
-    const [database, schemaName, listOptions] = tableListArguments(
-      databaseOrReference,
-      schema,
-      options,
-    );
-    return expectCatalogPage(
-      await this.requestJson(
-        this.catalogUrl(
-          ["databases", database, "schemas", schemaName, "tables"],
-          listOptions,
-        ),
-        {
-          method: "GET",
-          signal: listOptions.signal,
-        },
-      ),
-      isTableResourceSummary,
-      "table catalog page",
-    );
-  }
-
-  async fetchTable(reference: TableReference): Promise<TableResource>;
-  async fetchTable(
-    database: string,
-    schema: string,
-    table: string,
-    options?: RequestOptions,
-  ): Promise<TableResource>;
-  async fetchTable(
-    databaseOrReference: string | TableReference,
-    schema?: string,
-    table?: string,
-    options: RequestOptions = {},
-  ): Promise<TableResource> {
-    const [database, schemaName, tableName, requestOptions] = tableReferenceArguments(
-      databaseOrReference,
-      schema,
-      table,
-      options,
-    );
-    return expectResponse(
-      await this.requestJson(
-        this.resourceUrl([
-          "databases",
-          database,
-          "schemas",
-          schemaName,
-          "tables",
-          tableName,
-        ]),
-        {
-          method: "GET",
-          signal: requestOptions.signal,
-        },
-      ),
-      isTableResource,
-      "table resource",
-    );
-  }
-
-  /** Iterates databases across all catalog pages. */
-  async *iterateDatabases(
-    options: CatalogListOptions = {},
-  ): AsyncGenerator<DatabaseResource> {
-    yield* iterateCatalogPages(
-      (pageToken) => this.listDatabases({ ...options, pageToken }),
-      options.pageToken,
-    );
-  }
-
-  /** Iterates schemas across all catalog pages. */
-  iterateSchemas(reference: SchemaCatalogListOptions): AsyncGenerator<SchemaResource>;
-  iterateSchemas(
-    database: string,
-    options?: CatalogListOptions,
-  ): AsyncGenerator<SchemaResource>;
-  async *iterateSchemas(
-    databaseOrReference: string | SchemaCatalogListOptions,
-    options: CatalogListOptions = {},
-  ): AsyncGenerator<SchemaResource> {
-    const [database, listOptions] = schemaListArguments(
-      databaseOrReference,
-      options,
-    );
-    yield* iterateCatalogPages(
-      (pageToken) => this.listSchemas(database, { ...listOptions, pageToken }),
-      listOptions.pageToken,
-    );
-  }
-
-  /** Iterates table summaries across all catalog pages. */
-  iterateTables(reference: TableCatalogListOptions): AsyncGenerator<TableResourceSummary>;
-  iterateTables(
-    database: string,
-    schema: string,
-    options?: CatalogListOptions,
-  ): AsyncGenerator<TableResourceSummary>;
-  async *iterateTables(
-    databaseOrReference: string | TableCatalogListOptions,
-    schema?: string,
-    options: CatalogListOptions = {},
-  ): AsyncGenerator<TableResourceSummary> {
-    const [database, schemaName, listOptions] = tableListArguments(
-      databaseOrReference,
-      schema,
-      options,
-    );
-    yield* iterateCatalogPages(
-      (pageToken) => this.listTables(database, schemaName, {
-        ...listOptions,
-        pageToken,
-      }),
-      listOptions.pageToken,
-    );
+  private async catalogRequest(method: string, path: string[], definition: unknown, options: CatalogOptions): Promise<{ body: Record<string, unknown>; etag: string }> {
+    const url = this.resourceUrl(["catalog", ...path]);
+    if (options.dryRun) url.searchParams.set("dry_run", "true");
+    if (options.allowDestructive) url.searchParams.set("allow_destructive", "true");
+    const headers = new Headers();
+    if (options.ifMatch !== undefined) headers.set("If-Match", options.ifMatch);
+    const body = definition === undefined ? undefined : JSON.stringify(definition);
+    options.signal?.throwIfAborted();
+    const mutation = method !== "GET";
+    const writing = mutation && !options.dryRun;
+    const controller = new AbortController();
+    const abort = () => controller.abort(options.signal?.reason);
+    const timeoutMs = mutation ? positiveIntegerConfig("timeoutMs", options.timeoutMs ?? this.writeTimeoutMs, MAX_TIMER_MS) : undefined;
+    options.signal?.addEventListener("abort", abort, { once: true });
+    const timer = timeoutMs === undefined ? undefined : setTimeout(() => controller.abort(new DOMException("catalog request timed out", "TimeoutError")), timeoutMs);
+    let rejectAborted!: () => void;
+    const aborted = new Promise<never>((_resolve, reject) => {
+      rejectAborted = () => reject(controller.signal.reason);
+      controller.signal.addEventListener("abort", rejectAborted, { once: true });
+    });
+    let response: Response | undefined;
+    let failure: ScopeDBError | undefined;
+    try {
+      return await Promise.race([
+        (async () => {
+          response = await this.request(url, { method, headers, body, signal: controller.signal });
+          if (!response.ok) {
+            failure = await responseToError(response);
+            if (writing) {
+              if (failure.cause !== undefined && response.status >= 500) {
+                failure = new ScopeDBError("CatalogFailed", "catalog commit outcome is unknown", {
+                  cause: failure, code: "catalog_commit_outcome_unknown", ...responseMetadata(response),
+                });
+              }
+              failure.setPersistent();
+            }
+            throw failure;
+          }
+          const value: unknown = await response.json();
+          const etag = response.headers.get("etag");
+          if (!isRecord(value) || !etag ||
+              (method === "GET" ? (path.length === 0 ? !Array.isArray(value["databases"]) : value["name"] !== path.at(-1)) :
+                !(typeof value["destructive"] === "boolean" &&
+                  (value["before"] === null || isRecord(value["before"])) &&
+                  (value["after"] === null || isRecord(value["after"]))))) {
+            throw new Error("invalid catalog response");
+          }
+          return { body: value, etag };
+        })(),
+        aborted,
+      ]);
+    } catch (cause) {
+      if (failure !== undefined && cause === failure) throw cause;
+      throw new ScopeDBError("CatalogFailed", writing ? "catalog commit outcome is unknown" : "failed to read catalog", {
+        cause, code: writing ? "catalog_commit_outcome_unknown" : undefined,
+        ...(response === undefined ? {} : responseMetadata(response)),
+      }).setPersistent();
+    } finally {
+      clearTimeout(timer);
+      options.signal?.removeEventListener("abort", abort);
+      controller.signal.removeEventListener("abort", rejectAborted);
+    }
   }
 
   /**
@@ -414,9 +231,8 @@ export class Client {
     }
     const expectedRows = countNDJSONRows(ndjson);
     const { body } = await gzipJsonRequestBody(ndjson);
-    const url = this.resourceUrl(["databases", database, "schemas", schema, "tables", table, "rows"]);
-    return this.writeRequest(
-      "append",
+    const url = this.resourceUrl(["catalog", "databases", database, "schemas", schema, "tables", table, "ingest"]);
+    return this.appendRequest(
       url,
       {
         method: "POST",
@@ -425,7 +241,8 @@ export class Client {
       },
       options,
       (value) => {
-        const result = expectResponse(value, isAppendRowsResult, "append response");
+        const wire = expectResponse(value, isAppendRowsResult, "append response");
+        const result: AppendRowsResult = { append_state: wire.status, num_rows_inserted: wire.num_rows_inserted };
         if (result.num_rows_inserted !== expectedRows) {
           throw new ScopeDBError(
             "Unexpected",
@@ -434,21 +251,6 @@ export class Client {
         }
         return result;
       },
-    );
-  }
-
-  async insert(
-    rows: string,
-    transform: string,
-    options: WriteOptions = {},
-  ): Promise<IngestResult> {
-    return this.ingest(
-      {
-        type: "committed",
-        data: { format: "json", rows },
-        statement: transform,
-      },
-      options,
     );
   }
 
@@ -489,32 +291,16 @@ export class Client {
   async cancelStatement(
     statementId: string,
     options: RequestOptions = {},
-  ): Promise<StatementCancelResult> {
+  ): Promise<StatementStatus> {
+    const url = this.resourceUrl(["statements", statementId, "cancel"]);
+    url.searchParams.set("format", "json");
     return expectResponse(
-      await this.requestJson(this.resourceUrl(["statements", statementId, "cancel"]), {
+      await this.requestJson(url, {
         method: "POST",
         signal: options.signal,
       }),
-      isStatementCancelResult,
+      isStatementStatus,
       "statement cancellation response",
-    );
-  }
-
-  async ingest(
-    request: IngestRequest,
-    options: WriteOptions = {},
-  ): Promise<IngestResult> {
-    const init = await this.prepareJsonRequest({
-      method: "POST",
-      body: JSON.stringify(request),
-      signal: options.signal,
-    });
-    return this.writeRequest(
-      "ingest",
-      "v1/ingest",
-      init,
-      options,
-      (value) => expectResponse(value, isIngestResult, "ingest response"),
     );
   }
 
@@ -541,8 +327,7 @@ export class Client {
     return { ...init, body, headers };
   }
 
-  private async writeRequest<T>(
-    operation: "append" | "ingest",
+  private async appendRequest<T>(
     path: string | URL,
     init: RequestInit,
     options: WriteOptions,
@@ -599,15 +384,11 @@ export class Client {
     } catch (cause) {
       const error = asScopeDBError(
         "Unexpected",
-        operation === "append" ? "failed to append rows" : "failed to ingest data",
+        "failed to append rows",
         cause,
       );
       const writeDetails = error.writeDetails ?? writeErrorDetailsFromCause(error);
       if (responseFailure !== undefined && cause === responseFailure && writeDetails === undefined) {
-        if (operation === "ingest") {
-          // Transform ingest has no commit state; an HTTP retry hint cannot make replay safe.
-          throw error.setPermanent();
-        }
         if (error instanceof AppendRowsError) {
           throw error;
         }
@@ -615,21 +396,18 @@ export class Client {
       const metadata = response === undefined ? undefined : responseMetadata(response);
       const errorOptions = {
         cause: error,
+        code: error.code,
+        details: error.details,
         httpStatus: error.httpStatus ?? metadata?.httpStatus,
         requestId: error.requestId ?? metadata?.requestId,
         retryAfterMs: error.retryAfterMs ?? metadata?.retryAfterMs,
         writeDetails,
       };
-      const message = operation === "append"
-        ? error.message
-        : "ingest request interrupted; commit outcome is unknown";
-      const unknown = operation === "append"
-        ? new AppendRowsError(
-          { message, append_state: "unknown", row_errors: [], row_errors_truncated: false },
-          message,
-          errorOptions,
-        )
-        : new ScopeDBError("Unexpected", message, errorOptions);
+      const unknown = new AppendRowsError(
+        { message: error.message, append_state: "unknown", row_errors: [], row_errors_truncated: false },
+        error.message,
+        errorOptions,
+      );
       for (const [key, value] of error.context()) {
         unknown.withContext(key, value);
       }
@@ -649,6 +427,7 @@ export class Client {
   private prepareRequest(path: string | URL, init: RequestInit): { url: URL; init: RequestInit } {
     const headers = new Headers(this.defaultHeaders);
     headers.set("Accept", "application/json");
+    headers.set("X-ScopeDB-Client", "scopedb-js");
     if (init.body !== undefined) {
       headers.set("Content-Type", "application/json");
     }
@@ -676,31 +455,10 @@ export class Client {
   }
 
   private resourceUrl(segments: readonly string[]): URL {
+    if (segments.some((segment) => segment === "" || segment === "." || segment === "..")) {
+      throw new ScopeDBError("ConfigInvalid", "resource names must not be empty or dot segments");
+    }
     return this.makeUrl(["v1", ...segments].map(encodeURIComponent).join("/"));
-  }
-
-  private catalogUrl(
-    segments: readonly string[],
-    options: CatalogListOptions,
-  ): URL {
-    const url = this.resourceUrl(segments);
-    if (options.pageSize !== undefined) {
-      if (
-        !Number.isSafeInteger(options.pageSize) ||
-        options.pageSize < 1 ||
-        options.pageSize > 1_000
-      ) {
-        throw new ScopeDBError(
-          "ConfigInvalid",
-          "catalog pageSize must be an integer from 1 to 1000",
-        );
-      }
-      url.searchParams.set("page_size", String(options.pageSize));
-    }
-    if (options.pageToken !== undefined) {
-      url.searchParams.set("page_token", options.pageToken);
-    }
-    return url;
   }
 }
 
@@ -752,11 +510,15 @@ async function responseToError(response: Response): Promise<ScopeDBError> {
   let appendPayload: AppendRowsErrorPayload | undefined;
   let requestId = response.headers.get("x-request-id") ?? undefined;
   let serverRetryable: boolean | undefined;
+  let code: string | undefined;
+  let details: unknown;
   try {
     const payload: unknown = JSON.parse(body);
     const parsed = parseErrorPayload(payload);
     if (parsed !== undefined) {
       message = parsed.message;
+      code = typeof parsed.raw["code"] === "string" ? parsed.raw["code"] : undefined;
+      details = parsed.raw["details"];
       requestId = parsed.requestId ?? requestId;
       serverRetryable = parsed.retryable;
       appendPayload = asAppendRowsErrorPayload(parsed.raw, parsed.message);
@@ -766,6 +528,7 @@ async function responseToError(response: Response): Promise<ScopeDBError> {
   }
 
   const metadata = {
+    code, details,
     ...responseMetadata(response),
     ...(requestId === undefined ? {} : { requestId }),
   };
@@ -844,7 +607,7 @@ function parseErrorPayload(value: unknown): ParsedErrorPayload | undefined {
     ...(typeof nested["retryable"] === "boolean"
       ? { retryable: nested["retryable"] }
       : {}),
-    raw: value,
+    raw: nested,
   };
 }
 
@@ -852,16 +615,18 @@ function asAppendRowsErrorPayload(
   value: Record<string, unknown>,
   message: string,
 ): AppendRowsErrorPayload | undefined {
-  const appendState = value["append_state"];
+  const details = value["details"];
+  if (!isRecord(details)) return undefined;
+  const appendState = details["status"];
   if (appendState !== "rejected" && appendState !== "unknown") {
     return undefined;
   }
 
-  const rowErrors = value["row_errors"];
+  const rowErrors = details["row_errors"];
   if (rowErrors !== undefined && !isAppendRowErrors(rowErrors)) {
     return undefined;
   }
-  const rowErrorsTruncated = value["row_errors_truncated"];
+  const rowErrorsTruncated = details["row_errors_truncated"];
   if (rowErrorsTruncated !== undefined && typeof rowErrorsTruncated !== "boolean") {
     return undefined;
   }
@@ -889,94 +654,6 @@ function parseRetryAfter(value: string | null): { retryAfterMs?: number } {
   return {};
 }
 
-function schemaListArguments(
-  databaseOrReference: string | SchemaCatalogListOptions,
-  options: CatalogListOptions,
-): [string, CatalogListOptions] {
-  if (typeof databaseOrReference === "string") {
-    return [databaseOrReference, options];
-  }
-  const { database, ...listOptions } = databaseOrReference;
-  return [database, listOptions];
-}
-
-function tableListArguments(
-  databaseOrReference: string | TableCatalogListOptions,
-  schema: string | undefined,
-  options: CatalogListOptions,
-): [string, string, CatalogListOptions] {
-  if (typeof databaseOrReference === "string") {
-    if (schema === undefined) {
-      throw new ScopeDBError("ConfigInvalid", "schema is required");
-    }
-    return [databaseOrReference, schema, options];
-  }
-  const { database, schema: schemaName, ...listOptions } = databaseOrReference;
-  return [database, schemaName, listOptions];
-}
-
-function schemaReferenceArguments(
-  databaseOrReference: string | SchemaReference,
-  schema: string | undefined,
-  options: RequestOptions,
-): [string, string, RequestOptions] {
-  if (typeof databaseOrReference === "string") {
-    if (schema === undefined) {
-      throw new ScopeDBError("ConfigInvalid", "schema is required");
-    }
-    return [databaseOrReference, schema, options];
-  }
-  const { database, schema: schemaName, ...requestOptions } = databaseOrReference;
-  return [database, schemaName, requestOptions];
-}
-
-function tableReferenceArguments(
-  databaseOrReference: string | TableReference,
-  schema: string | undefined,
-  table: string | undefined,
-  options: RequestOptions,
-): [string, string, string, RequestOptions] {
-  if (typeof databaseOrReference === "string") {
-    if (schema === undefined || table === undefined) {
-      throw new ScopeDBError("ConfigInvalid", "schema and table are required");
-    }
-    return [databaseOrReference, schema, table, options];
-  }
-  const {
-    database,
-    schema: schemaName,
-    table: tableName,
-    ...requestOptions
-  } = databaseOrReference;
-  return [database, schemaName, tableName, requestOptions];
-}
-
-async function* iterateCatalogPages<T>(
-  fetchPage: (pageToken: string | undefined) => Promise<CatalogPage<T>>,
-  initialPageToken: string | undefined,
-): AsyncGenerator<T> {
-  let pageToken = initialPageToken;
-  const seenTokens = new Set<string>(
-    initialPageToken === undefined ? [] : [initialPageToken],
-  );
-  for (;;) {
-    const page = await fetchPage(pageToken);
-    yield* page.items;
-    const nextPageToken = page.next_page_token;
-    if (nextPageToken === undefined) {
-      return;
-    }
-    if (seenTokens.has(nextPageToken)) {
-      throw new ScopeDBError(
-        "Unexpected",
-        "catalog pagination returned a repeated page token",
-      );
-    }
-    seenTokens.add(nextPageToken);
-    pageToken = nextPageToken;
-  }
-}
-
 function isAppendRowErrors(value: unknown): value is AppendRowError[] {
   return Array.isArray(value) && value.every((row) =>
     isRecord(row) &&
@@ -1001,83 +678,6 @@ function expectResponse<T>(
   return value;
 }
 
-function expectCatalogPage<T>(
-  value: unknown,
-  validateItem: (value: unknown) => value is T,
-  responseName: string,
-): CatalogPage<T> {
-  if (!isRecord(value) || !Array.isArray(value["items"])) {
-    throw new ScopeDBError("Unexpected", `${responseName} has an invalid body`);
-  }
-  const items = value["items"];
-  if (!items.every(validateItem)) {
-    throw new ScopeDBError("Unexpected", `${responseName} has an invalid body`);
-  }
-  const nextPageToken = value["next_page_token"];
-  if (
-    nextPageToken !== undefined &&
-    nextPageToken !== null &&
-    typeof nextPageToken !== "string"
-  ) {
-    throw new ScopeDBError("Unexpected", `${responseName} has an invalid body`);
-  }
-  return {
-    items,
-    ...(typeof nextPageToken === "string"
-      ? { next_page_token: nextPageToken }
-      : {}),
-  };
-}
-
-function isDatabaseResource(value: unknown): value is DatabaseResource {
-  return isRecord(value) &&
-    typeof value["name"] === "string" &&
-    isNullableString(value["comment"]);
-}
-
-function isSchemaResource(value: unknown): value is SchemaResource {
-  return isRecord(value) &&
-    typeof value["database"] === "string" &&
-    typeof value["name"] === "string" &&
-    isNullableString(value["comment"]);
-}
-
-function isTableResourceSummary(value: unknown): value is TableResourceSummary {
-  return isRecord(value) &&
-    typeof value["database"] === "string" &&
-    typeof value["schema"] === "string" &&
-    typeof value["name"] === "string" &&
-    isNullableString(value["comment"]);
-}
-
-function isTableResource(value: unknown): value is TableResource {
-  if (!isRecord(value) || !isTableResourceSummary(value)) {
-    return false;
-  }
-  return (
-    Array.isArray(value["columns"]) &&
-    value["columns"].every(isTableColumnSpec) &&
-    isStringArray(value["partition_by"]) &&
-    isStringArray(value["cluster_by"]) &&
-    isTableDistinctSpec(value["distinct_on"]) &&
-    (value["data_retention_days"] === null ||
-      Number.isInteger(value["data_retention_days"]))
-  );
-}
-
-function isTableColumnSpec(value: unknown): value is TableColumnSpec {
-  return isRecord(value) &&
-    typeof value["name"] === "string" &&
-    isCanonicalDataType(value["data_type"]) &&
-    isNullableString(value["comment"]);
-}
-
-function isTableDistinctSpec(value: unknown): value is TableDistinctSpec {
-  return isRecord(value) &&
-    isStringArray(value["on"]) &&
-    isStringArray(value["by"]);
-}
-
 function isStatementStatus(value: unknown): value is StatementStatus {
   if (
     !isRecord(value) ||
@@ -1095,16 +695,16 @@ function isStatementStatus(value: unknown): value is StatementStatus {
     case "finished":
       return isStatementResultSet(value["result_set"]);
     case "failed":
-      return typeof value["message"] === "string" &&
-        (value["error"] === undefined || isStatementErrorDetails(value["error"]));
+      return isStatementErrorDetails(value["error"]);
     case "cancelled":
-      return typeof value["message"] === "string";
+      return true;
     default:
       return false;
   }
 }
 
 const STATEMENT_PROGRESS_FIELDS = [
+  "compute_seconds",
   "total_percentage",
   "nanos_from_submitted",
   "nanos_from_started",
@@ -1164,22 +764,6 @@ function isStatementErrorDetails(value: unknown): value is StatementErrorDetails
     typeof value["message"] === "string";
 }
 
-function isStatementCancelResult(value: unknown): value is StatementCancelResult {
-  return isRecord(value) &&
-    typeof value["statement_id"] === "string" &&
-    typeof value["created_at"] === "string" &&
-    typeof value["message"] === "string" &&
-    (value["status"] === "finished" ||
-      value["status"] === "failed" ||
-      value["status"] === "cancelled");
-}
-
-function isIngestResult(value: unknown): value is IngestResult {
-  return isRecord(value) &&
-    Number.isSafeInteger(value["num_rows_inserted"]) &&
-    (value["num_rows_inserted"] as number) >= 0;
-}
-
 const DATA_TYPES = new Set<DataType>([
   "int",
   "uint",
@@ -1200,27 +784,13 @@ function isDataType(value: unknown): value is DataType {
   return typeof value === "string" && DATA_TYPES.has(value as DataType);
 }
 
-function isCanonicalDataType(
-  value: unknown,
-): value is Exclude<DataType, "u_int"> {
-  return isDataType(value) && value !== "u_int";
-}
-
-function isNullableString(value: unknown): value is string | null {
-  return value === null || typeof value === "string";
-}
-
-function isStringArray(value: unknown): value is string[] {
-  return Array.isArray(value) && value.every((item) => typeof item === "string");
-}
-
 function countNDJSONRows(ndjson: string): number {
   return ndjson.split("\n").filter((line) => line.trim().length > 0).length;
 }
 
-function isAppendRowsResult(value: unknown): value is AppendRowsResult {
+function isAppendRowsResult(value: unknown): value is { status: "committed"; num_rows_inserted: number } {
   return isRecord(value) &&
-    value["append_state"] === "committed" &&
+    value["status"] === "committed" &&
     typeof value["num_rows_inserted"] === "number" &&
     Number.isSafeInteger(value["num_rows_inserted"]) &&
     value["num_rows_inserted"] >= 0;
