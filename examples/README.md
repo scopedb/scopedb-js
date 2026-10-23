@@ -27,7 +27,7 @@ These can run against a reachable ScopeDB server without modifying data.
 
 Write examples require `SCOPEDB_TABLE`. Create a table for the example and select it with this environment variable.
 
-The append, stream, telemetry, Serverless, and transform examples can share this superset schema:
+The append, stream, telemetry, and Serverless examples can share this superset schema:
 
 ```sql
 CREATE TABLE public.sdk_example_events (
@@ -86,10 +86,11 @@ Set `SCOPEDB_INPUT_FILE` to an NDJSON file before running `example:import-ndjson
 
 Templates are type-checked but are not directly executable. Copy a template into your application and provide the integrations listed below.
 
-| Template                                                 | Requires                                                              | Shows                                                    |
-| -------------------------------------------------------- | --------------------------------------------------------------------- | -------------------------------------------------------- |
-| [`templates/serverless.ts`](templates/serverless.ts)     | Web-standard `Request`/`Response` and a `waitUntil()` hook            | Writing request events from an HTTP handler              |
-| [`templates/audit-outbox.ts`](templates/audit-outbox.ts) | Implementations of `AuditOutbox.readUnconfirmed()` and `checkpoint()` | Sending saved records and updating the source checkpoint |
+| Template                                                 | Requires                                                                       | Shows                                                    |
+| -------------------------------------------------------- | ------------------------------------------------------------------------------ | -------------------------------------------------------- |
+| [`templates/serverless.ts`](templates/serverless.ts)     | Web-standard `Request`/`Response` and a `waitUntil()` hook                     | Writing request events from an HTTP handler              |
+| [`templates/audit-outbox.ts`](templates/audit-outbox.ts) | Implementations of `AuditOutbox.readUnconfirmed()` and `checkpoint()`          | Sending saved records and updating the source checkpoint |
+| [`templates/retry-append.ts`](templates/retry-append.ts) | Node.js, an existing table, caller-encoded NDJSON, and an AbortSignal deadline | Retrying only confirmed temporary rejections             |
 
 ## Framework and runtime templates
 

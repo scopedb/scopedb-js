@@ -66,7 +66,7 @@
     "example:statement": "pnpm run example -- statement",
     "prepack": "pnpm run test && pnpm run check",
     "test": "tsc -p tsconfig.test.json --noEmit && tsc -p tsconfig.test.json && node --test dist-test/tests/*.test.js",
-    "test:integration": "tsc -p tsconfig.test.json && node --test dist-test/tests/native-06.test.js"
+    "test:integration": "tsc -p tsconfig.test.json && node --test --test-concurrency=1 dist-test/tests/native-06.test.js dist-test/tests/native-06-encoding.test.js"
   },
   "devDependencies": {
     "@types/node": "^25.5.0",
