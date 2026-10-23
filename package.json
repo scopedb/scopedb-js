@@ -1,6 +1,6 @@
 {
   "name": "scopedb",
-  "version": "0.2.2",
+  "version": "0.3.0",
   "description": "The official server-side JavaScript client for ScopeDB, with TypeScript support",
   "keywords": [
     "scopedb",
@@ -38,6 +38,7 @@
   "files": [
     "CHANGELOG.md",
     "dist",
+    "docs/**/*.md",
     "examples/**/*.ts",
     "examples/README.md"
   ],
