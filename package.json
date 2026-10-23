@@ -1,19 +1,21 @@
 {
   "name": "scopedb",
-  "version": "0.1.1",
-  "description": "A TypeScript-first ScopeDB client for server-side JavaScript runtimes",
+  "version": "0.2.2",
+  "description": "The official server-side JavaScript client for ScopeDB, with TypeScript support",
   "keywords": [
     "scopedb",
     "scopeql",
     "database",
     "analytics",
-    "observability",
+    "sdk",
+    "javascript",
     "typescript",
+    "nodejs",
     "nextjs",
     "bun",
     "serverless"
   ],
-  "homepage": "https://docs.scopedb.io/developer/nodejs",
+  "homepage": "https://www.scopedb.io",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/scopedb/scopedb-js.git"
@@ -61,10 +63,11 @@
     "example:append-bulk": "pnpm run example -- append-bulk",
     "example:append-telemetry": "pnpm run example -- append-telemetry",
     "example:catalog": "pnpm run example -- catalog",
-    "example:ingest-transform": "pnpm run example -- ingest-transform",
+    "example:import-ndjson": "pnpm run example -- import-ndjson",
     "example:statement": "pnpm run example -- statement",
     "prepack": "pnpm run test && pnpm run check",
-    "test": "tsc -p tsconfig.test.json --noEmit && tsc -p tsconfig.test.json && node --test dist-test/tests/*.test.js"
+    "test": "tsc -p tsconfig.test.json --noEmit && tsc -p tsconfig.test.json && node --test dist-test/tests/*.test.js",
+    "test:integration": "tsc -p tsconfig.test.json && node --test --test-concurrency=1 dist-test/tests/native-06.test.js dist-test/tests/native-06-encoding.test.js"
   },
   "devDependencies": {
     "@types/node": "^25.5.0",

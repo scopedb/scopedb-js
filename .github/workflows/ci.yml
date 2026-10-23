@@ -17,9 +17,9 @@ jobs:
       matrix:
         node: [20, 22, 24]
     steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
         with:
           node-version: ${{ matrix.node }}
           cache: pnpm
@@ -32,9 +32,9 @@ jobs:
     name: Bun
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: pnpm
@@ -43,21 +43,32 @@ jobs:
       - run: pnpm run build
       - run: bun scripts/smoke-runtime.mjs --without-buffer
 
+  pack:
+    name: Pack dry-run
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      # prepack reruns the unit, type, example, and package-entry checks
+      # against the exact tarball contents a release would publish.
+      - run: pnpm pack --dry-run
+
   framework-consumers:
     name: Packed Next.js and Workers consumers
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
-          cache: pnpm
-      - uses: actions/cache@v4
-        with:
-          path: ~/.npm
-          key: npm-${{ runner.os }}-${{ hashFiles('tests/consumers/frameworks/package-lock.json') }}
-          restore-keys: npm-${{ runner.os }}-
+          cache: npm
+          cache-dependency-path: tests/consumers/frameworks/package-lock.json
       - run: pnpm install --frozen-lockfile
       - run: pnpm run smoke:frameworks

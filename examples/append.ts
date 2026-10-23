@@ -47,7 +47,7 @@ try {
   const result = await table.append(ndjson);
   console.log("committed remotely", result.num_rows_inserted);
 } catch (error) {
-  if (error instanceof AppendRowsError && error.appendState === "unknown") {
+  if (error instanceof AppendRowsError && error.outcome === "unknown") {
     console.error("commit outcome is unknown; reconcile before replaying");
   }
   throw error;

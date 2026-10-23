@@ -14,91 +14,47 @@
  * limitations under the License.
  */
 
-import type { Client, RequestOptions } from "./client.js";
+import type { Client, WriteOptions } from "./client.js";
 import {
-  AppendStreamBuilder,
   type AppendFailurePolicy,
+  AppendStreamBuilder,
   type AppendStreamOptions,
 } from "./append-stream.js";
-import type {
-  AppendRowsResult,
-  DataType,
-  TableResource,
-} from "./protocol.js";
-import { FieldSchema, Schema } from "./result.js";
+import type { AppendRowsResult } from "./protocol.js";
+import type { CatalogResource, CatalogTable } from "./catalog.js";
 
 export interface TableOptions {
   database?: string;
   schema?: string;
 }
 
-export interface TableColumn {
-  name: string;
-  dataType: Exclude<DataType, "u_int">;
-  comment: string | null;
-}
-
-export interface TableDescription {
-  database: string;
-  schema: string;
-  name: string;
-  columns: TableColumn[];
-  partitionBy: string[];
-  clusterBy: string[];
-  distinctOn: {
-    on: string[];
-    by: string[];
-  };
-  dataRetentionDays: number | null;
-  comment: string | null;
-}
-
 export class Table {
-  private databaseName?: string;
-  private schemaName?: string;
+  private readonly databaseName: string;
+  private readonly schemaName: string;
 
   constructor(
     private readonly client: Client,
     private readonly tableName: string,
     options: TableOptions = {},
   ) {
-    this.databaseName = options.database;
-    this.schemaName = options.schema;
-  }
-
-  /** @deprecated Pass `database` to `Client.table()` instead. */
-  withDatabase(database: string): this {
-    this.databaseName = database;
-    return this;
-  }
-
-  /** @deprecated Pass `schema` to `Client.table()` instead. */
-  withSchema(schema: string): this {
-    this.schemaName = schema;
-    return this;
+    this.databaseName = options.database ?? "scopedb";
+    this.schemaName = options.schema ?? "public";
   }
 
   identifier(): string {
-    const parts: string[] = [];
-    if (this.databaseName !== undefined) {
-      parts.push(quoteIdent(this.databaseName, "`"));
-    }
-    if (this.schemaName !== undefined) {
-      parts.push(quoteIdent(this.schemaName, "`"));
-    }
-    parts.push(quoteIdent(this.tableName, "`"));
-    return parts.join(".");
+    return [this.databaseName, this.schemaName, this.tableName].map((name) =>
+      quoteIdent(name, "`")
+    ).join(".");
   }
 
-  async drop(options: RequestOptions = {}): Promise<void> {
-    await this.client.statement(`DROP TABLE ${this.identifier()}`).execute(options);
-  }
-
-  /** Appends newline-delimited JSON rows to this table. */
-  async append(ndjson: string, options: RequestOptions = {}): Promise<AppendRowsResult> {
+  /** Appends at most 8 MiB of uncompressed newline-delimited JSON. */
+  async append(
+    ndjson: string,
+    options: WriteOptions = {},
+  ): Promise<AppendRowsResult> {
     return this.client.appendRows(
-      this.databaseName ?? "scopedb",
-      this.schemaName ?? "public",
+      this.databaseName,
+      this.schemaName,
       this.tableName,
       ndjson,
       options,
@@ -123,57 +79,21 @@ export class Table {
       : options?.failurePolicy;
     return AppendStreamBuilder.create(
       this.client,
-      this.databaseName ?? "scopedb",
-      this.schemaName ?? "public",
+      this.databaseName,
+      this.schemaName,
       this.tableName,
       failurePolicy as AppendFailurePolicy,
     );
   }
 
-  /** Returns this table's complete catalog metadata with JS-style field names. */
-  async describe(options: RequestOptions = {}): Promise<TableDescription> {
-    const table = await this.fetchResource(options);
-    return tableDescription(table);
-  }
-
-  /** @deprecated Use `describe()` when possible. */
-  async tableSchema(options: RequestOptions = {}): Promise<Schema> {
-    const table = await this.fetchResource(options);
-
-    return new Schema(
-      table.columns.map((column) => new FieldSchema(column.name, column.data_type)),
+  /** Selects the complete definition and ETag used for conditional mutations. */
+  catalog(): CatalogResource<CatalogTable> {
+    return this.client.catalog().table(
+      this.databaseName,
+      this.schemaName,
+      this.tableName,
     );
   }
-
-  private fetchResource(options: RequestOptions): Promise<TableResource> {
-    return this.client.fetchTable({
-      ...options,
-      database: this.databaseName ?? "scopedb",
-      schema: this.schemaName ?? "public",
-      table: this.tableName,
-    });
-  }
-}
-
-function tableDescription(table: TableResource): TableDescription {
-  return {
-    database: table.database,
-    schema: table.schema,
-    name: table.name,
-    columns: table.columns.map((column) => ({
-      name: column.name,
-      dataType: column.data_type,
-      comment: column.comment,
-    })),
-    partitionBy: [...table.partition_by],
-    clusterBy: [...table.cluster_by],
-    distinctOn: {
-      on: [...table.distinct_on.on],
-      by: [...table.distinct_on.by],
-    },
-    dataRetentionDays: table.data_retention_days,
-    comment: table.comment,
-  };
 }
 
 function quoteIdent(input: string, quote: string): string {

@@ -17,7 +17,6 @@
 export type DataType =
   | "int"
   | "uint"
-  | "u_int" // backward-compat alias for "uint"
   | "float"
   | "timestamp"
   | "interval"
@@ -48,6 +47,7 @@ export interface StatementResultSet {
 }
 
 export interface StatementProgress {
+  compute_seconds: number;
   total_stages: number;
   total_partitions: number;
   total_rows: number;
@@ -70,76 +70,61 @@ export interface StatementEstimatedProgress extends StatementProgress {
   nanos_from_started: number;
 }
 
-interface StatementStatusBase {
+interface StatementSnapshotBase {
   statement_id: string;
   created_at: string;
   progress: StatementEstimatedProgress;
 }
 
-export interface StatementStatusPending extends StatementStatusBase {
+export interface StatementSnapshotPending extends StatementSnapshotBase {
   status: "pending";
 }
 
-export interface StatementStatusRunning extends StatementStatusBase {
+export interface StatementSnapshotRunning extends StatementSnapshotBase {
   status: "running";
 }
 
-export interface StatementStatusFinished extends StatementStatusBase {
+export interface StatementSnapshotFinished extends StatementSnapshotBase {
   status: "finished";
   result_set: StatementResultSet;
 }
 
-export interface StatementStatusFailed extends StatementStatusBase {
+export interface StatementErrorDetails {
+  /** Stable machine-readable failure code. Unknown codes are preserved. */
+  code: string;
+  message: string;
+  /** Code-specific details returned by ScopeDB. */
+  details?: unknown;
+}
+
+export interface StatementSnapshotFailed extends StatementSnapshotBase {
   status: "failed";
-  message: string;
+  error: StatementErrorDetails;
 }
 
-export interface StatementStatusCancelled extends StatementStatusBase {
+export interface StatementSnapshotCancelled extends StatementSnapshotBase {
   status: "cancelled";
-  message: string;
 }
 
-export type StatementStatus =
-  | StatementStatusPending
-  | StatementStatusRunning
-  | StatementStatusFinished
-  | StatementStatusFailed
-  | StatementStatusCancelled;
+export type StatementSnapshot =
+  | StatementSnapshotPending
+  | StatementSnapshotRunning
+  | StatementSnapshotFinished
+  | StatementSnapshotFailed
+  | StatementSnapshotCancelled;
 
 export interface StatementRequest {
   statement: string;
   statement_id?: string;
-  exec_timeout?: string;
-  max_parallelism?: number;
+  max_elapsed_seconds?: number;
+  max_estimated_seconds?: number;
   format: ResultFormat;
-}
-
-export interface StatementCancelResult {
-  statement_id: string;
-  status: "finished" | "failed" | "cancelled";
-  message: string;
-  created_at: string;
-}
-
-export type IngestType = "committed" | "buffered";
-
-export interface IngestRequest {
-  type: IngestType;
-  data: {
-    format: "json";
-    rows: string;
-  };
-  statement: string;
-}
-
-export interface IngestResult {
-  num_rows_inserted: number;
 }
 
 export type AppendState = "committed" | "rejected" | "unknown";
 
 export interface AppendRowsResult {
-  append_state: "committed";
+  status: "committed";
   num_rows_inserted: number;
 }
 
@@ -149,70 +134,49 @@ export interface AppendRowError {
   message: string;
 }
 
+/** Normalized SDK diagnostics; Client decodes the server's nested details.status. */
 export interface AppendRowsErrorPayload {
   message: string;
-  append_state: Exclude<AppendState, "committed">;
+  status: Exclude<AppendState, "committed">;
   row_errors: AppendRowError[];
   row_errors_truncated: boolean;
 }
 
-export interface CatalogPage<T> {
-  items: T[];
-  next_page_token?: string;
-}
-
-export interface DatabaseResource {
-  name: string;
-  comment: string | null;
-}
-
-export interface SchemaResource {
-  database: string;
-  name: string;
-  comment: string | null;
-}
-
-export interface TableResourceSummary {
-  database: string;
-  schema: string;
-  name: string;
-  comment: string | null;
-}
-
-export interface TableColumnSpec {
-  name: string;
-  data_type: Exclude<DataType, "u_int">;
-  comment: string | null;
-}
-
-export interface TableDistinctSpec {
-  on: string[];
-  by: string[];
-}
-
-export interface TableSpec {
-  columns: TableColumnSpec[];
-  partition_by: string[];
-  cluster_by: string[];
-  distinct_on: TableDistinctSpec;
-  data_retention_days: number | null;
-  comment: string | null;
-}
-
-export interface TableResource extends TableResourceSummary, TableSpec {}
-
 export interface ErrorPayload {
+  code: string;
   message: string;
+  details?: unknown;
 }
 
-export function statementIsFinished(status: StatementStatus): status is StatementStatusFinished {
+export function statementIsFinished(
+  status: StatementSnapshot,
+): status is StatementSnapshotFinished {
   return status.status === "finished";
 }
 
-export function statementIsTerminated(status: StatementStatus): boolean {
+export function statementIsTerminated(status: StatementSnapshot): boolean {
   return (
     status.status === "finished" ||
     status.status === "failed" ||
     status.status === "cancelled"
   );
+}
+
+const DATA_TYPES = new Set<DataType>([
+  "int",
+  "uint",
+  "float",
+  "timestamp",
+  "interval",
+  "boolean",
+  "string",
+  "binary",
+  "array",
+  "object",
+  "any",
+  "null",
+]);
+
+export function isDataType(value: unknown): value is DataType {
+  return typeof value === "string" && DATA_TYPES.has(value as DataType);
 }

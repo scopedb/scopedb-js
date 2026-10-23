@@ -21,6 +21,7 @@ import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { gunzipSync } from "node:zlib";
 
 const repositoryRoot = fileURLToPath(new URL("../", import.meta.url));
 const fixtureRoot = join(repositoryRoot, "tests", "consumers", "frameworks");
@@ -249,7 +250,7 @@ async function smokeWorker(consumer, environment, backendRequests) {
     appendedRows: 4,
     rowNames: ["worker", "first", "second", "third"],
   });
-  const appendRequests = requests.filter((request) => request.pathname.endsWith("/rows"));
+  const appendRequests = requests.filter((request) => request.pathname.endsWith("/ingest"));
   assert.equal(appendRequests.length, 3, "direct append plus two stream batches expected");
   console.log("Wrangler/workerd packed consumer passed");
 }
@@ -278,7 +279,7 @@ async function assertProtectedWriteBoundary(url, backendRequests) {
 
 function assertBackendContract(requests, expected) {
   const statements = requests.filter((request) => request.pathname === "/v1/statements");
-  const appends = requests.filter((request) => request.pathname.endsWith("/rows"));
+  const appends = requests.filter((request) => request.pathname.endsWith("/ingest"));
   assert.equal(statements.length, expected.statementRequests);
   assert.equal(
     appends.reduce((total, request) => total + ndjsonRows(request.body), 0),
@@ -287,9 +288,12 @@ function assertBackendContract(requests, expected) {
   assert.ok(requests.length > 0);
   assert.ok(requests.every((request) => request.authorization === `Bearer ${sdkApiKey}`));
   assert.ok(requests.every((request) => request.accept === "application/json"));
+  assert.ok(requests.every((request) => request.contentEncoding === "gzip"));
+  assert.ok(statements.every((request) =>
+    Number(request.uncompressedBytes) === Buffer.byteLength(request.body)));
   assert.ok(appends.every((request) => request.contentType === "application/x-ndjson"));
   assert.ok(appends.every((request) => request.pathname ===
-    "/v1/databases/scopedb/schemas/public/tables/sdk%20framework%2Fsmoke%3F%23/rows"));
+    "/v1/catalog/databases/scopedb/schemas/public/tables/sdk%20framework%2Fsmoke%3F%23/ingest"));
   assert.ok(statements.every((request) => request.contentType === "application/json"));
   const rows = appends.flatMap((request) => request.body
     .split("\n")
@@ -318,6 +322,8 @@ async function startMockScopeDb() {
         authorization: request.headers.authorization,
         accept: request.headers.accept,
         contentType: request.headers["content-type"],
+        contentEncoding: request.headers["content-encoding"],
+        uncompressedBytes: request.headers["x-scopedb-uncompressed-content-length"],
         body,
       });
 
@@ -325,9 +331,9 @@ async function startMockScopeDb() {
         respondJson(response, finishedStatement());
         return;
       }
-      if (request.method === "POST" && pathname.endsWith("/rows")) {
+      if (request.method === "POST" && pathname.endsWith("/ingest")) {
         respondJson(response, {
-          append_state: "committed",
+          status: "committed",
           num_rows_inserted: ndjsonRows(body),
         });
         return;
@@ -364,6 +370,7 @@ function finishedStatement() {
     statement_id: "framework-smoke-statement",
     created_at: "2026-08-01T00:00:00Z",
     progress: {
+      compute_seconds: 0.001,
       total_percentage: 100,
       nanos_from_submitted: 1,
       nanos_from_started: 1,
@@ -403,7 +410,9 @@ async function readRequestBody(request) {
   for await (const chunk of request) {
     chunks.push(chunk);
   }
-  return Buffer.concat(chunks).toString("utf8");
+  const bytes = Buffer.concat(chunks);
+  assert.equal(request.headers["content-encoding"], "gzip");
+  return gunzipSync(bytes).toString("utf8");
 }
 
 function ndjsonRows(body) {

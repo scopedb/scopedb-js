@@ -28,26 +28,12 @@ const client = new Client(
 const database = process.env["SCOPEDB_DATABASE"] ?? "scopedb";
 const schema = process.env["SCOPEDB_SCHEMA"] ?? "public";
 
-for await (const item of client.iterateDatabases({ pageSize: 100 })) {
+const catalog = await client.catalog().get();
+for (const item of catalog.definition.databases ?? []) {
   console.log("database", item.name, item.comment ?? "");
 }
-
-for await (const item of client.iterateSchemas({ database, pageSize: 100 })) {
-  console.log("schema", item.name, item.comment ?? "");
-}
-
-let firstTableName: string | undefined;
-for await (
-  const item of client.iterateTables({ database, schema, pageSize: 100 })
-) {
-  firstTableName ??= item.name;
-  console.log("table", item.name, item.comment ?? "");
-}
-
-if (firstTableName !== undefined) {
-  const description = await client.table(firstTableName, {
-    database,
-    schema,
-  }).describe();
-  console.log("first table", description);
+const snapshot = await client.catalog().schema(database, schema).get();
+console.log("schema ETag", snapshot.etag);
+for (const table of snapshot.definition.tables ?? []) {
+  console.log("table", table.name, table.columns);
 }

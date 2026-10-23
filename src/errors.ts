@@ -14,18 +14,38 @@
  * limitations under the License.
  */
 
-import type { AppendRowError, AppendRowsErrorPayload } from "./protocol.js";
+import type {
+  AppendRowError,
+  AppendRowsErrorPayload,
+  AppendState,
+  StatementErrorDetails,
+} from "./protocol.js";
 
 export type ErrorKind =
   | "Unexpected"
+  | "CatalogFailed"
   | "ConfigInvalid"
-  /** The statement execution was rejected by the server (failed or cancelled in-band). */
+  /** The statement execution was rejected by the server (failed in-band). */
   | "StatementFailed"
+  | "StatementCancelled"
   /** The table append was rejected or its commit outcome is unknown. */
   | "AppendRowsFailed";
 export type ErrorStatus = "permanent" | "temporary" | "persistent";
 
+/** The client-side reason an in-flight write was interrupted. */
+export type WriteErrorReason = "timeout" | "cancelled";
+
+/** An unknown write outcome may have committed and must not be automatically replayed. */
+export interface WriteErrorDetails {
+  readonly reason: WriteErrorReason;
+  readonly outcome: AppendState;
+}
+
 export interface ScopeDBErrorOptions {
+  code?: string;
+  /** Explicit retry permission from the server, independent of local replay policy. */
+  serverRetryable?: boolean;
+  details?: unknown;
   cause?: unknown;
   status?: ErrorStatus;
   /** HTTP response status, when the error came from the server. */
@@ -34,13 +54,22 @@ export interface ScopeDBErrorOptions {
   requestId?: string;
   /** Delay suggested by `Retry-After`, in milliseconds. */
   retryAfterMs?: number;
+  /** Structured server failure for a failed statement. */
+  statementDetails?: StatementErrorDetails;
+  /** Client timeout or cancellation details after sending began. */
+  writeDetails?: WriteErrorDetails;
 }
 
 export class ScopeDBError extends Error {
   readonly kind: ErrorKind;
+  readonly code?: string;
+  readonly serverRetryable?: boolean;
+  readonly details?: unknown;
   readonly httpStatus?: number;
   readonly requestId?: string;
   readonly retryAfterMs?: number;
+  readonly statementDetails?: StatementErrorDetails;
+  readonly writeDetails?: WriteErrorDetails;
   private errorStatus: ErrorStatus;
   private readonly errorContext: Map<string, string>;
 
@@ -49,12 +78,20 @@ export class ScopeDBError extends Error {
     message: string,
     options?: ScopeDBErrorOptions,
   ) {
-    super(message, options?.cause === undefined ? undefined : { cause: options.cause });
+    super(
+      message,
+      options?.cause === undefined ? undefined : { cause: options.cause },
+    );
     this.name = "ScopeDBError";
     this.kind = kind;
+    this.code = options?.code;
+    this.serverRetryable = options?.serverRetryable;
+    this.details = options?.details;
     this.httpStatus = options?.httpStatus;
     this.requestId = options?.requestId;
     this.retryAfterMs = options?.retryAfterMs;
+    this.statementDetails = options?.statementDetails;
+    this.writeDetails = options?.writeDetails;
     this.errorStatus = options?.status ?? "permanent";
     this.errorContext = new Map();
   }
@@ -107,6 +144,10 @@ export class ScopeDBError extends Error {
   override toString(): string {
     let s = `ScopeDBError [${this.kind}/${this.errorStatus}]: ${this.message}`;
     const metadata = new Map(this.errorContext);
+    if (this.writeDetails !== undefined) {
+      metadata.set("write_reason", this.writeDetails.reason);
+      metadata.set("write_outcome", this.writeDetails.outcome);
+    }
     if (this.httpStatus !== undefined) {
       metadata.set("http_status", String(this.httpStatus));
     }
@@ -127,7 +168,7 @@ export class ScopeDBError extends Error {
 }
 
 export class AppendRowsError extends ScopeDBError {
-  readonly appendState: AppendRowsErrorPayload["append_state"];
+  readonly outcome: AppendRowsErrorPayload["status"];
   readonly rowErrors: readonly AppendRowError[];
   readonly rowErrorsTruncated: boolean;
 
@@ -138,7 +179,7 @@ export class AppendRowsError extends ScopeDBError {
   ) {
     super("AppendRowsFailed", message, options);
     this.name = "AppendRowsError";
-    this.appendState = payload.append_state;
+    this.outcome = payload.status;
     this.rowErrors = payload.row_errors;
     this.rowErrorsTruncated = payload.row_errors_truncated;
   }
@@ -153,4 +194,24 @@ export function asScopeDBError(
     return cause;
   }
   return new ScopeDBError(kind, message, { cause });
+}
+
+export function writeErrorDetailsFromCause(
+  cause: unknown,
+): WriteErrorDetails | undefined {
+  const visited = new Set<unknown>();
+  while (cause instanceof Error && !visited.has(cause)) {
+    visited.add(cause);
+    const code = "code" in cause ? cause.code : undefined;
+    if (
+      (cause instanceof DOMException && cause.name === "TimeoutError") ||
+      code === "UND_ERR_CONNECT_TIMEOUT" ||
+      code === "UND_ERR_HEADERS_TIMEOUT" ||
+      code === "UND_ERR_BODY_TIMEOUT"
+    ) {
+      return { reason: "timeout", outcome: "unknown" };
+    }
+    cause = cause.cause;
+  }
+  return undefined;
 }

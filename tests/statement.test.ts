@@ -26,6 +26,7 @@ import {
   finishedStatus,
   jsonResponse,
   makeFetchStub,
+  parseJsonRequestBody,
   pendingStatus,
   runningStatus,
 } from "./helpers.js";
@@ -42,92 +43,103 @@ describe("Statement.submit", () => {
     const handle = await client.statement("SELECT 1").submit();
 
     assert.equal(handle.statementId, "stmt-abc");
-    assert.equal(handle.status()?.status, "pending");
+    assert.equal(handle.snapshot()?.status, "pending");
   });
 
   it("forwards optional fields from Statement builder", async () => {
     const status = pendingStatus();
-    const { fn, calls } = makeFetchStub([jsonResponse(200, status)]);
+    const { fn, calls } = makeFetchStub([
+      jsonResponse(200, { ...status, statement_id: "custom-id" }),
+    ]);
     const client = new Client("http://localhost:8080", { fetch: fn });
 
     await client
       .statement("SELECT 1")
       .withStatementId("custom-id")
-      .withExecTimeout("60s")
-      .withMaxParallelism(8)
+      .withMaxElapsedSeconds(60).withMaxEstimatedSeconds(3)
       .submit();
 
-    const body = JSON.parse((calls[0]!.init as RequestInit).body as string) as Record<string, unknown>;
+    const body = parseJsonRequestBody(calls[0]!.init) as Record<
+      string,
+      unknown
+    >;
     assert.equal(body["statement_id"], "custom-id");
-    assert.equal(body["exec_timeout"], "60s");
-    assert.equal(body["max_parallelism"], 8);
+    assert.equal(body["max_elapsed_seconds"], 60);
+    assert.equal(body["max_estimated_seconds"], 3);
     assert.equal(body["format"], "json");
   });
 });
 
-describe("StatementHandle.fetchOnce", () => {
-  it("fetches status from server and updates internal state", async () => {
+describe("StatementHandle.status", () => {
+  it("fetches status from server and updates the local snapshot", async () => {
     const status = runningStatus("stmt-1");
     const { fn, calls } = makeFetchStub([jsonResponse(200, status)]);
     const client = new Client("http://localhost:8080", { fetch: fn });
     const handle = new StatementHandle(client, "stmt-1");
 
-    await handle.fetchOnce();
+    const latest = await handle.refresh();
 
     assert.equal(calls.length, 1);
-    assert.equal(handle.status()?.status, "running");
+    assert.equal(latest.status, "running");
+    assert.deepEqual(handle.snapshot(), latest);
   });
 
-  it("refresh returns the latest status", async () => {
+  it("snapshot returns the cached snapshot without making a request", async () => {
     const status = runningStatus("stmt-1");
-    const { fn } = makeFetchStub([jsonResponse(200, status)]);
+    const { fn, calls } = makeFetchStub([]);
     const client = new Client("http://localhost:8080", { fetch: fn });
-    const handle = new StatementHandle(client, "stmt-1");
+    const handle = new StatementHandle(client, "stmt-1", status);
 
-    const refreshed = await handle.refresh();
+    const snapshot = handle.snapshot();
 
-    assert.equal(refreshed.status, "running");
-    assert.equal(handle.status(), refreshed);
+    assert.deepEqual(snapshot, status);
+    assert.equal(calls.length, 0);
   });
 
   it("skips the request when already finished", async () => {
     const finished = finishedStatus(emptyResultSet());
     const { fn, calls } = makeFetchStub([]);
     const client = new Client("http://localhost:8080", { fetch: fn });
-    const handle = new StatementHandle(client, "stmt-1", "json", finished);
+    const handle = new StatementHandle(client, "stmt-1", finished);
 
-    await handle.fetchOnce();
+    const status = await handle.refresh();
 
     assert.equal(calls.length, 0);
+    assert.deepEqual(status, finished);
   });
 
   it("skips the request when already failed", async () => {
     const failed = failedStatus("something went wrong");
     const { fn, calls } = makeFetchStub([]);
     const client = new Client("http://localhost:8080", { fetch: fn });
-    const handle = new StatementHandle(client, "stmt-1", "json", failed);
+    const handle = new StatementHandle(client, "stmt-1", failed);
 
-    await handle.fetchOnce();
+    const status = await handle.refresh();
 
     assert.equal(calls.length, 0);
+    assert.deepEqual(status, failed);
   });
 
   it("skips the request when already cancelled", async () => {
     const cancelled = cancelledStatus("user cancelled");
     const { fn, calls } = makeFetchStub([]);
     const client = new Client("http://localhost:8080", { fetch: fn });
-    const handle = new StatementHandle(client, "stmt-1", "json", cancelled);
+    const handle = new StatementHandle(client, "stmt-1", cancelled);
 
-    await handle.fetchOnce();
+    const status = await handle.refresh();
 
     assert.equal(calls.length, 0);
+    assert.deepEqual(status, cancelled);
   });
 });
 
-describe("StatementHandle.fetch", () => {
+describe("StatementHandle.wait", () => {
   it("returns ResultSet immediately when first poll returns finished", async () => {
     const resultSet = {
-      metadata: { fields: [{ name: "x", data_type: "int" as const }], num_rows: 1 },
+      metadata: {
+        fields: [{ name: "x", data_type: "int" as const }],
+        num_rows: 1,
+      },
       format: "json" as const,
       rows: [["42"]],
     };
@@ -136,7 +148,7 @@ describe("StatementHandle.fetch", () => {
     const client = new Client("http://localhost:8080", { fetch: fn });
     const handle = new StatementHandle(client, "stmt-1");
 
-    const rs = await handle.fetch(noDelay);
+    const rs = await handle.wait(noDelay);
 
     assert.equal(calls.length, 1);
     assert.equal(rs.numRows(), 1);
@@ -152,13 +164,13 @@ describe("StatementHandle.fetch", () => {
     const client = new Client("http://localhost:8080", { fetch: fn });
     const handle = new StatementHandle(client, "stmt-1");
 
-    const rs = await handle.fetch(noDelay);
+    const rs = await handle.wait(noDelay);
 
     assert.equal(calls.length, 3);
     assert.equal(rs.numRows(), 0);
   });
 
-  it("wait is the primary polling alias", async () => {
+  it("waits until the statement finishes", async () => {
     const finished = finishedStatus(emptyResultSet());
     const { fn } = makeFetchStub([jsonResponse(200, finished)]);
     const client = new Client("http://localhost:8080", { fetch: fn });
@@ -170,32 +182,65 @@ describe("StatementHandle.fetch", () => {
   });
 
   it("throws ScopeDBError when statement fails with in-band status", async () => {
-    const { fn } = makeFetchStub([jsonResponse(200, failedStatus("query error"))]);
+    const details = {
+      code: "row_limit_exceeded",
+      message: "query returned too many rows",
+      details: { total_rows: 101, max_total_rows: 100 },
+    };
+    const { fn } = makeFetchStub([
+      jsonResponse(200, failedStatus("query error", "stmt-1", details)),
+    ]);
     const client = new Client("http://localhost:8080", { fetch: fn });
     const handle = new StatementHandle(client, "stmt-1");
 
     await assert.rejects(
-      () => handle.fetch(noDelay),
+      () => handle.wait(noDelay),
       (err: unknown) => {
         assert.ok(err instanceof ScopeDBError);
         assert.equal(err.kind, "StatementFailed");
-        assert.ok(err.message.includes("query error"), `message was: ${err.message}`);
+        assert.ok(
+          err.message.includes("query returned too many rows"),
+          `message was: ${err.message}`,
+        );
+        assert.deepEqual(err.statementDetails, details);
         return true;
       },
     );
   });
 
-  it("throws ScopeDBError when statement is cancelled with in-band status", async () => {
-    const { fn } = makeFetchStub([jsonResponse(200, cancelledStatus("cancelled by user"))]);
+  it("rejects an unknown statement status instead of polling again", async () => {
+    const malformed = { ...pendingStatus(), status: "paused" };
+    const { fn, calls } = makeFetchStub([jsonResponse(200, malformed)]);
     const client = new Client("http://localhost:8080", { fetch: fn });
     const handle = new StatementHandle(client, "stmt-1");
 
     await assert.rejects(
-      () => handle.fetch(noDelay),
+      () => handle.wait(noDelay),
+      (error: unknown) => {
+        assert.ok(error instanceof ScopeDBError);
+        assert.match(error.message, /statement response has an invalid body/);
+        return true;
+      },
+    );
+    assert.equal(calls.length, 1);
+  });
+
+  it("throws ScopeDBError when statement is cancelled with in-band status", async () => {
+    const { fn } = makeFetchStub([
+      jsonResponse(200, cancelledStatus("cancelled by user")),
+    ]);
+    const client = new Client("http://localhost:8080", { fetch: fn });
+    const handle = new StatementHandle(client, "stmt-1");
+
+    await assert.rejects(
+      () => handle.wait(noDelay),
       (err: unknown) => {
         assert.ok(err instanceof ScopeDBError);
-        assert.equal(err.kind, "StatementFailed");
-        assert.ok(err.message.includes("cancelled by user"), `message was: ${err.message}`);
+        assert.equal(err.kind, "StatementCancelled");
+        assert.ok(
+          err.message.includes("is cancelled"),
+          `message was: ${err.message}`,
+        );
         return true;
       },
     );
@@ -212,56 +257,64 @@ describe("StatementHandle.fetch", () => {
     const handle = new StatementHandle(client, "stmt-1");
     const controller = new AbortController();
 
-    const promise = handle.fetch({ initialDelayMs: 5, maxDelayMs: 10, signal: controller.signal });
+    const promise = handle.wait({
+      initialDelayMs: 5,
+      maxDelayMs: 10,
+      signal: controller.signal,
+    });
 
     // Abort after first fetch completes
     setTimeout(() => controller.abort(), 1);
 
     await assert.rejects(promise);
   });
+
+  it("keeps fetch as a deprecated forwarding alias", async () => {
+    const finished = finishedStatus(emptyResultSet());
+    const { fn } = makeFetchStub([jsonResponse(200, finished)]);
+    const client = new Client("http://localhost:8080", { fetch: fn });
+    const handle = new StatementHandle(client, "stmt-1");
+
+    const result = await handle.wait(noDelay);
+
+    assert.equal(result.numRows(), 0);
+  });
 });
 
 describe("StatementHandle.cancel", () => {
   it("sends POST cancel when statement is still pending", async () => {
-    const cancelResult = {
-      statement_id: "stmt-1",
-      created_at: "2024-01-01T00:00:00Z",
-      status: "cancelled" as const,
-      message: "cancelled",
-    };
+    const cancelResult = cancelledStatus("cancelled");
     const pending = pendingStatus();
     const { fn, calls } = makeFetchStub([jsonResponse(200, cancelResult)]);
     const client = new Client("http://localhost:8080", { fetch: fn });
-    const handle = new StatementHandle(client, "stmt-1", "json", pending);
+    const handle = new StatementHandle(client, "stmt-1", pending);
 
     const result = await handle.cancel();
 
     assert.equal(calls.length, 1);
-    assert.ok(calls[0]!.url.endsWith("/cancel"), `unexpected URL: ${calls[0]!.url}`);
+    assert.ok(
+      calls[0]!.url.endsWith("/cancel?format=json"),
+      `unexpected URL: ${calls[0]!.url}`,
+    );
     assert.equal(result.status, "cancelled");
   });
 
   it("sends POST cancel when statement is running", async () => {
-    const cancelResult = {
-      statement_id: "stmt-1",
-      created_at: "2024-01-01T00:00:00Z",
-      status: "cancelled" as const,
-      message: "cancelled",
-    };
+    const cancelResult = cancelledStatus("cancelled");
     const { fn, calls } = makeFetchStub([jsonResponse(200, cancelResult)]);
     const client = new Client("http://localhost:8080", { fetch: fn });
-    const handle = new StatementHandle(client, "stmt-1", "json", runningStatus());
+    const handle = new StatementHandle(client, "stmt-1", runningStatus());
 
     await handle.cancel();
 
     assert.equal(calls.length, 1);
   });
 
-  it("returns synthetic result without HTTP call when already finished", async () => {
+  it("returns cached status without HTTP call when already finished", async () => {
     const finished = finishedStatus(emptyResultSet());
     const { fn, calls } = makeFetchStub([]);
     const client = new Client("http://localhost:8080", { fetch: fn });
-    const handle = new StatementHandle(client, "stmt-1", "json", finished);
+    const handle = new StatementHandle(client, "stmt-1", finished);
 
     const result = await handle.cancel();
 
@@ -269,11 +322,11 @@ describe("StatementHandle.cancel", () => {
     assert.equal(result.status, "finished");
   });
 
-  it("returns synthetic result without HTTP call when already failed", async () => {
+  it("returns cached status without HTTP call when already failed", async () => {
     const failed = failedStatus("something went wrong");
     const { fn, calls } = makeFetchStub([]);
     const client = new Client("http://localhost:8080", { fetch: fn });
-    const handle = new StatementHandle(client, "stmt-1", "json", failed);
+    const handle = new StatementHandle(client, "stmt-1", failed);
 
     const result = await handle.cancel();
 
@@ -281,11 +334,11 @@ describe("StatementHandle.cancel", () => {
     assert.equal(result.status, "failed");
   });
 
-  it("returns synthetic result without HTTP call when already cancelled", async () => {
+  it("returns cached status without HTTP call when already cancelled", async () => {
     const cancelled = cancelledStatus("already cancelled");
     const { fn, calls } = makeFetchStub([]);
     const client = new Client("http://localhost:8080", { fetch: fn });
-    const handle = new StatementHandle(client, "stmt-1", "json", cancelled);
+    const handle = new StatementHandle(client, "stmt-1", cancelled);
 
     const result = await handle.cancel();
 
@@ -294,70 +347,40 @@ describe("StatementHandle.cancel", () => {
   });
 
   it("updates internal status after cancel returns failed", async () => {
-    const cancelResult = {
-      statement_id: "stmt-1",
-      created_at: "2024-01-01T00:00:00Z",
-      status: "failed" as const,
-      message: "execution failed",
-    };
+    const cancelResult = failedStatus("execution failed");
     const { fn } = makeFetchStub([jsonResponse(200, cancelResult)]);
     const client = new Client("http://localhost:8080", { fetch: fn });
-    const handle = new StatementHandle(client, "stmt-1", "json", pendingStatus());
+    const handle = new StatementHandle(client, "stmt-1", pendingStatus());
 
     await handle.cancel();
 
-    assert.equal(handle.status()?.status, "failed");
+    assert.equal(handle.snapshot()?.status, "failed");
   });
 
   it("updates internal status after cancel returns cancelled", async () => {
-    const cancelResult = {
-      statement_id: "stmt-1",
-      created_at: "2024-01-01T00:00:00Z",
-      status: "cancelled" as const,
-      message: "done",
-    };
+    const cancelResult = cancelledStatus("cancelled");
     const { fn } = makeFetchStub([jsonResponse(200, cancelResult)]);
     const client = new Client("http://localhost:8080", { fetch: fn });
-    const handle = new StatementHandle(client, "stmt-1", "json", runningStatus());
+    const handle = new StatementHandle(client, "stmt-1", runningStatus());
 
     await handle.cancel();
 
-    assert.equal(handle.status()?.status, "cancelled");
+    assert.equal(handle.snapshot()?.status, "cancelled");
   });
 });
 
-describe("Statement.executeOne", () => {
-  it("returns first row as object when result set is non-empty", async () => {
-    const rs = {
-      metadata: {
-        fields: [{ name: "count", data_type: "int" as const }],
-        num_rows: 1,
-      },
-      format: "json" as const,
-      rows: [["42"]],
-    };
-    const { fn } = makeFetchStub([
-      jsonResponse(200, pendingStatus()),
-      jsonResponse(200, finishedStatus(rs)),
-    ]);
-    const client = new Client("http://localhost:8080", { fetch: fn });
-
-    const row = await client.statement("FROM t AGGREGATE count() AS count").executeOne(noDelay);
-
-    assert.ok(row !== null);
-    assert.equal(row["count"], 42n);
+it("retains the full result when completion races with cancellation", async () => {
+  const response = finishedStatus({
+    metadata: { fields: [{ name: "id", data_type: "int" }], num_rows: 1 },
+    format: "json",
+    rows: [["7"]],
   });
-
-  it("returns null when result set is empty", async () => {
-    const rs = {
-      metadata: { fields: [{ name: "x", data_type: "int" as const }], num_rows: 0 },
-      format: "json" as const,
-      rows: [],
-    };
-    const { fn } = makeFetchStub([jsonResponse(200, finishedStatus(rs))]);
-    const client = new Client("http://localhost:8080", { fetch: fn });
-
-    const row = await client.statement("SELECT 1 WHERE false").executeOne(noDelay);
-    assert.equal(row, null);
-  });
+  response.progress.compute_seconds = 0.125;
+  const { fn, calls } = makeFetchStub([jsonResponse(200, response)]);
+  const handle = new Client("https://example.com", { fetch: fn })
+    .statementHandle("stmt-1");
+  assert.deepEqual(await handle.cancel(), response);
+  assert.equal(handle.snapshot()?.progress?.compute_seconds, 0.125);
+  assert.equal((await handle.wait()).toObjects()[0]?.["id"], 7n);
+  assert.equal(calls.length, 1);
 });

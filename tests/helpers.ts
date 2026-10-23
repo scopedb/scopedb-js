@@ -14,7 +14,13 @@
  * limitations under the License.
  */
 
-import type { StatementEstimatedProgress, StatementResultSet, StatementStatus } from "../src/protocol.js";
+import type {
+  StatementErrorDetails,
+  StatementEstimatedProgress,
+  StatementResultSet,
+  StatementSnapshot,
+} from "../src/protocol.js";
+import { gunzipSync } from "node:zlib";
 
 export type FetchCall = { url: string; init?: RequestInit };
 
@@ -28,12 +34,11 @@ export function makeFetchStub(responses: Response[]): FetchStub {
   let index = 0;
 
   const fn: typeof globalThis.fetch = async (input, init) => {
-    const url =
-      input instanceof URL
-        ? input.toString()
-        : typeof input === "string"
-          ? input
-          : (input as Request).url;
+    const url = input instanceof URL
+      ? input.toString()
+      : typeof input === "string"
+      ? input
+      : (input as Request).url;
     calls.push({ url, init });
 
     const response = responses[index++];
@@ -48,10 +53,14 @@ export function makeFetchStub(responses: Response[]): FetchStub {
   return { fn, calls };
 }
 
-export function jsonResponse(status: number, body: unknown): Response {
+export function jsonResponse(
+  status: number,
+  body: unknown,
+  headers: HeadersInit = {},
+): Response {
   return new Response(JSON.stringify(body), {
     status,
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...headers },
   });
 }
 
@@ -59,9 +68,37 @@ export function textResponse(status: number, text: string): Response {
   return new Response(text, { status });
 }
 
+export function parseJsonRequestBody(init: RequestInit | undefined): unknown {
+  return JSON.parse(requestBodyText(init)) as unknown;
+}
+
+export function requestBodyText(init: RequestInit | undefined): string {
+  const body = init?.body;
+  let bytes: Uint8Array;
+  if (typeof body === "string") {
+    bytes = new TextEncoder().encode(body);
+  } else if (body instanceof Uint8Array) {
+    bytes = body;
+  } else if (body instanceof ArrayBuffer) {
+    bytes = new Uint8Array(body);
+  } else {
+    throw new Error("request does not contain a supported body");
+  }
+
+  const encoding = new Headers(init?.headers).get("Content-Encoding");
+  if (encoding === "gzip") {
+    bytes = gunzipSync(bytes);
+  } else if (encoding !== null && encoding !== "identity") {
+    throw new Error(`unsupported test request encoding: ${encoding}`);
+  }
+
+  return new TextDecoder().decode(bytes);
+}
+
 export function emptyProgress(): StatementEstimatedProgress {
   return {
     total_percentage: 0,
+    compute_seconds: 0,
     nanos_from_submitted: 0,
     nanos_from_started: 0,
     total_stages: 0,
@@ -81,24 +118,61 @@ export function emptyProgress(): StatementEstimatedProgress {
   };
 }
 
-export function pendingStatus(statementId = "stmt-1"): StatementStatus {
-  return { status: "pending", statement_id: statementId, created_at: "2024-01-01T00:00:00Z", progress: emptyProgress() };
+export function pendingStatus(statementId = "stmt-1"): StatementSnapshot {
+  return {
+    status: "pending",
+    statement_id: statementId,
+    created_at: "2024-01-01T00:00:00Z",
+    progress: emptyProgress(),
+  };
 }
 
-export function runningStatus(statementId = "stmt-1"): StatementStatus {
-  return { status: "running", statement_id: statementId, created_at: "2024-01-01T00:00:00Z", progress: emptyProgress() };
+export function runningStatus(statementId = "stmt-1"): StatementSnapshot {
+  return {
+    status: "running",
+    statement_id: statementId,
+    created_at: "2024-01-01T00:00:00Z",
+    progress: emptyProgress(),
+  };
 }
 
-export function finishedStatus(resultSet: StatementResultSet, statementId = "stmt-1"): StatementStatus {
-  return { status: "finished", statement_id: statementId, created_at: "2024-01-01T00:00:00Z", progress: emptyProgress(), result_set: resultSet };
+export function finishedStatus(
+  resultSet: StatementResultSet,
+  statementId = "stmt-1",
+): StatementSnapshot {
+  return {
+    status: "finished",
+    statement_id: statementId,
+    created_at: "2024-01-01T00:00:00Z",
+    progress: emptyProgress(),
+    result_set: resultSet,
+  };
 }
 
-export function failedStatus(message: string, statementId = "stmt-1"): StatementStatus {
-  return { status: "failed", statement_id: statementId, created_at: "2024-01-01T00:00:00Z", progress: emptyProgress(), message };
+export function failedStatus(
+  message: string,
+  statementId = "stmt-1",
+  error?: StatementErrorDetails,
+): StatementSnapshot {
+  return {
+    status: "failed",
+    statement_id: statementId,
+    created_at: "2024-01-01T00:00:00Z",
+    progress: emptyProgress(),
+    error: error ?? { code: "statement_failed", message },
+  };
 }
 
-export function cancelledStatus(message: string, statementId = "stmt-1"): StatementStatus {
-  return { status: "cancelled", statement_id: statementId, created_at: "2024-01-01T00:00:00Z", progress: emptyProgress(), message };
+export function cancelledStatus(
+  _message: string,
+  statementId = "stmt-1",
+): StatementSnapshot {
+  return {
+    status: "cancelled",
+    statement_id: statementId,
+    created_at: "2024-01-01T00:00:00Z",
+    progress: emptyProgress(),
+  };
 }
 
 export function emptyResultSet(): StatementResultSet {

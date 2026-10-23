@@ -15,39 +15,38 @@
  */
 
 import type { Client } from "./client.js";
-import { AppendRowsError, ScopeDBError, asScopeDBError } from "./errors.js";
+import { AppendRowsError, asScopeDBError, ScopeDBError } from "./errors.js";
 import type { AppendRowsResult } from "./protocol.js";
 import {
+  abortReason,
   AsyncBoundedQueue,
+  byteLength,
   Deferred,
+  MAX_APPEND_BODY_BYTES,
+  MAX_APPEND_ROWS,
+  MAX_TIMER_MS,
+  nextBackoff,
+  nonnegativeIntegerConfig,
   PendingBytesBudget,
   PendingBytesClosedError,
   PendingBytesExceedsCapacityError,
   type PendingBytesReservation,
-  MAX_TIMER_MS,
+  positiveIntegerConfig,
   QUEUE_CLOSED,
   QUEUE_TIMEOUT,
-  abortReason,
-  byteLength,
-  nextBackoff,
-  nonnegativeIntegerConfig,
-  positiveIntegerConfig,
   sleep,
   throwIfAborted,
+  writeTimeoutConfig,
 } from "./stream-internals.js";
 
-const MAX_APPEND_BODY_BYTES = 16 * 1024 * 1024;
-const MAX_APPEND_ROWS = 200_000;
-const DEFAULT_BATCH_BYTES = MAX_APPEND_BODY_BYTES;
+const DEFAULT_BATCH_BYTES = 4 * 1024 * 1024;
 const DEFAULT_FLUSH_INTERVAL_MS = 1_000;
 const DEFAULT_CHANNEL_CAPACITY = 1024;
 const DEFAULT_MAX_IN_FLIGHT_REQUESTS = 4;
-const DEFAULT_MAX_PENDING_BYTES =
-  DEFAULT_BATCH_BYTES * DEFAULT_MAX_IN_FLIGHT_REQUESTS;
+const DEFAULT_MAX_PENDING_BYTES = 64 * 1024 * 1024;
 const DEFAULT_MAX_RETRIES = 8;
 const DEFAULT_INITIAL_BACKOFF_MS = 100;
 const DEFAULT_MAX_BACKOFF_MS = 5_000;
-const DEFAULT_CONTINUE_ATTEMPT_TIMEOUT_MS = 30_000;
 const DEFAULT_CIRCUIT_FAILURE_THRESHOLD = 5;
 const DEFAULT_CIRCUIT_COOLDOWN_MS = 30_000;
 
@@ -79,7 +78,7 @@ export interface AppendAdmissionResult {
 export interface AppendDeliveryReport {
   /**
    * `unknown` means no covered rows are known to have committed and at least
-   * one batch may have committed; callers must not blindly replay it.
+   * one batch may have committed; replay can insert duplicates.
    */
   outcome: "ok" | "partial" | "failed" | "unknown";
   acceptedRows: number;
@@ -114,11 +113,7 @@ export interface AppendStreamStats {
   pendingRows: number;
   pendingBytes: number;
   inFlightBatches: number;
-  lastFailure?: Readonly<{
-    atMs: number;
-    message: string;
-    appendState?: "rejected" | "unknown";
-  }>;
+  lastFailure?: Readonly<{ atMs: number; error: ScopeDBError }>;
   lastReport?: Readonly<AppendDeliveryReport>;
 }
 
@@ -139,9 +134,11 @@ export type AppendBarrierResult<Policy extends AppendFailurePolicy> =
   Policy extends "continue" ? AppendDeliveryReport : AppendRowsResult | null;
 
 interface RetryConfig {
+  retryUnknown: boolean;
   maxRetries: number;
   initialBackoffMs: number;
   maxBackoffMs: number;
+  maxElapsedTimeMs: number;
 }
 
 interface AppendStreamConfig<Policy extends AppendFailurePolicy> {
@@ -157,7 +154,7 @@ interface AppendStreamConfig<Policy extends AppendFailurePolicy> {
   readonly maxInFlightRequests: number;
   readonly retry: RetryConfig;
   readonly failurePolicy: Policy;
-  readonly attemptTimeoutMs: number | undefined;
+  readonly attemptTimeoutMs: number | null | undefined;
   readonly circuitBreaker: AppendCircuitBreakerOptions | false;
   readonly batchFailureListeners: ReadonlyArray<
     (event: AppendBatchFailureEvent) => void | PromiseLike<void>
@@ -226,7 +223,7 @@ export class AppendStreamBuilder<
   private currentChannelCapacity = DEFAULT_CHANNEL_CAPACITY;
   private currentMaxPendingBytes = DEFAULT_MAX_PENDING_BYTES;
   private currentMaxInFlightRequests = DEFAULT_MAX_IN_FLIGHT_REQUESTS;
-  private currentAttemptTimeoutMs: number | undefined;
+  private currentAttemptTimeoutMs: number | null | undefined;
   private currentCircuitBreaker: AppendCircuitBreakerOptions | false = {
     failureThreshold: DEFAULT_CIRCUIT_FAILURE_THRESHOLD,
     cooldownMs: DEFAULT_CIRCUIT_COOLDOWN_MS,
@@ -235,9 +232,11 @@ export class AppendStreamBuilder<
     (event: AppendBatchFailureEvent) => void | PromiseLike<void>
   > = [];
   private currentRetry: RetryConfig = {
+    retryUnknown: false,
     maxRetries: DEFAULT_MAX_RETRIES,
     initialBackoffMs: DEFAULT_INITIAL_BACKOFF_MS,
     maxBackoffMs: DEFAULT_MAX_BACKOFF_MS,
+    maxElapsedTimeMs: 300_000,
   };
 
   /** @internal */
@@ -270,19 +269,9 @@ export class AppendStreamBuilder<
   }
 
   /**
-   * Target NDJSON payload size. A single row may exceed it, up to 16 MiB.
-   * @deprecated Use `targetBatchBytes()`.
+   * Target NDJSON payload size (default 4 MiB, maximum 8 MiB).
+   * A single row may exceed the target, up to 8 MiB.
    */
-  batchBytes(batchBytes: number): this {
-    this.currentBatchBytes = positiveIntegerConfig(
-      "batchBytes",
-      batchBytes,
-      MAX_APPEND_BODY_BYTES,
-    );
-    return this;
-  }
-
-  /** Target NDJSON payload size. A single row may exceed it, up to 16 MiB. */
   targetBatchBytes(targetBatchBytes: number): this {
     this.currentBatchBytes = positiveIntegerConfig(
       "targetBatchBytes",
@@ -298,19 +287,6 @@ export class AppendStreamBuilder<
       "maxBatchRows",
       maxBatchRows,
       MAX_APPEND_ROWS,
-    );
-    return this;
-  }
-
-  /**
-   * Maximum time from the first buffered row until its batch is dispatched.
-   * @deprecated Use `flushIntervalMs()`.
-   */
-  flushInterval(flushIntervalMs: number): this {
-    this.currentFlushIntervalMs = positiveIntegerConfig(
-      "flushInterval",
-      flushIntervalMs,
-      MAX_TIMER_MS,
     );
     return this;
   }
@@ -333,31 +309,10 @@ export class AppendStreamBuilder<
     return this;
   }
 
-  /** @deprecated Use `maxBufferedBytes()`. */
-  maxPendingBytes(maxPendingBytes: number): this {
-    this.currentMaxPendingBytes = positiveIntegerConfig(
-      "maxPendingBytes",
-      maxPendingBytes,
-    );
-    return this;
-  }
-
   maxBufferedBytes(maxBufferedBytes: number): this {
     this.currentMaxPendingBytes = positiveIntegerConfig(
       "maxBufferedBytes",
       maxBufferedBytes,
-    );
-    return this;
-  }
-
-  /**
-   * Maximum number of append requests in flight. Defaults to 4.
-   * @deprecated Use `maxConcurrentBatches()`.
-   */
-  maxInFlightRequests(maxInFlightRequests: number): this {
-    this.currentMaxInFlightRequests = positiveIntegerConfig(
-      "maxInFlightRequests",
-      maxInFlightRequests,
     );
     return this;
   }
@@ -371,10 +326,29 @@ export class AppendStreamBuilder<
     return this;
   }
 
+  /** Allow replay after an unknown outcome. May duplicate committed rows; defaults to false. */
+  retryUnknown(enabled: boolean): this {
+    if (typeof enabled !== "boolean") {
+      throw configError("retryUnknown must be a boolean");
+    }
+    this.currentRetry.retryUnknown = enabled;
+    return this;
+  }
+
   maxRetries(maxRetries: number): this {
     this.currentRetry.maxRetries = nonnegativeIntegerConfig(
       "maxRetries",
       maxRetries,
+    );
+    return this;
+  }
+
+  /** Total per-batch time budget including requests and retry delays (default 5 minutes). */
+  maxElapsedTimeMs(maxElapsedTimeMs: number): this {
+    this.currentRetry.maxElapsedTimeMs = positiveIntegerConfig(
+      "maxElapsedTimeMs",
+      maxElapsedTimeMs,
+      MAX_TIMER_MS,
     );
     return this;
   }
@@ -397,25 +371,11 @@ export class AppendStreamBuilder<
     return this;
   }
 
-  /**
-   * Per-attempt HTTP timeout in milliseconds. A timeout has an unknown outcome.
-   * @deprecated Use `attemptTimeoutMs()`.
-   */
-  attemptTimeout(attemptTimeoutMs: number): this {
-    this.currentAttemptTimeoutMs = positiveIntegerConfig(
-      "attemptTimeout",
-      attemptTimeoutMs,
-      MAX_TIMER_MS,
-    );
-    return this;
-  }
-
-  /** Per-attempt HTTP timeout in milliseconds. */
-  attemptTimeoutMs(attemptTimeoutMs: number): this {
-    this.currentAttemptTimeoutMs = positiveIntegerConfig(
+  /** Per-attempt HTTP timeout in milliseconds; null disables it without disabling the batch delivery budget. */
+  attemptTimeoutMs(attemptTimeoutMs: number | null): this {
+    this.currentAttemptTimeoutMs = writeTimeoutConfig(
       "attemptTimeoutMs",
       attemptTimeoutMs,
-      MAX_TIMER_MS,
     );
     return this;
   }
@@ -471,10 +431,7 @@ export class AppendStreamBuilder<
       maxInFlightRequests: this.currentMaxInFlightRequests,
       retry: { ...this.currentRetry },
       failurePolicy: this.failurePolicy,
-      attemptTimeoutMs: this.currentAttemptTimeoutMs ??
-        (this.failurePolicy === "continue"
-          ? DEFAULT_CONTINUE_ATTEMPT_TIMEOUT_MS
-          : undefined),
+      attemptTimeoutMs: this.currentAttemptTimeoutMs,
       circuitBreaker: this.currentCircuitBreaker === false
         ? false
         : { ...this.currentCircuitBreaker },
@@ -544,8 +501,7 @@ export class AppendStream<Policy extends AppendFailurePolicy = "stop"> {
       this.noteDrop("closed");
       return false;
     }
-    const claimsCircuitProbe =
-      this.config.failurePolicy === "continue" &&
+    const claimsCircuitProbe = this.config.failurePolicy === "continue" &&
       this.circuitState === "open" &&
       Date.now() >= this.circuitOpenedUntil &&
       !this.circuitProbeAdmissionClaimed;
@@ -570,6 +526,10 @@ export class AppendStream<Policy extends AppendFailurePolicy = "stop"> {
       return false;
     }
 
+    if (serialized.bytes + 1 > this.config.maxPendingBytes) {
+      this.noteDrop("recordTooLarge");
+      return false;
+    }
     const reservation = this.pendingBytes.tryAcquire(serialized.bytes + 1);
     if (reservation === null) {
       this.noteDrop("bufferFull");
@@ -719,7 +679,7 @@ export class AppendStream<Policy extends AppendFailurePolicy = "stop"> {
   private async flushInner(options: AppendWaitOptions): Promise<BarrierOutput> {
     throwIfAborted(options.signal);
     if (this.fatal !== null) {
-      await this.task;
+      await waitWithSignal(this.task, options.signal);
       throw this.fatal;
     }
     if (!this.accepting) {
@@ -740,7 +700,7 @@ export class AppendStream<Policy extends AppendFailurePolicy = "stop"> {
         throw abortReason(options.signal);
       }
       if (this.fatal !== null) {
-        await this.task;
+        await waitWithSignal(this.task, options.signal);
         throw this.fatal;
       }
       if (cause instanceof ScopeDBError) {
@@ -825,10 +785,10 @@ export class AppendStream<Policy extends AppendFailurePolicy = "stop"> {
       this.setFatal(asStreamError(cause));
     } finally {
       await this.waitForInFlight();
-      this.addCommittedContextToFatal();
       this.releaseBufferedAsFailed();
       this.queue.close();
       this.drainQueued();
+      this.addCommittedContextToFatal();
       this.pendingBytes.close();
       this.accepting = false;
       this.workerDone = true;
@@ -925,62 +885,109 @@ export class AppendStream<Policy extends AppendFailurePolicy = "stop"> {
   ): Promise<AppendRowsResult> {
     const payload = batch.map((row) => row.payload).join("\n");
     let retries = 0;
-    let backoffMs = this.config.retry.initialBackoffMs;
-
-    for (;;) {
-      this.checkFatal();
-      const timeoutSignal = this.config.attemptTimeoutMs === undefined
-        ? undefined
-        : AbortSignal.timeout(this.config.attemptTimeoutMs);
-      try {
-        const result = await this.config.client.appendRows(
-          this.config.database,
-          this.config.schema,
-          this.config.table,
-          payload,
-          timeoutSignal === undefined ? {} : { signal: timeoutSignal },
-        );
-        if (result.num_rows_inserted !== batch.length) {
-          throw rowCountMismatchError(batch.length, result.num_rows_inserted);
-        }
-        return result;
-      } catch (cause) {
-        const error = asStreamError(cause);
-        if (
-          timeoutSignal?.aborted === true &&
-          this.config.attemptTimeoutMs !== undefined
-        ) {
-          error.withContext("attempt_timeout_ms", this.config.attemptTimeoutMs);
-        }
-        const retryable =
-          error instanceof AppendRowsError &&
-          error.appendState === "rejected" &&
-          error.isTemporary();
-        if (retryable && retries < this.config.retry.maxRetries) {
-          const retryDelayMs = Math.min(
-            Math.max(backoffMs, error.retryAfterMs ?? 0),
-            this.config.retry.maxBackoffMs,
+    let backoffMs = Math.min(
+      this.config.retry.initialBackoffMs,
+      this.config.retry.maxBackoffMs,
+    );
+    let ambiguous = false;
+    const deadline = performance.now() + this.config.retry.maxElapsedTimeMs;
+    const elapsed = new AbortController();
+    const timer = setTimeout(() =>
+      elapsed.abort(
+        new DOMException("append time budget expired", "TimeoutError"),
+      ), this.config.retry.maxElapsedTimeMs);
+    const waitSignal = AbortSignal.any([
+      elapsed.signal,
+      this.fatalController.signal,
+    ]);
+    let lastError: AppendRowsError | undefined;
+    try {
+      for (;;) {
+        this.checkFatal();
+        if (elapsed.signal.aborted || performance.now() >= deadline) {
+          throw retryExhaustedError(
+            retries,
+            lastError ??
+              unknownError(
+                asStreamError(new Error("append time budget expired")),
+              ),
           );
-          if (retryDelayMs > 0) {
-            await sleep(retryDelayMs, this.fatalController.signal);
-          }
-          if (this.fatal !== null) {
-            throw error.withContext("retry_cancelled_by_stream_failure", true);
-          }
-          retries += 1;
-          this.noteRetry();
-          backoffMs = nextBackoff(
-            backoffMs,
-            this.config.retry.maxBackoffMs,
+        }
+        try {
+          const result = await this.config.client.appendRows(
+            this.config.database,
+            this.config.schema,
+            this.config.table,
+            payload,
+            { signal: elapsed.signal, timeoutMs: this.config.attemptTimeoutMs },
           );
-          continue;
+          if (result.num_rows_inserted !== batch.length) {
+            throw rowCountMismatchError(batch.length, result.num_rows_inserted);
+          }
+          return result;
+        } catch (cause) {
+          const original = asStreamError(cause);
+          const error = original instanceof AppendRowsError
+            ? original
+            : unknownError(original);
+          if (
+            error.context().has("write_timeout_ms") &&
+            this.config.attemptTimeoutMs != null
+          ) {
+            error.withContext(
+              "attempt_timeout_ms",
+              this.config.attemptTimeoutMs,
+            );
+          }
+          ambiguous ||= error.outcome === "unknown";
+          lastError = error;
+          if (elapsed.signal.aborted || performance.now() >= deadline) {
+            throw retryExhaustedError(retries, error);
+          }
+          if (!this.isRetryable(error)) throw error;
+          if (retries >= this.config.retry.maxRetries) {
+            throw retryExhaustedError(retries, error);
+          }
         }
-        if (retryable) {
-          throw retryExhaustedError(retries, error);
+        // Equal jitter; Retry-After remains a floor even beyond maxBackoffMs.
+        const jitter = backoffMs / 2 + Math.random() * backoffMs / 2;
+        const delay = Math.max(jitter, lastError.retryAfterMs ?? 0);
+        const wakeAt = Math.min(performance.now() + delay, deadline);
+        while (!waitSignal.aborted && performance.now() < wakeAt) {
+          await sleep(Math.ceil(wakeAt - performance.now()), waitSignal);
         }
-        throw error;
+        if (elapsed.signal.aborted || performance.now() >= deadline) {
+          throw retryExhaustedError(retries, lastError);
+        }
+        if (this.fatal !== null) {
+          throw lastError.withContext(
+            "retry_cancelled_by_stream_failure",
+            true,
+          );
+        }
+        retries += 1;
+        this.noteRetry();
+        backoffMs = nextBackoff(backoffMs, this.config.retry.maxBackoffMs);
       }
+    } catch (cause) {
+      const error = asStreamError(cause);
+      throw ambiguous && appendOutcome(error) !== "unknown"
+        ? unknownError(error)
+        : error;
+    } finally {
+      clearTimeout(timer);
     }
+  }
+
+  private isRetryable(error: AppendRowsError): boolean {
+    if (error.writeDetails !== undefined || error.serverRetryable === false) {
+      return false;
+    }
+    if (error.outcome === "rejected") return error.isTemporary();
+    if (!this.config.retry.retryUnknown) return false;
+    const status = error.httpStatus ?? 0;
+    return status === 0 || (status >= 200 && status < 300) ||
+      status === 408 || status === 429 || status >= 500;
   }
 
   private async waitForCapacity(): Promise<void> {
@@ -1062,12 +1069,10 @@ export class AppendStream<Policy extends AppendFailurePolicy = "stop"> {
     if (this.config.failurePolicy === "continue") {
       return this.takeDeliveryReport(droppedRowsAtBarrier, startedAt);
     }
-    const result = this.interval.committedBatches === 0
-      ? null
-      : {
-        append_state: "committed" as const,
-        num_rows_inserted: this.interval.committedRows,
-      };
+    const result = this.interval.committedBatches === 0 ? null : {
+      status: "committed" as const,
+      num_rows_inserted: this.interval.committedRows,
+    };
     this.interval = newIntervalCounters();
     return result;
   }
@@ -1143,13 +1148,7 @@ export class AppendStream<Policy extends AppendFailurePolicy = "stop"> {
       this.interval.failedBatches += 1;
     }
     this.pendingRowCount = Math.max(0, this.pendingRowCount - rows);
-    this.lastFailure = {
-      atMs: Date.now(),
-      message: error.message,
-      ...(error instanceof AppendRowsError
-        ? { appendState: error.appendState }
-        : {}),
-    };
+    this.lastFailure = { atMs: Date.now(), error };
   }
 
   private markLocalRowsFailed(rows: BufferedRecord[]): void {
@@ -1206,8 +1205,8 @@ export class AppendStream<Policy extends AppendFailurePolicy = "stop"> {
       this.consecutiveFailures >= this.config.circuitBreaker.failureThreshold
     ) {
       this.circuitState = "open";
-      this.circuitOpenedUntil =
-        Date.now() + this.config.circuitBreaker.cooldownMs;
+      this.circuitOpenedUntil = Date.now() +
+        this.config.circuitBreaker.cooldownMs;
       this.circuitProbeAdmissionClaimed = false;
       this.circuitProbeDone?.resolve();
       this.circuitProbeDone = undefined;
@@ -1244,7 +1243,7 @@ export class AppendStream<Policy extends AppendFailurePolicy = "stop"> {
         appendOutcome(this.fatal) === "rejected" &&
         appendOutcome(error) === "unknown"
       ) {
-        error.withContext("prior_append_state", "rejected");
+        error.withContext("prior_status", "rejected");
         this.fatal = error;
       }
       return;
@@ -1321,7 +1320,10 @@ export class AppendStream<Policy extends AppendFailurePolicy = "stop"> {
     ).setPersistent();
   }
 
-  private mapPendingBytesError(cause: unknown, requested: number): ScopeDBError {
+  private mapPendingBytesError(
+    cause: unknown,
+    requested: number,
+  ): ScopeDBError {
     if (cause instanceof PendingBytesClosedError) {
       return this.closedOrFatalError();
     }
@@ -1389,23 +1391,55 @@ function releaseRows(rows: BufferedRecord[]): void {
   }
 }
 
+/** A bounded retry policy exhausted its attempt or elapsed-time budget. */
+export class AppendRetryExhaustedError extends AppendRowsError {}
+
+function unknownError(cause: ScopeDBError): AppendRowsError {
+  const payload = {
+    message: cause.message,
+    status: "unknown" as const,
+    row_errors: cause instanceof AppendRowsError ? [...cause.rowErrors] : [],
+    row_errors_truncated: cause instanceof AppendRowsError &&
+      cause.rowErrorsTruncated,
+  };
+  const ErrorClass = cause instanceof AppendRetryExhaustedError
+    ? AppendRetryExhaustedError
+    : AppendRowsError;
+  const error = new ErrorClass(payload, cause.message, {
+    cause,
+    serverRetryable: cause.serverRetryable,
+    code: cause.code,
+    details: cause.details,
+    httpStatus: cause.httpStatus,
+    requestId: cause.requestId,
+    retryAfterMs: cause.retryAfterMs,
+    writeDetails: cause.writeDetails,
+  }).setPersistent();
+  for (const [key, value] of cause.context()) error.withContext(key, value);
+  return error;
+}
+
 function retryExhaustedError(
   retries: number,
   cause: AppendRowsError,
 ): AppendRowsError {
-  return new AppendRowsError(
+  return new AppendRetryExhaustedError(
     {
       message: cause.message,
-      append_state: cause.appendState,
+      status: cause.outcome,
       row_errors: [...cause.rowErrors],
       row_errors_truncated: cause.rowErrorsTruncated,
     },
     "append stream batch exhausted retry budget",
     {
       cause,
+      code: cause.code,
+      serverRetryable: cause.serverRetryable,
+      details: cause.details,
       httpStatus: cause.httpStatus,
       requestId: cause.requestId,
       retryAfterMs: cause.retryAfterMs,
+      writeDetails: cause.writeDetails,
     },
   )
     .withContext("retries", retries)
@@ -1413,11 +1447,14 @@ function retryExhaustedError(
     .setPersistent();
 }
 
-function rowCountMismatchError(expected: number, actual: number): AppendRowsError {
+function rowCountMismatchError(
+  expected: number,
+  actual: number,
+): AppendRowsError {
   return new AppendRowsError(
     {
       message: "append response row count does not match the request",
-      append_state: "unknown",
+      status: "unknown",
       row_errors: [],
       row_errors_truncated: false,
     },
@@ -1426,7 +1463,7 @@ function rowCountMismatchError(expected: number, actual: number): AppendRowsErro
 }
 
 function appendOutcome(error: ScopeDBError): "rejected" | "unknown" {
-  return error instanceof AppendRowsError && error.appendState === "rejected"
+  return error instanceof AppendRowsError && error.outcome === "rejected"
     ? "rejected"
     : "unknown";
 }
@@ -1458,7 +1495,10 @@ function asStreamError(cause: unknown): ScopeDBError {
   return asScopeDBError("Unexpected", "append stream failed", cause);
 }
 
-function waitWithSignal<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
+function waitWithSignal<T>(
+  promise: Promise<T>,
+  signal?: AbortSignal,
+): Promise<T> {
   if (signal === undefined) {
     return promise;
   }
