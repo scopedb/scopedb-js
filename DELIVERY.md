@@ -59,7 +59,7 @@ Never retry a failed publish by moving a tag: once npm accepts a version it is i
 
 ## Required checks
 
-The publish workflow and `prepack` run these checks; run them locally before tagging a release:
+Run these checks locally before tagging a release:
 
 ```sh
 pnpm install --frozen-lockfile
@@ -67,11 +67,12 @@ pnpm test
 pnpm run check
 pnpm run smoke:runtime
 pnpm run smoke:web-runtime
+pnpm run smoke:frameworks
 pnpm pack --dry-run
 ```
 
-`prepack` runs the unit, type, example, and package-entry checks. CI repeats the runtime smoke test on Node.js 20, 22, 24, and Bun, and dry-runs the pack on every change. Framework consumers should additionally build the checked-in Next.js and Worker templates from the packed tarball.
+`prepack` runs the unit, type, example, and package-entry checks. CI repeats the runtime smoke test on Node.js 20, 22, 24, and Bun, and dry-runs the pack on every change. CI and the publish workflow also run `smoke:frameworks`, which installs the SDK tarball into a temporary consumer and runs the checked-in Next.js and Worker templates against a local mock ScopeDB 0.6 server.
 
-The fast `smoke:web-runtime` check only removes Node's `Buffer`; it is not a substitute for workerd. Until packed Next.js and Wrangler consumers run in CI, every release candidate must run those two fresh-consumer checks explicitly.
+The fast `smoke:web-runtime` check removes Node's `Buffer`. The framework check type-checks the installed Web consumer without Node ambient types, then runs query and append through the original templates in a real Next.js production server and Wrangler/workerd without `nodejs_compat`. Keep detailed protocol, batching, and input-validation cases in the regular tests. Direct framework dependencies are pinned in `tests/consumers/frameworks/package.json`; transitive dependencies resolve at installation, as in a fresh consumer project. This smoke test deliberately has no second lockfile and does not guarantee an identical dependency tree across runs.
 
 Generated `dist/`, `dist-test/`, `node_modules/`, and tarball files are not committed.

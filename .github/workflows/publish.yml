@@ -37,6 +37,7 @@ jobs:
       - run: pnpm test
       - run: pnpm run check
       - run: node scripts/smoke-runtime.mjs --without-buffer
+      - run: pnpm run smoke:frameworks
       # Trusted publishing requires npm CLI >= 11.5.1; the npm bundled with
       # the runner's Node.js may be older.
       - name: Update npm CLI for trusted publishing

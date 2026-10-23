@@ -57,3 +57,17 @@ jobs:
       # prepack reruns the unit, type, example, and package-entry checks
       # against the exact tarball contents a release would publish.
       - run: pnpm pack --dry-run
+
+  framework-consumers:
+    name: Packed Next.js and Workers consumers
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm run smoke:frameworks
