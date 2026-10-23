@@ -53,95 +53,106 @@ describe("ResultSet.fromStatementResultSet", () => {
     assert.equal(rs.numRows(), 3);
   });
 
-  it("preserves raw JSON rows via jsonRows()", () => {
+  it("preserves raw JSON rows via rawRows()", () => {
     const rs = makeResultSet(
       [{ name: "x", data_type: "int" }, { name: "y", data_type: "string" }],
       [["1", "hello"], ["2", null]],
     );
-    const rows = rs.jsonRows();
+    const rows = rs.rawRows();
     assert.deepEqual(rows[0], ["1", "hello"]);
     assert.deepEqual(rows[1], ["2", null]);
     assert.deepEqual(rs.rawRows(), rows);
   });
 });
 
-describe("ResultSet.intoValues — type parsing", () => {
+describe("ResultSet.toValues — type parsing", () => {
   it("parses int as BigInt", () => {
     const rs = makeResultSet([{ name: "n", data_type: "int" }], [["42"]]);
-    assert.equal(rs.intoValues()[0]![0], 42n);
     assert.equal(rs.toValues()[0]![0], 42n);
   });
 
   it("parses uint as BigInt", () => {
     const rs = makeResultSet([{ name: "n", data_type: "uint" }], [["100"]]);
-    assert.equal(rs.intoValues()[0]![0], 100n);
-  });
-
-  it("parses u_int (backward-compat alias) as BigInt", () => {
-    const rs = makeResultSet([{ name: "n", data_type: "u_int" }], [["99"]]);
-    assert.equal(rs.intoValues()[0]![0], 99n);
+    assert.equal(rs.toValues()[0]![0], 100n);
   });
 
   it("parses float as number", () => {
     const rs = makeResultSet([{ name: "f", data_type: "float" }], [["3.14"]]);
-    const val = rs.intoValues()[0]![0];
+    const val = rs.toValues()[0]![0];
     assert.ok(typeof val === "number");
     assert.ok(Math.abs((val as number) - 3.14) < 1e-9);
   });
 
   it("parses boolean true", () => {
     const rs = makeResultSet([{ name: "b", data_type: "boolean" }], [["true"]]);
-    assert.equal(rs.intoValues()[0]![0], true);
+    assert.equal(rs.toValues()[0]![0], true);
   });
 
   it("parses boolean false", () => {
-    const rs = makeResultSet([{ name: "b", data_type: "boolean" }], [["false"]]);
-    assert.equal(rs.intoValues()[0]![0], false);
+    const rs = makeResultSet([{ name: "b", data_type: "boolean" }], [[
+      "false",
+    ]]);
+    assert.equal(rs.toValues()[0]![0], false);
   });
 
   it("parses timestamp as Date", () => {
-    const rs = makeResultSet([{ name: "t", data_type: "timestamp" }], [["2024-06-01T12:00:00Z"]]);
-    const val = rs.intoValues()[0]![0];
+    const rs = makeResultSet([{ name: "t", data_type: "timestamp" }], [[
+      "2024-06-01T12:00:00Z",
+    ]]);
+    const val = rs.toValues()[0]![0];
     assert.ok(val instanceof Date);
     assert.equal((val as Date).toISOString(), "2024-06-01T12:00:00.000Z");
   });
 
   it("returns string as-is for string type", () => {
     const rs = makeResultSet([{ name: "s", data_type: "string" }], [["hello"]]);
-    assert.equal(rs.intoValues()[0]![0], "hello");
+    assert.equal(rs.toValues()[0]![0], "hello");
   });
 
   it("returns string as-is for interval type", () => {
     const rs = makeResultSet([{ name: "d", data_type: "interval" }], [["P1D"]]);
-    assert.equal(rs.intoValues()[0]![0], "P1D");
+    assert.equal(rs.toValues()[0]![0], "P1D");
   });
 
   it("returns null for null cell regardless of type", () => {
-    const types: DataType[] = ["int", "uint", "float", "boolean", "timestamp", "string"];
+    const types: DataType[] = [
+      "int",
+      "uint",
+      "float",
+      "boolean",
+      "timestamp",
+      "string",
+    ];
     for (const dt of types) {
       const rs = makeResultSet([{ name: "v", data_type: dt }], [[null]]);
-      assert.equal(rs.intoValues()[0]![0], null, `expected null for type ${dt}`);
+      assert.equal(rs.toValues()[0]![0], null, `expected null for type ${dt}`);
     }
   });
 
   it("throws ScopeDBError on invalid integer value", () => {
-    const rs = makeResultSet([{ name: "n", data_type: "int" }], [["not-a-number"]]);
-    assert.throws(() => rs.intoValues(), ScopeDBError);
+    const rs = makeResultSet([{ name: "n", data_type: "int" }], [[
+      "not-a-number",
+    ]]);
+    assert.throws(() => rs.toValues(), ScopeDBError);
   });
 
   it("throws ScopeDBError on invalid float value", () => {
-    const rs = makeResultSet([{ name: "f", data_type: "float" }], [["NaN"]]);
-    assert.throws(() => rs.intoValues(), ScopeDBError);
+    const rs = makeResultSet([{ name: "f", data_type: "float" }], [[
+      "invalid-float",
+    ]]);
+    assert.throws(() => rs.toValues(), ScopeDBError);
   });
 
   it("throws ScopeDBError on invalid boolean value", () => {
     const rs = makeResultSet([{ name: "b", data_type: "boolean" }], [["yes"]]);
-    assert.throws(() => rs.intoValues(), ScopeDBError);
+    assert.throws(() => rs.toValues(), ScopeDBError);
   });
 
   it("throws ScopeDBError on invalid timestamp value", () => {
-    const rs = makeResultSet([{ name: "t", data_type: "timestamp" }], [["not-a-date"]]);
-    assert.throws(() => rs.intoValues(), ScopeDBError);
+    const rs = makeResultSet([{ name: "t", data_type: "timestamp" }], [[
+      "not-a-date",
+    ]]);
+    assert.throws(() => rs.toValues(), ScopeDBError);
   });
 
   it("throws ScopeDBError when row field count mismatches schema", () => {
@@ -149,7 +160,7 @@ describe("ResultSet.intoValues — type parsing", () => {
       [{ name: "a", data_type: "string" }, { name: "b", data_type: "string" }],
       [["only-one-cell"]],
     );
-    assert.throws(() => rs.intoValues(), ScopeDBError);
+    assert.throws(() => rs.toValues(), ScopeDBError);
   });
 
   it("handles multiple rows with mixed types correctly", () => {
@@ -165,7 +176,7 @@ describe("ResultSet.intoValues — type parsing", () => {
         ["2", "3.0", "beta", "false"],
       ],
     );
-    const rows = rs.intoValues();
+    const rows = rs.toValues();
     assert.equal(rows[0]![0], 1n);
     assert.equal(rows[1]![2], "beta");
     assert.equal(rows[1]![3], false);
@@ -186,13 +197,16 @@ describe("Schema and FieldSchema", () => {
   });
 });
 
-describe("ResultSet.intoObjects", () => {
+describe("ResultSet.toObjects", () => {
   it("returns rows as objects keyed by column name", () => {
     const rs = makeResultSet(
-      [{ name: "id", data_type: "int" }, { name: "label", data_type: "string" }],
+      [{ name: "id", data_type: "int" }, {
+        name: "label",
+        data_type: "string",
+      }],
       [["1", "alpha"], ["2", "beta"]],
     );
-    const rows = rs.intoObjects();
+    const rows = rs.toObjects();
     assert.equal(rows.length, 2);
     assert.equal(rows[0]!["id"], 1n);
     assert.equal(rows[0]!["label"], "alpha");
@@ -203,12 +217,12 @@ describe("ResultSet.intoObjects", () => {
 
   it("returns empty array for empty result set", () => {
     const rs = makeResultSet([{ name: "x", data_type: "int" }], []);
-    assert.deepEqual(rs.intoObjects(), []);
+    assert.deepEqual(rs.toObjects(), []);
   });
 
   it("maps null cells to null values", () => {
     const rs = makeResultSet([{ name: "v", data_type: "string" }], [[null]]);
-    assert.equal(rs.intoObjects()[0]!["v"], null);
+    assert.equal(rs.toObjects()[0]!["v"], null);
   });
 
   it("throws ScopeDBError when row field count mismatches schema", () => {
@@ -216,12 +230,15 @@ describe("ResultSet.intoObjects", () => {
       [{ name: "a", data_type: "string" }, { name: "b", data_type: "string" }],
       [["only-one"]],
     );
-    assert.throws(() => rs.intoObjects(), ScopeDBError);
+    assert.throws(() => rs.toObjects(), ScopeDBError);
   });
 
   it("rejects duplicate column names instead of overwriting values", () => {
     const rs = makeResultSet(
-      [{ name: "value", data_type: "int" }, { name: "value", data_type: "int" }],
+      [{ name: "value", data_type: "int" }, {
+        name: "value",
+        data_type: "int",
+      }],
       [["1", "2"]],
     );
 
@@ -248,7 +265,10 @@ describe("ResultSet.first", () => {
 
   it("rejects duplicate column names instead of overwriting values", () => {
     const rs = makeResultSet(
-      [{ name: "value", data_type: "int" }, { name: "value", data_type: "int" }],
+      [{ name: "value", data_type: "int" }, {
+        name: "value",
+        data_type: "int",
+      }],
       [["1", "2"]],
     );
 
@@ -261,54 +281,53 @@ describe("ResultSet integerMode option", () => {
     makeResultSet([{ name: "n", data_type: "int" }], [[cell]]);
 
   it("defaults to bigint mode (back-compat)", () => {
-    assert.equal(intRow("42").intoValues()[0]![0], 42n);
-    assert.equal(intRow("42").intoObjects()[0]!["n"], 42n);
+    assert.equal(intRow("42").toValues()[0]![0], 42n);
+    assert.equal(intRow("42").toObjects()[0]!["n"], 42n);
     assert.equal(intRow("42").first()!["n"], 42n);
   });
 
   it("returns JS number when integerMode is 'number'", () => {
     const opts = { integerMode: "number" as const };
-    assert.equal(intRow("42").intoValues(opts)[0]![0], 42);
-    assert.equal(intRow("42").intoObjects(opts)[0]!["n"], 42);
+    assert.equal(intRow("42").toValues(opts)[0]![0], 42);
+    assert.equal(intRow("42").toObjects(opts)[0]!["n"], 42);
     assert.equal(intRow("42").first(opts)!["n"], 42);
   });
 
   it("'number' mode keeps precision for safe integers", () => {
     const safe = String(Number.MAX_SAFE_INTEGER); // 9007199254740991
-    const val = intRow(safe).intoValues({ integerMode: "number" })[0]![0];
+    const val = intRow(safe).toValues({ integerMode: "number" })[0]![0];
     assert.equal(val, Number.MAX_SAFE_INTEGER);
   });
 
   it("'number' mode is JSON-serializable", () => {
-    const rows = intRow("123").intoObjects({ integerMode: "number" });
+    const rows = intRow("123").toObjects({ integerMode: "number" });
     assert.equal(JSON.stringify(rows), '[{"n":123}]');
   });
 
   it("returns decimal string when integerMode is 'string'", () => {
     const opts = { integerMode: "string" as const };
-    assert.equal(intRow("42").intoValues(opts)[0]![0], "42");
-    assert.equal(intRow("42").intoObjects(opts)[0]!["n"], "42");
+    assert.equal(intRow("42").toValues(opts)[0]![0], "42");
+    assert.equal(intRow("42").toObjects(opts)[0]!["n"], "42");
     assert.equal(intRow("42").first(opts)!["n"], "42");
   });
 
   it("'string' mode preserves I64 values losslessly", () => {
     const big = "9223372036854775807"; // I64 max
-    const val = intRow(big).intoValues({ integerMode: "string" })[0]![0];
+    const val = intRow(big).toValues({ integerMode: "string" })[0]![0];
     assert.equal(val, big);
     assert.equal(BigInt(val as string), 9223372036854775807n);
   });
 
   it("'string' mode is JSON-serializable for any I64", () => {
     const big = "9223372036854775807";
-    const rows = intRow(big).intoObjects({ integerMode: "string" });
+    const rows = intRow(big).toObjects({ integerMode: "string" });
     assert.equal(JSON.stringify(rows), `[{"n":"${big}"}]`);
   });
 
-  it("applies to uint and u_int alike", () => {
+  it("applies integer representation options to uint", () => {
     const rsu = makeResultSet([{ name: "n", data_type: "uint" }], [["7"]]);
-    const rsua = makeResultSet([{ name: "n", data_type: "u_int" }], [["7"]]);
-    assert.equal(rsu.intoValues({ integerMode: "number" })[0]![0], 7);
-    assert.equal(rsua.intoValues({ integerMode: "string" })[0]![0], "7");
+    assert.equal(rsu.toValues({ integerMode: "number" })[0]![0], 7);
+    assert.equal(rsu.toValues({ integerMode: "string" })[0]![0], "7");
   });
 
   it("does not affect non-integer columns", () => {
@@ -316,20 +335,20 @@ describe("ResultSet integerMode option", () => {
       [{ name: "n", data_type: "int" }, { name: "f", data_type: "float" }],
       [["3", "1.5"]],
     );
-    const row = rs.intoObjects({ integerMode: "number" })[0]!;
+    const row = rs.toObjects({ integerMode: "number" })[0]!;
     assert.equal(row["n"], 3);
     assert.equal(row["f"], 1.5);
   });
 
   it("throws ScopeDBError on invalid integer in 'number' mode", () => {
     const rs = intRow("not-a-number");
-    assert.throws(() => rs.intoValues({ integerMode: "number" }), ScopeDBError);
+    assert.throws(() => rs.toValues({ integerMode: "number" }), ScopeDBError);
   });
 
   it("'number' mode rejects non-integer numeric forms (1.5, 1e3, empty, whitespace)", () => {
     for (const bad of ["1.5", "1e3", "", " ", " 42", "42 ", "+42"]) {
       assert.throws(
-        () => intRow(bad).intoValues({ integerMode: "number" }),
+        () => intRow(bad).toValues({ integerMode: "number" }),
         ScopeDBError,
         `expected ScopeDBError for cell ${JSON.stringify(bad)}`,
       );
@@ -337,22 +356,24 @@ describe("ResultSet integerMode option", () => {
   });
 
   it("'number' mode accepts negative and zero", () => {
-    assert.equal(intRow("-7").intoValues({ integerMode: "number" })[0]![0], -7);
-    assert.equal(intRow("0").intoValues({ integerMode: "number" })[0]![0], 0);
+    assert.equal(intRow("-7").toValues({ integerMode: "number" })[0]![0], -7);
+    assert.equal(intRow("0").toValues({ integerMode: "number" })[0]![0], 0);
   });
 
   it("'string' mode does not validate cell content (passthrough)", () => {
     // Server is the source of truth — wrapper preserves raw decimal string.
     const rs = intRow("12345");
-    assert.equal(rs.intoValues({ integerMode: "string" })[0]![0], "12345");
+    assert.equal(rs.toValues({ integerMode: "string" })[0]![0], "12345");
   });
 
   it("throws ScopeDBError for unknown integerMode passed from plain JS", () => {
     const rs = intRow("42");
     // Simulate a plain-JS caller passing an invalid string at runtime.
-    const badOptions = { integerMode: "decimal" } as unknown as { integerMode: "bigint" };
-    assert.throws(() => rs.intoValues(badOptions), ScopeDBError);
-    assert.throws(() => rs.intoObjects(badOptions), ScopeDBError);
+    const badOptions = { integerMode: "decimal" } as unknown as {
+      integerMode: "bigint";
+    };
+    assert.throws(() => rs.toValues(badOptions), ScopeDBError);
+    assert.throws(() => rs.toObjects(badOptions), ScopeDBError);
     assert.throws(() => rs.first(badOptions), ScopeDBError);
   });
 });

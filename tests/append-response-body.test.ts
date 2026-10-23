@@ -21,30 +21,41 @@ import { Client } from "../src/client.js";
 import { AppendRowsError, ScopeDBError } from "../src/errors.js";
 import { jsonResponse, makeFetchStub } from "./helpers.js";
 
-function unreadableResponse(status: number, cause: Error, retryAfter = "0"): Response {
-  return new Response(new ReadableStream({
-    start(controller) {
-      controller.error(cause);
+function unreadableResponse(
+  status: number,
+  cause: Error,
+  retryAfter = "0",
+): Response {
+  return new Response(
+    new ReadableStream({
+      start(controller) {
+        controller.error(cause);
+      },
+    }),
+    {
+      status,
+      headers: {
+        "X-Request-ID": "request-with-broken-body",
+        "Retry-After": retryAfter,
+      },
     },
-  }), {
-    status,
-    headers: {
-      "X-Request-ID": "request-with-broken-body",
-      "Retry-After": retryAfter,
-    },
-  });
+  );
 }
 
 describe("unreadable HTTP error responses", () => {
   for (const status of [401, 403, 503]) {
     it(`preserves direct append metadata and cause for HTTP ${status}`, async () => {
       const cause = new Error("response body interrupted");
-      const { fn, calls } = makeFetchStub([unreadableResponse(status, cause, "2")]);
-      const table = new Client("http://localhost:8080", { fetch: fn }).table("events");
+      const { fn, calls } = makeFetchStub([
+        unreadableResponse(status, cause, "2"),
+      ]);
+      const table = new Client("http://localhost:8080", { fetch: fn }).table(
+        "events",
+      );
 
       await assert.rejects(table.append('{"id":1}'), (error: unknown) => {
         assert.ok(error instanceof AppendRowsError);
-        assert.equal(error.appendState, "unknown");
+        assert.equal(error.outcome, "unknown");
         assert.equal(error.httpStatus, status);
         assert.equal(error.requestId, "request-with-broken-body");
         assert.equal(error.retryAfterMs, 2_000);
@@ -57,15 +68,21 @@ describe("unreadable HTTP error responses", () => {
     });
   }
 
-  for (const [status, retryable] of [
-    [401, false], [403, false], [408, true], [429, true], [503, true],
-  ] as const) {
+  for (
+    const [status, retryable] of [
+      [401, false],
+      [403, false],
+      [408, true],
+      [429, true],
+      [503, true],
+    ] as const
+  ) {
     it(`keeps general request classification for HTTP ${status}`, async () => {
       const cause = new Error("response body interrupted");
       const { fn } = makeFetchStub([unreadableResponse(status, cause, "2")]);
       const client = new Client("http://localhost:8080", { fetch: fn });
 
-      await assert.rejects(client.listDatabases(), (error: unknown) => {
+      await assert.rejects(client.catalog().get(), (error: unknown) => {
         assert.ok(error instanceof ScopeDBError);
         assert.equal(error.httpStatus, status);
         assert.equal(error.requestId, "request-with-broken-body");
@@ -81,13 +98,16 @@ describe("unreadable HTTP error responses", () => {
     it(`does not retry a stream append with HTTP ${status}`, async () => {
       const cause = new Error("response body interrupted");
       const { fn, calls } = makeFetchStub([unreadableResponse(status, cause)]);
-      const stream = new Client("http://localhost:8080", { fetch: fn }).table("events")
-        .appendStream().maxRetries(1).initialBackoff(0).build();
+      const stream = new Client("http://localhost:8080", { fetch: fn }).table(
+        "events",
+      )
+        .appendStream().retryUnknown(true).maxRetries(1).initialBackoff(0)
+        .build();
 
       await stream.send({ id: 1 });
       await assert.rejects(stream.shutdown(), (error: unknown) => {
         assert.ok(error instanceof AppendRowsError);
-        assert.equal(error.appendState, "unknown");
+        assert.equal(error.outcome, "unknown");
         assert.equal(error.httpStatus, status);
         assert.equal(error.requestId, "request-with-broken-body");
         return true;
@@ -95,7 +115,7 @@ describe("unreadable HTTP error responses", () => {
       assert.equal(calls.length, 1);
       assert.equal(stream.stats().retries, 0);
       assert.equal(stream.stats().unknownRows, 1);
-      assert.equal(stream.stats().lastFailure?.httpStatus, status);
+      assert.equal(stream.stats().lastFailure?.error.httpStatus, status);
     });
   }
 
@@ -106,15 +126,22 @@ describe("unreadable HTTP error responses", () => {
       attempts.push(performance.now());
       bodies.push(init?.body);
       return attempts.length === 1
-        ? unreadableResponse(503, new Error("response body interrupted"), "0.02")
-        : jsonResponse(200, { append_state: "committed", num_rows_inserted: 1 });
+        ? unreadableResponse(
+          503,
+          new Error("response body interrupted"),
+          "0.02",
+        )
+        : jsonResponse(200, { status: "committed", num_rows_inserted: 1 });
     };
-    const stream = new Client("http://localhost:8080", { fetch }).table("events")
-      .appendStream().maxRetries(1).initialBackoff(0).build();
+    const stream = new Client("http://localhost:8080", { fetch }).table(
+      "events",
+    )
+      .appendStream().retryUnknown(true).maxRetries(1).initialBackoff(0)
+      .build();
 
     await stream.send({ id: 1 });
     assert.deepEqual(await stream.shutdown(), {
-      append_state: "committed",
+      status: "committed",
       num_rows_inserted: 1,
     });
     assert.equal(attempts.length, 2);
@@ -132,13 +159,16 @@ describe("unreadable HTTP error responses", () => {
       unreadableResponse(503, cause),
       unreadableResponse(503, cause),
     ]);
-    const stream = new Client("http://localhost:8080", { fetch: fn }).table("events")
-      .appendStream().maxRetries(1).initialBackoff(0).build();
+    const stream = new Client("http://localhost:8080", { fetch: fn }).table(
+      "events",
+    )
+      .appendStream().retryUnknown(true).maxRetries(1).initialBackoff(0)
+      .build();
 
     await stream.send({ id: 1 });
     await assert.rejects(stream.shutdown(), (error: unknown) => {
       assert.ok(error instanceof AppendRetryExhaustedError);
-      assert.equal(error.appendState, "unknown");
+      assert.equal(error.outcome, "unknown");
       assert.equal(error.httpStatus, 503);
       assert.equal(error.requestId, "request-with-broken-body");
       assert.equal(error.retryAfterMs, 0);
@@ -150,28 +180,34 @@ describe("unreadable HTTP error responses", () => {
     assert.equal(calls.length, 2);
     assert.equal(stream.stats().retries, 1);
     assert.equal(stream.stats().unknownRows, 1);
-    assert.equal(stream.stats().lastFailure?.httpStatus, 503);
+    assert.equal(stream.stats().lastFailure?.error.httpStatus, 503);
   });
 
   it("keeps an unreadable append outcome unknown after a rejected retry", async () => {
     const rejected = jsonResponse(422, {
       message: "invalid row",
-      append_state: "rejected",
-      row_errors: [{ row_index: 0, column: "id", message: "invalid id" }],
-      row_errors_truncated: false,
+      code: "ingest_failure",
+      details: {
+        status: "rejected",
+        row_errors: [{ row_index: 0, column: "id", message: "invalid id" }],
+        row_errors_truncated: false,
+      },
     });
     rejected.headers.set("X-Request-ID", "rejected-request");
     const { fn, calls } = makeFetchStub([
       unreadableResponse(503, new Error("response body interrupted")),
       rejected,
     ]);
-    const stream = new Client("http://localhost:8080", { fetch: fn }).table("events")
-      .appendStream().maxRetries(1).initialBackoff(0).build();
+    const stream = new Client("http://localhost:8080", { fetch: fn }).table(
+      "events",
+    )
+      .appendStream().retryUnknown(true).maxRetries(1).initialBackoff(0)
+      .build();
 
     await stream.send({ id: 1 });
     await assert.rejects(stream.shutdown(), (error: unknown) => {
       assert.ok(error instanceof AppendRowsError);
-      assert.equal(error.appendState, "unknown");
+      assert.equal(error.outcome, "unknown");
       assert.equal(error.httpStatus, 422);
       assert.equal(error.requestId, "rejected-request");
       assert.deepEqual(error.rowErrors, [

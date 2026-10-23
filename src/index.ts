@@ -15,17 +15,12 @@
  */
 
 export { Client } from "./client.js";
-export type {
-  CatalogListOptions,
-  ClientOptions,
-  RequestOptions,
-  SchemaCatalogListOptions,
-  SchemaReference,
-  TableCatalogListOptions,
-  TableReference,
-  WriteOptions,
-} from "./client.js";
-export { AppendStream, AppendStreamBuilder, AppendRetryExhaustedError } from "./append-stream.js";
+export type { ClientOptions, RequestOptions, WriteOptions } from "./client.js";
+export {
+  AppendRetryExhaustedError,
+  AppendStream,
+  AppendStreamBuilder,
+} from "./append-stream.js";
 export type {
   AppendAdmissionResult,
   AppendBarrierResult,
@@ -47,45 +42,38 @@ export type {
   WriteErrorDetails,
   WriteErrorReason,
 } from "./errors.js";
-export { IngestStream, IngestStreamBuilder } from "./ingest-stream.js";
 export type {
   AppendRowError,
   AppendRowsErrorPayload,
   AppendRowsResult,
   AppendState,
-  CatalogPage,
   DataType,
-  DatabaseResource,
-  IngestResult,
-  SchemaResource,
-  StatementCancelResult,
-  StatementEstimatedProgress,
   StatementErrorDetails,
+  StatementEstimatedProgress,
   StatementProgress,
-  StatementStatus,
-  StatementStatusCancelled,
-  StatementStatusFailed,
-  StatementStatusFinished,
-  StatementStatusPending,
-  StatementStatusRunning,
-  TableColumnSpec,
-  TableDistinctSpec,
-  TableResource,
-  TableResourceSummary,
-  TableSpec,
+  StatementSnapshot,
+  StatementSnapshotCancelled,
+  StatementSnapshotFailed,
+  StatementSnapshotFinished,
+  StatementSnapshotPending,
+  StatementSnapshotRunning,
 } from "./protocol.js";
 export { FieldSchema, ResultSet, Schema } from "./result.js";
-export type {
-  IntegerMode,
-  IntoOptions,
-  ResultOptions,
-  Value,
-} from "./result.js";
+export type { IntegerMode, ResultOptions, Value } from "./result.js";
 export { Statement, StatementHandle } from "./statement.js";
-export type { FetchOptions, WaitOptions } from "./statement.js";
+export type { WaitOptions } from "./statement.js";
 export { Table } from "./table.js";
+export type { TableOptions } from "./table.js";
+
+export { Catalog, CatalogResource } from "./catalog.js";
 export type {
-  TableColumn,
-  TableDescription,
-  TableOptions,
-} from "./table.js";
+  CatalogColumn,
+  CatalogDatabase,
+  CatalogDocument,
+  CatalogOptions,
+  CatalogResult,
+  CatalogSchema,
+  CatalogSnapshot,
+  CatalogTable,
+  CatalogView,
+} from "./catalog.js";

@@ -22,7 +22,7 @@ export type Value = bigint | number | boolean | string | Date | null;
 /**
  * How to represent integer values returned from `int` / `uint` columns.
  *
- * - `'bigint'` (default): native JS `bigint`, preserves I64 precision but is
+ * - `'bigint'` (default): native JS `bigint`, preserves signed/unsigned 64-bit precision but is
  *   NOT directly JSON-serializable (`JSON.stringify` will throw
  *   `TypeError: Do not know how to serialize a BigInt`).
  * - `'number'`: JS `number`. Fast and JSON-safe, but loses precision for
@@ -34,13 +34,10 @@ export type Value = bigint | number | boolean | string | Date | null;
  */
 export type IntegerMode = "bigint" | "number" | "string";
 
-export interface IntoOptions {
+export interface ResultOptions {
   /** How to represent `int` / `uint` cell values. Defaults to `'bigint'`. */
   integerMode?: IntegerMode;
 }
-
-/** Options used by typed result conversion helpers. */
-export type ResultOptions = IntoOptions;
 
 export class FieldSchema {
   constructor(
@@ -84,113 +81,66 @@ export class ResultSet {
     return this.rows;
   }
 
-  /** @deprecated Use `rawRows()`. */
-  jsonRows(): ReadonlyArray<ReadonlyArray<string | null>> {
-    return this.rawRows();
+  toValues(options: ResultOptions = {}): Value[][] {
+    return this.rows.map((row, index) => this.parseRow(row, index, options));
   }
 
-  toValues(options: IntoOptions = {}): Value[][] {
-    return this.parseValues(options);
+  /** Returns objects keyed by column name; integer cells default to bigint. */
+  toObjects(options: ResultOptions = {}): Record<string, Value>[] {
+    validateUniqueFieldNames(this.resultSchema.fields());
+    return this.toValues(options).map((row) => this.rowObject(row));
   }
 
-  /** @deprecated Use `toValues()`. */
-  intoValues(options: IntoOptions = {}): Value[][] {
-    return this.toValues(options);
+  /** Returns the first object, or null for an empty result. */
+  first(options: ResultOptions = {}): Record<string, Value> | null {
+    if (this.rows.length === 0) return null;
+    validateUniqueFieldNames(this.resultSchema.fields());
+    return this.rowObject(this.parseRow(this.rows[0]!, 0, options));
   }
 
-  private parseValues(options: IntoOptions): Value[][] {
-    const integerMode = options.integerMode ?? "bigint";
-    return this.rows.map((row) => {
-      const fields = this.resultSchema.fields();
-      if (row.length !== fields.length) {
-        throw new ScopeDBError(
-          "Unexpected",
-          `row field count mismatch: expected ${fields.length}, got ${row.length}`,
-        );
-      }
-      return row.map((cell, index) =>
-        parseCell(cell, fields[index]!.dataType(), integerMode),
-      );
-    });
+  private rowObject(row: Value[]): Record<string, Value> {
+    return Object.fromEntries(
+      this.resultSchema.fields().map((
+        field,
+        index,
+      ) => [field.name(), row[index]!]),
+    );
   }
 
-  /**
-   * Returns all rows as plain objects keyed by column name.
-   *
-   * This is the most convenient form for typical application code — use this
-   * instead of `toValues()` when you need to access columns by name.
-   *
-   * @example
-   * // Default: integer cells come back as bigint (preserves I64 precision,
-   * // NOT directly JSON-serializable).
-   * const rows = result.toObjects();
-   * console.log(rows[0]?.["user_id"]); // bigint
-   *
-   * @example
-   * // Opt in to JSON-safe representation for integer cells.
-   * const rows = result.toObjects({ integerMode: "number" });
-   * JSON.stringify(rows[0]); // safe
-   */
-  toObjects(options: IntoOptions = {}): Record<string, Value>[] {
-    const integerMode = options.integerMode ?? "bigint";
+  private parseRow(
+    row: Array<string | null>,
+    rowIndex: number,
+    options: ResultOptions,
+  ): Value[] {
     const fields = this.resultSchema.fields();
-    validateUniqueFieldNames(fields);
-    return this.rows.map((row) => {
-      if (row.length !== fields.length) {
-        throw new ScopeDBError(
-          "Unexpected",
-          `row field count mismatch: expected ${fields.length}, got ${row.length}`,
-        );
-      }
-      const obj: Record<string, Value> = {};
-      row.forEach((cell, i) => {
-        obj[fields[i]!.name()] = parseCell(cell, fields[i]!.dataType(), integerMode);
-      });
-      return obj;
-    });
-  }
-
-  /** @deprecated Use `toObjects()`. */
-  intoObjects(options: IntoOptions = {}): Record<string, Value>[] {
-    return this.toObjects(options);
-  }
-
-  /**
-   * Returns the first row as a plain object keyed by column name, or `null`
-   * if the result set is empty.
-   *
-   * Useful for queries that return at most one row (lookups, aggregates, etc.).
-   *
-   * @example
-   * const row = result.first();
-   * if (row !== null) {
-   *   console.log(row["count"]); // bigint
-   * }
-   *
-   * @example
-   * // JSON-safe integer cells.
-   * const row = result.first({ integerMode: "number" });
-   * JSON.stringify(row); // safe
-   */
-  first(options: IntoOptions = {}): Record<string, Value> | null {
-    const integerMode = options.integerMode ?? "bigint";
-    const row = this.rows[0];
-    if (row === undefined) {
-      return null;
-    }
-    const fields = this.resultSchema.fields();
-    validateUniqueFieldNames(fields);
     if (row.length !== fields.length) {
       throw new ScopeDBError(
         "Unexpected",
         `row field count mismatch: expected ${fields.length}, got ${row.length}`,
-      );
+      ).withContext("row_index", rowIndex);
     }
-    const obj: Record<string, Value> = {};
-    row.forEach((cell, i) => {
-      obj[fields[i]!.name()] = parseCell(cell, fields[i]!.dataType(), integerMode);
+    return row.map((cell, index) => {
+      const field = fields[index]!;
+      try {
+        return parseCell(
+          cell,
+          field.dataType(),
+          options.integerMode ?? "bigint",
+        );
+      } catch (cause) {
+        throw new ScopeDBError(
+          "Unexpected",
+          `failed to decode row ${rowIndex}, column ${
+            JSON.stringify(field.name())
+          }`,
+          { cause },
+        )
+          .withContext("row_index", rowIndex).withContext(
+            "column",
+            field.name(),
+          ).withContext("data_type", field.dataType());
+      }
     });
-    return obj;
   }
 
   static fromStatementResultSet(resultSet: StatementResultSet): ResultSet {
@@ -212,7 +162,9 @@ function validateUniqueFieldNames(fields: readonly FieldSchema[]): void {
     if (names.has(field.name())) {
       throw new ScopeDBError(
         "Unexpected",
-        `cannot convert result to objects because column name ${JSON.stringify(field.name())} is duplicated; use toValues() instead`,
+        `cannot convert result to objects because column name ${
+          JSON.stringify(field.name())
+        } is duplicated; use toValues() instead`,
       );
     }
     names.add(field.name());
@@ -231,19 +183,27 @@ function parseCell(
   switch (dataType) {
     case "int":
     case "uint":
-    case "u_int": // backward-compat alias
-      return parseInteger(cell, integerMode);
+      return parseInteger(cell, dataType, integerMode);
     case "float": {
+      if (cell === "NaN") return NaN;
+      if (cell === "inf" || cell === "Infinity") return Infinity;
+      if (cell === "-inf" || cell === "-Infinity") return -Infinity;
       const value = Number(cell);
-      if (Number.isNaN(value)) {
-        throw new ScopeDBError("Unexpected", `failed to parse float value: ${cell}`);
+      if (cell.trim() === "" || !Number.isFinite(value)) {
+        throw new ScopeDBError(
+          "Unexpected",
+          `failed to parse float value: ${cell}`,
+        );
       }
       return value;
     }
     case "timestamp": {
       const value = new Date(cell);
       if (Number.isNaN(value.getTime())) {
-        throw new ScopeDBError("Unexpected", `failed to parse timestamp value: ${cell}`);
+        throw new ScopeDBError(
+          "Unexpected",
+          `failed to parse timestamp value: ${cell}`,
+        );
       }
       return value;
     }
@@ -254,7 +214,10 @@ function parseCell(
       if (cell === "false") {
         return false;
       }
-      throw new ScopeDBError("Unexpected", `failed to parse boolean value: ${cell}`);
+      throw new ScopeDBError(
+        "Unexpected",
+        `failed to parse boolean value: ${cell}`,
+      );
     case "interval":
     case "string":
     case "binary":
@@ -268,29 +231,29 @@ function parseCell(
 
 const INTEGER_CELL_RE = /^-?\d+$/;
 
-function parseInteger(cell: string, integerMode: IntegerMode): Value {
+function parseInteger(
+  cell: string,
+  dataType: "int" | "uint",
+  integerMode: IntegerMode,
+): Value {
+  if (!INTEGER_CELL_RE.test(cell)) {
+    throw new ScopeDBError("Unexpected", `invalid ${dataType} value: ${cell}`);
+  }
+  const integer = BigInt(cell);
+  const min = dataType === "uint" ? 0n : -(1n << 63n);
+  const max = dataType === "uint" ? (1n << 64n) - 1n : (1n << 63n) - 1n;
+  if (integer < min || integer > max) {
+    throw new ScopeDBError(
+      "Unexpected",
+      `${dataType} value out of range: ${cell}`,
+    );
+  }
   switch (integerMode) {
     case "bigint":
-      try {
-        return BigInt(cell);
-      } catch (cause) {
-        throw new ScopeDBError("Unexpected", `failed to parse integer value: ${cell}`, {
-          cause,
-        });
-      }
+      return integer;
     case "number": {
-      // Constrain to base-10 integer strings so non-integer forms accepted by
-      // `Number()` (e.g. "1.5", "1e3", " ", "") cannot silently slip through
-      // for `int` / `uint` columns. Precision loss for values outside the
-      // safe-integer range is the user's explicit opt-in and is intentionally
-      // NOT validated here.
-      if (!INTEGER_CELL_RE.test(cell)) {
-        throw new ScopeDBError("Unexpected", `failed to parse integer value: ${cell}`);
-      }
-      const value = Number(cell);
-      if (!Number.isFinite(value)) {
-        throw new ScopeDBError("Unexpected", `failed to parse integer value: ${cell}`);
-      }
+      // Precision loss outside the safe-integer range is an explicit caller choice.
+      const value = Number(integer);
       return value;
     }
     case "string":

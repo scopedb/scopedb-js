@@ -28,10 +28,10 @@ const client = new Client(
 
 const handle = await client.statement("SELECT 42 AS answer").submit();
 
-// lastStatus() is a synchronous local snapshot. status() requests the latest
+// snapshot() is a synchronous local snapshot. refresh() requests the latest
 // remote state while the statement is active, and wait() polls to completion.
-console.log("submitted", handle.statementId, handle.lastStatus()?.status);
-console.log("latest status", (await handle.status()).status);
+console.log("submitted", handle.statementId, handle.snapshot()?.status);
+console.log("latest status", (await handle.refresh()).status);
 const result = await handle.wait();
 
 // `number` is JSON-safe. Keep the default bigint mode when full i64 precision

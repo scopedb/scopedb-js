@@ -27,7 +27,7 @@ import { jsonResponse, makeFetchStub, requestBodyText } from "./helpers.js";
 
 function appendOk(numRows = 1): Response {
   return jsonResponse(200, {
-    append_state: "committed",
+    status: "committed",
     num_rows_inserted: numRows,
   });
 }
@@ -35,18 +35,20 @@ function appendOk(numRows = 1): Response {
 function appendRejected(status = 503): Response {
   return jsonResponse(status, {
     message: "append is temporarily unavailable",
-    append_state: "rejected",
-    row_errors: [],
-    row_errors_truncated: false,
+    code: "ingest_failure",
+    details: {
+      status: "rejected",
+      row_errors: [],
+      row_errors_truncated: false,
+    },
   });
 }
 
 function appendUnknown(): Response {
   return jsonResponse(503, {
     message: "append commit outcome is unknown",
-    append_state: "unknown",
-    row_errors: [],
-    row_errors_truncated: false,
+    code: "ingest_failure",
+    details: { status: "unknown", row_errors: [], row_errors_truncated: false },
   });
 }
 
@@ -54,9 +56,7 @@ function makeTable(responses: Response[]) {
   const { fn, calls } = makeFetchStub(responses);
   const client = new Client("http://localhost:8080", { fetch: fn });
   const table = client
-    .table("events")
-    .withDatabase("analytics")
-    .withSchema("public");
+    .table("events", { database: "analytics", schema: "public" });
   return { table, calls };
 }
 
@@ -73,7 +73,7 @@ describe("AppendStream batching and barriers", () => {
         target === undefined ? [appendOk(1), appendOk(1)] : [appendOk(2)],
       );
       const builder = table.appendStream()
-        .flushInterval(60_000)
+        .flushIntervalMs(60_000)
         .maxConcurrentBatches(1);
       if (target !== undefined) builder.targetBatchBytes(target);
       const stream = builder.build();
@@ -90,14 +90,14 @@ describe("AppendStream batching and barriers", () => {
 
   it("batches records and aggregates results between flush barriers", async () => {
     const { table, calls } = makeTable([appendOk(3)]);
-    const stream = table.appendStream().batchBytes(1024).build();
+    const stream = table.appendStream().targetBatchBytes(1024).build();
 
     await stream.send({ id: 1 });
     await stream.send({ id: 2 });
     await stream.send({ id: 3 });
 
     assert.deepEqual(await stream.flush(), {
-      append_state: "committed",
+      status: "committed",
       num_rows_inserted: 3,
     });
     assert.equal(await stream.flush(), null);
@@ -123,8 +123,8 @@ describe("AppendStream batching and barriers", () => {
       1 + Buffer.byteLength(JSON.stringify(second), "utf8");
     const { table, calls } = makeTable([appendOk(2), appendOk(1)]);
     const stream = table.appendStream()
-      .batchBytes(batchBytes)
-      .maxInFlightRequests(1)
+      .targetBatchBytes(batchBytes)
+      .maxConcurrentBatches(1)
       .build();
 
     await stream.send(first);
@@ -145,7 +145,7 @@ describe("AppendStream batching and barriers", () => {
   it("sends an oversized-for-target row alone when it is within the protocol limit", async () => {
     const row = { payload: "larger than one byte" };
     const { table, calls } = makeTable([appendOk(1)]);
-    const stream = table.appendStream().batchBytes(1).build();
+    const stream = table.appendStream().targetBatchBytes(1).build();
 
     await stream.send(row);
     await stream.shutdown();
@@ -156,7 +156,7 @@ describe("AppendStream batching and barriers", () => {
   it("never exceeds the append protocol's 200,000-row request limit", async () => {
     const { table, calls } = makeTable([appendOk(200_000), appendOk(1)]);
     const stream = table.appendStream()
-      .flushInterval(60_000)
+      .flushIntervalMs(60_000)
       .maxConcurrentBatches(1)
       .build();
 
@@ -202,8 +202,8 @@ describe("AppendStream batching and barriers", () => {
   it("flushes by the first-row deadline even while records keep arriving", async () => {
     const { table, calls } = makeTable([appendOk(2)]);
     const stream = table.appendStream()
-      .batchBytes(1024)
-      .flushInterval(30)
+      .targetBatchBytes(1024)
+      .flushIntervalMs(30)
       .build();
 
     await stream.send({ id: 1 });
@@ -228,20 +228,6 @@ describe("AppendStream batching and barriers", () => {
     assert.equal(calls.length, 1);
     await assert.rejects(() => stream.send({ id: 2 }), ScopeDBError);
   });
-
-  it("snapshots the target table when the builder is created", async () => {
-    const { fn, calls } = makeFetchStub([appendOk(1)]);
-    const client = new Client("http://localhost:8080", { fetch: fn });
-    const table = client.table("events").withSchema("before");
-    const builder = table.appendStream();
-    table.withSchema("after");
-    const stream = builder.build();
-
-    await stream.send({ id: 1 });
-    await stream.shutdown();
-
-    assert.ok(calls[0]!.url.includes("/schemas/before/"), calls[0]!.url);
-  });
 });
 
 describe("AppendStream concurrency", () => {
@@ -264,8 +250,8 @@ describe("AppendStream concurrency", () => {
     const client = new Client("http://localhost:8080", { fetch });
     const stream = client.table("events")
       .appendStream()
-      .batchBytes(1)
-      .maxInFlightRequests(2)
+      .targetBatchBytes(1)
+      .maxConcurrentBatches(2)
       .build();
 
     await stream.send({ id: 1 });
@@ -307,9 +293,9 @@ describe("AppendStream concurrency", () => {
     const rowBytes = Buffer.byteLength(JSON.stringify({ id: 1 }), "utf8") + 1;
     const stream = client.table("events")
       .appendStream()
-      .batchBytes(1)
-      .maxInFlightRequests(2)
-      .maxPendingBytes(rowBytes * 2)
+      .targetBatchBytes(1)
+      .maxConcurrentBatches(2)
+      .maxBufferedBytes(rowBytes * 2)
       .maxRetries(0)
       .build();
 
@@ -320,8 +306,12 @@ describe("AppendStream concurrency", () => {
     const blockedSend = stream.send({ id: 3 });
     let sendSettled = false;
     void blockedSend.then(
-      () => { sendSettled = true; },
-      () => { sendSettled = true; },
+      () => {
+        sendSettled = true;
+      },
+      () => {
+        sendSettled = true;
+      },
     );
     await delay(0);
     assert.equal(sendSettled, false);
@@ -329,8 +319,12 @@ describe("AppendStream concurrency", () => {
     const flushing = stream.flush();
     let flushSettled = false;
     void flushing.then(
-      () => { flushSettled = true; },
-      () => { flushSettled = true; },
+      () => {
+        flushSettled = true;
+      },
+      () => {
+        flushSettled = true;
+      },
     );
 
     fatalGate.resolve();
@@ -340,8 +334,12 @@ describe("AppendStream concurrency", () => {
     const lateFlush = stream.flush();
     let lateFlushSettled = false;
     void lateFlush.then(
-      () => { lateFlushSettled = true; },
-      () => { lateFlushSettled = true; },
+      () => {
+        lateFlushSettled = true;
+      },
+      () => {
+        lateFlushSettled = true;
+      },
     );
     await delay(0);
     assert.equal(lateFlushSettled, false);
@@ -378,8 +376,8 @@ describe("AppendStream concurrency", () => {
     const client = new Client("http://localhost:8080", { fetch });
     const stream = client.table("events")
       .appendStream()
-      .batchBytes(1)
-      .maxInFlightRequests(2)
+      .targetBatchBytes(1)
+      .maxConcurrentBatches(2)
       .maxRetries(0)
       .build();
 
@@ -396,7 +394,7 @@ describe("AppendStream concurrency", () => {
       flushing,
       (error: unknown) => {
         assert.ok(error instanceof AppendRowsError);
-        assert.equal(error.appendState, "unknown");
+        assert.equal(error.outcome, "unknown");
         assert.equal(error.context().get("failed_rows"), "1");
         assert.equal(error.context().get("unknown_rows"), "1");
         return true;
@@ -407,7 +405,7 @@ describe("AppendStream concurrency", () => {
     await assert.rejects(
       () => stream.shutdown(),
       (error: unknown) =>
-        error instanceof AppendRowsError && error.appendState === "unknown",
+        error instanceof AppendRowsError && error.outcome === "unknown",
     );
   });
 });
@@ -465,8 +463,8 @@ describe("AppendStream retry safety", () => {
   it("cancels another batch's retry delay when the stream becomes fatal", async () => {
     const { table, calls } = makeTable([appendRejected(), appendRejected(422)]);
     const stream = table.appendStream()
-      .batchBytes(1)
-      .maxInFlightRequests(2)
+      .targetBatchBytes(1)
+      .maxConcurrentBatches(2)
       .maxRetries(1)
       .initialBackoff(1_000)
       .maxBackoff(1_000)
@@ -491,9 +489,9 @@ describe("AppendStream retry safety", () => {
     await assert.rejects(() => stream.shutdown(), AppendRowsError);
   });
 
-  it("retries a transient unknown outcome with the same payload by default", async () => {
+  it("retries a transient unknown outcome with the same payload when explicitly enabled", async () => {
     const { table, calls } = makeTable([appendUnknown(), appendOk(1)]);
-    const stream = table.appendStream()
+    const stream = table.appendStream().retryUnknown(true)
       .initialBackoff(0)
       .build();
 
@@ -523,7 +521,7 @@ describe("AppendStream retry safety", () => {
       () => stream.flush(),
       (error: unknown) => {
         assert.ok(error instanceof AppendRowsError);
-        assert.equal(error.appendState, "unknown");
+        assert.equal(error.outcome, "unknown");
         return true;
       },
     );
@@ -542,7 +540,7 @@ describe("AppendStream retry safety", () => {
       () => stream.flush(),
       (error: unknown) => {
         assert.ok(error instanceof AppendRowsError);
-        assert.equal(error.appendState, "unknown");
+        assert.equal(error.outcome, "unknown");
         assert.ok(error.isPersistent());
         return true;
       },
@@ -566,7 +564,7 @@ describe("AppendStream retry safety", () => {
       () => stream.flush(),
       (error: unknown) => {
         assert.ok(error instanceof AppendRowsError);
-        assert.equal(error.appendState, "rejected");
+        assert.equal(error.outcome, "rejected");
         assert.ok(error.isPersistent());
         assert.equal(error.context().get("retries"), "1");
         assert.equal(error.httpStatus, 503);
@@ -581,8 +579,8 @@ describe("AppendStream retry safety", () => {
   it("stops before dispatching queued batches after a fatal append", async () => {
     const { table, calls } = makeTable([appendUnknown()]);
     const stream = table.appendStream()
-      .batchBytes(1)
-      .maxInFlightRequests(1)
+      .targetBatchBytes(1)
+      .maxConcurrentBatches(1)
       .maxRetries(0)
       .build();
 
@@ -600,26 +598,28 @@ describe("AppendStream local failures", () => {
   it("rejects invalid numeric builder configuration", () => {
     const { table } = makeTable([]);
     const invalidConfigurations = [
-      () => table.appendStream().batchBytes(Number.NaN),
-      () => table.appendStream().batchBytes(8 * 1024 * 1024 + 1),
-      () => table.appendStream().flushInterval(Number.POSITIVE_INFINITY),
+      () => table.appendStream().targetBatchBytes(Number.NaN),
+      () => table.appendStream().targetBatchBytes(8 * 1024 * 1024 + 1),
+      () => table.appendStream().flushIntervalMs(Number.POSITIVE_INFINITY),
       () => table.appendStream().channelCapacity(0),
-      () => table.appendStream().maxPendingBytes(Number.NaN),
-      () => table.appendStream().maxInFlightRequests(Number.POSITIVE_INFINITY),
+      () => table.appendStream().maxBufferedBytes(Number.NaN),
+      () => table.appendStream().maxConcurrentBatches(Number.POSITIVE_INFINITY),
       () => table.appendStream().maxRetries(Number.POSITIVE_INFINITY),
       () => table.appendStream().initialBackoff(-1),
       () => table.appendStream().maxBackoff(0.5),
-      () => table.appendStream().attemptTimeout(0),
+      () => table.appendStream().attemptTimeoutMs(0),
       () => table.appendStream().maxBatchRows(0),
       () => table.appendStream().maxBatchRows(200_001),
-      () => table.appendStream().circuitBreaker({
-        failureThreshold: 0,
-        cooldownMs: 1_000,
-      }),
-      () => table.appendStream().circuitBreaker({
-        failureThreshold: 1,
-        cooldownMs: Number.POSITIVE_INFINITY,
-      }),
+      () =>
+        table.appendStream().circuitBreaker({
+          failureThreshold: 0,
+          cooldownMs: 1_000,
+        }),
+      () =>
+        table.appendStream().circuitBreaker({
+          failureThreshold: 1,
+          cooldownMs: Number.POSITIVE_INFINITY,
+        }),
       () => table.appendStream().circuitBreaker(null as never),
     ];
 
@@ -653,11 +653,13 @@ describe("AppendStream local failures", () => {
   it("rejects invalid append-stream factory options at runtime", () => {
     const { table } = makeTable([]);
 
-    for (const build of [
-      () => table.appendStream({ failurePolicy: "ignore" as never }),
-      () => table.appendStream({ failurePolicy: undefined as never }),
-      () => table.appendStream(null as never),
-    ]) {
+    for (
+      const build of [
+        () => table.appendStream({ failurePolicy: "ignore" as never }),
+        () => table.appendStream({ failurePolicy: undefined as never }),
+        () => table.appendStream(null as never),
+      ]
+    ) {
       assert.throws(
         build,
         (error: unknown) => {
@@ -671,7 +673,7 @@ describe("AppendStream local failures", () => {
 
   it("applies pending-byte backpressure before enqueueing a record", async () => {
     const { table, calls } = makeTable([]);
-    const stream = table.appendStream().maxPendingBytes(1).build();
+    const stream = table.appendStream().maxBufferedBytes(1).build();
 
     await assert.rejects(
       () => stream.send({ id: 1 }),
@@ -746,7 +748,7 @@ describe("AppendStream local failures", () => {
     const client = new Client("http://localhost:8080", { fetch });
     const stream = client.table("events")
       .appendStream().maxRetries(0)
-      .batchBytes(1)
+      .targetBatchBytes(1)
       .build();
     await stream.send({ id: 1 });
     await waitForCallCount(calls, 1);
@@ -760,7 +762,7 @@ describe("AppendStream local failures", () => {
     await assert.rejects(
       () => stream.flush(),
       (error: unknown) =>
-        error instanceof AppendRowsError && error.appendState === "unknown",
+        error instanceof AppendRowsError && error.outcome === "unknown",
     );
   });
 });
@@ -771,9 +773,9 @@ describe("AppendStream telemetry admission", () => {
     const reservedBytes = Buffer.byteLength(JSON.stringify(first), "utf8") + 1;
     const { table, calls } = makeTable([appendOk(1)]);
     const stream = table.appendStream({ failurePolicy: "continue" })
-      .batchBytes(1024)
-      .flushInterval(60_000)
-      .maxPendingBytes(reservedBytes)
+      .targetBatchBytes(1024)
+      .flushIntervalMs(60_000)
+      .maxBufferedBytes(reservedBytes)
       .build();
 
     assert.equal(stream.trySend(first), true);
@@ -812,7 +814,7 @@ describe("AppendStream telemetry admission", () => {
     const rows = [{ id: 1 }, { id: 2 }, { id: 3 }];
     const { table, calls } = makeTable([appendOk(rows.length)]);
     const stream = table.appendStream({ failurePolicy: "continue" })
-      .batchBytes(1024)
+      .targetBatchBytes(1024)
       .build();
 
     assert.deepEqual(await stream.sendAll(rows), { acceptedRows: rows.length });
@@ -833,7 +835,7 @@ describe("AppendStream telemetry admission", () => {
 
     const { table, calls } = makeTable([appendOk(3)]);
     const stream = table.appendStream({ failurePolicy: "continue" })
-      .batchBytes(1024)
+      .targetBatchBytes(1024)
       .build();
 
     assert.deepEqual(await stream.sendAll(rows()), { acceptedRows: 3 });
@@ -853,9 +855,9 @@ describe("AppendStream telemetry admission", () => {
     const reservedBytes = Buffer.byteLength(JSON.stringify(row), "utf8") + 1;
     const { table, calls } = makeTable([appendOk(1)]);
     const stream = table.appendStream({ failurePolicy: "continue" })
-      .batchBytes(1024)
-      .flushInterval(60_000)
-      .maxPendingBytes(reservedBytes)
+      .targetBatchBytes(1024)
+      .flushIntervalMs(60_000)
+      .maxBufferedBytes(reservedBytes)
       .build();
 
     await stream.send(row);
@@ -879,12 +881,12 @@ describe("AppendStream best-effort delivery", () => {
   it("selects typed strict and continue failure behavior at the factory", async () => {
     const { table } = makeTable([appendRejected(400), appendRejected(400)]);
     const strict: AppendStream<"stop"> = table.appendStream()
-      .batchBytes(1)
+      .targetBatchBytes(1)
       .maxRetries(0)
       .build();
     const bestEffort: AppendStream<"continue"> = table
       .appendStream({ failurePolicy: "continue" })
-      .batchBytes(1)
+      .targetBatchBytes(1)
       .maxRetries(0)
       .build();
 
@@ -917,8 +919,8 @@ describe("AppendStream best-effort delivery", () => {
       .onBatchFailure(({ error }) => {
         errors.push(error);
       })
-      .batchBytes(1)
-      .maxInFlightRequests(1)
+      .targetBatchBytes(1)
+      .maxConcurrentBatches(1)
       .maxRetries(0)
       .build();
 
@@ -934,8 +936,11 @@ describe("AppendStream best-effort delivery", () => {
     assert.equal(report.unknownRows, 0);
     assert.equal(errors.length, 1);
     assert.ok(errors[0] instanceof AppendRowsError);
-    assert.equal((errors[0] as AppendRowsError).appendState, "rejected");
-    assert.equal(stream.stats().lastFailure?.appendState, "rejected");
+    assert.equal((errors[0] as AppendRowsError).outcome, "rejected");
+    assert.equal(
+      (stream.stats().lastFailure?.error as AppendRowsError).outcome,
+      "rejected",
+    );
     assert.equal(typeof stream.stats().lastFailure?.atMs, "number");
     assert.deepEqual(calls.map(parseAppendRows), [[{ id: 1 }], [{ id: 2 }]]);
     await stream.shutdown();
@@ -984,8 +989,8 @@ describe("AppendStream best-effort delivery", () => {
       .onBatchFailure(({ error }) => {
         errors.push(error);
       })
-      .batchBytes(1)
-      .maxInFlightRequests(1)
+      .targetBatchBytes(1)
+      .maxConcurrentBatches(1)
       .maxRetries(0)
       .initialBackoff(0)
       .build();
@@ -1002,7 +1007,7 @@ describe("AppendStream best-effort delivery", () => {
     assert.equal(report.unknownRows, 1);
     assert.equal(errors.length, 1);
     assert.ok(errors[0] instanceof AppendRowsError);
-    assert.equal((errors[0] as AppendRowsError).appendState, "unknown");
+    assert.equal((errors[0] as AppendRowsError).outcome, "unknown");
     assert.equal(calls.length, 2);
     assert.deepEqual(calls.map(parseAppendRows), [[{ id: 1 }], [{ id: 2 }]]);
     await stream.shutdown();
@@ -1016,7 +1021,10 @@ describe("AppendStream best-effort delivery", () => {
       calls.push({ url: input.toString(), init });
       return new Promise<Response>((_resolve, reject) => {
         const fallback = setTimeout(
-          () => reject(new Error("append request did not receive a timeout signal")),
+          () =>
+            reject(
+              new Error("append request did not receive a timeout signal"),
+            ),
           250,
         );
         const signal = init?.signal;
@@ -1041,8 +1049,8 @@ describe("AppendStream best-effort delivery", () => {
       .onBatchFailure(({ error }) => {
         errors.push(error);
       })
-      .attemptTimeout(10)
-      .batchBytes(1)
+      .attemptTimeoutMs(10)
+      .targetBatchBytes(1)
       .maxRetries(0)
       .build();
 
@@ -1051,7 +1059,10 @@ describe("AppendStream best-effort delivery", () => {
     const report = await stream.flush();
 
     assert.equal(receivedSignal, true);
-    assert.ok(Date.now() - startedAt < 200, "attempt timeout should bound the append");
+    assert.ok(
+      Date.now() - startedAt < 200,
+      "attempt timeout should bound the append",
+    );
     assert.equal(report.outcome, "unknown");
     assert.equal(report.acceptedRows, 1);
     assert.equal(report.committedRows, 0);
@@ -1060,7 +1071,7 @@ describe("AppendStream best-effort delivery", () => {
     assert.equal(calls.length, 1);
     assert.equal(errors.length, 1);
     assert.ok(errors[0] instanceof AppendRowsError);
-    assert.equal((errors[0] as AppendRowsError).appendState, "unknown");
+    assert.equal((errors[0] as AppendRowsError).outcome, "unknown");
     await stream.shutdown();
   });
 
@@ -1071,8 +1082,8 @@ describe("AppendStream best-effort delivery", () => {
       appendUnknown(),
     ]);
     const stream = table.appendStream({ failurePolicy: "continue" })
-      .batchBytes(1)
-      .maxInFlightRequests(1)
+      .targetBatchBytes(1)
+      .maxConcurrentBatches(1)
       .maxRetries(0)
       .build();
 
@@ -1114,7 +1125,7 @@ describe("AppendStream best-effort delivery", () => {
     const client = new Client("http://localhost:8080", { fetch });
     const stream = client.table("events")
       .appendStream({ failurePolicy: "continue" })
-      .batchBytes(1)
+      .targetBatchBytes(1)
       .build();
 
     await stream.send({ id: 1 });
@@ -1138,8 +1149,8 @@ describe("AppendStream best-effort delivery", () => {
     const { table, calls } = makeTable([appendUnknown(), appendOk(1)]);
     const stream = table.appendStream({ failurePolicy: "continue" })
       .circuitBreaker({ failureThreshold: 1, cooldownMs: 20 })
-      .batchBytes(1)
-      .maxInFlightRequests(1)
+      .targetBatchBytes(1)
+      .maxConcurrentBatches(1)
       .maxRetries(0)
       .build();
 
@@ -1167,7 +1178,7 @@ describe("AppendStream best-effort delivery", () => {
     const { table, calls } = makeTable([appendUnknown(), appendOk(1)]);
     const stream = table.appendStream({ failurePolicy: "continue" })
       .circuitBreaker({ failureThreshold: 1, cooldownMs: 10 })
-      .batchBytes(1)
+      .targetBatchBytes(1)
       .maxRetries(0)
       .build();
 
@@ -1215,8 +1226,8 @@ describe("AppendStream best-effort delivery", () => {
     const stream = client.table("events")
       .appendStream({ failurePolicy: "continue" })
       .circuitBreaker({ failureThreshold: 1, cooldownMs: 10 })
-      .batchBytes(1)
-      .maxInFlightRequests(2)
+      .targetBatchBytes(1)
+      .maxConcurrentBatches(2)
       .maxRetries(0)
       .build();
 
@@ -1248,7 +1259,7 @@ describe("AppendStream best-effort delivery", () => {
   it("treats a committed response with the wrong row count as unknown", async () => {
     const { table, calls } = makeTable([appendOk(0)]);
     const stream = table.appendStream({ failurePolicy: "continue" })
-      .batchBytes(1)
+      .targetBatchBytes(1)
       .maxRetries(0)
       .build();
 
@@ -1294,11 +1305,16 @@ class TestDeferred<T> {
   }
 }
 
-async function waitForCallCount(calls: FetchCall[], expected: number): Promise<void> {
+async function waitForCallCount(
+  calls: FetchCall[],
+  expected: number,
+): Promise<void> {
   const deadline = Date.now() + 1_000;
   while (calls.length < expected) {
     if (Date.now() >= deadline) {
-      assert.fail(`timed out waiting for ${expected} fetch call(s), got ${calls.length}`);
+      assert.fail(
+        `timed out waiting for ${expected} fetch call(s), got ${calls.length}`,
+      );
     }
     await delay(1);
   }

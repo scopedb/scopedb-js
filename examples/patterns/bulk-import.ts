@@ -83,7 +83,7 @@ try {
   // A strict stream is terminal after an append failure. Do not reuse it.
   if (
     deliveryError instanceof AppendRowsError &&
-    deliveryError.appendState === "unknown"
+    deliveryError.outcome === "unknown"
   ) {
     console.error("commit outcome is unknown; reconcile before replaying");
   } else {

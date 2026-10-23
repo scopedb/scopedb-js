@@ -42,9 +42,12 @@ const telemetry = table
   .appendStream({ failurePolicy: "continue" })
   .targetBatchBytes(1024 * 1024)
   .flushIntervalMs(1_000)
-  .maxConcurrentBatches(2)
-  .maxBufferedBytes(32 * 1024 * 1024)
+  .maxConcurrentBatches(1)
+  .maxBufferedBytes(8 * 1024 * 1024)
   .attemptTimeoutMs(10_000)
+  .maxElapsedTimeMs(30_000)
+  .maxRetries(2)
+  .circuitBreaker({ failureThreshold: 5, cooldownMs: 30_000 })
   .onBatchFailure(({ error, action }) => {
     // Use a different diagnostics sink, never this same telemetry stream.
     console.error("telemetry append error", action, error);
@@ -72,6 +75,22 @@ async function closeTelemetry(): Promise<void> {
   console.log("final stats", telemetry.stats());
 }
 
+// Export lifetime counter deltas to the application's metrics backend. Unknown
+// rows may have committed; do not count them as definite loss or replay them.
+function deliveryMetrics() {
+  const stats = telemetry.stats();
+  return {
+    dropped: stats.droppedRows,
+    knownNotCommitted: stats.failedRows,
+    unknown: stats.unknownRows,
+    committed: stats.committedRows,
+    retries: stats.retries,
+    pendingBytes: stats.pendingBytes,
+    droppedByReason: stats.droppedByReason,
+    circuitState: stats.circuitState,
+  };
+}
+
 // Demo driver only. Applications normally call track() from request/logging
 // paths and closeTelemetry() from their graceful-shutdown hook.
 let rejectedLocally = 0;
@@ -82,3 +101,4 @@ for (let request = 1; request <= 100; request += 1) {
 }
 console.log("locally rejected", rejectedLocally);
 await closeTelemetry();
+console.log("delivery metrics", deliveryMetrics());

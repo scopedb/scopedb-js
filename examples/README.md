@@ -21,13 +21,13 @@ These can run against a reachable ScopeDB server without modifying data.
 | Example                        | Shows                                                   | Run                          |
 | ------------------------------ | ------------------------------------------------------- | ---------------------------- |
 | [`statement.ts`](statement.ts) | Async statement lifecycle and JSON-safe integer results | `pnpm run example:statement` |
-| [`catalog.ts`](catalog.ts)     | Complete REST catalog pagination and table metadata     | `pnpm run example:catalog`   |
+| [`catalog.ts`](catalog.ts)     | Declarative catalog snapshots and table definitions     | `pnpm run example:catalog`   |
 
 ## Before running a write example
 
 Write examples require `SCOPEDB_TABLE`. Create a table for the example and select it with this environment variable.
 
-The append, stream, telemetry, Serverless, and transform examples can share this superset schema:
+The append, stream, telemetry, and Serverless examples can share this superset schema:
 
 ```sql
 CREATE TABLE public.sdk_example_events (
@@ -78,16 +78,19 @@ These examples show common ways to write data:
 | ---------------------------------------------------- | --------------------------------------------------- | ----------------------------------- |
 | [`patterns/bulk-import.ts`](patterns/bulk-import.ts) | Writing many records with `sendAll()`               | `pnpm run example:append-bulk`      |
 | [`patterns/telemetry.ts`](patterns/telemetry.ts)     | Writing logs and events with a continue-mode stream | `pnpm run example:append-telemetry` |
-| [`ingest-transform.ts`](ingest-transform.ts)         | Transforming JSON with ScopeQL before inserting it  | `pnpm run example:ingest-transform` |
+| [`import-ndjson.ts`](import-ndjson.ts)               | Importing an NDJSON file without rounding integers  | `pnpm run example:import-ndjson`    |
+
+Set `SCOPEDB_INPUT_FILE` to an NDJSON file before running `example:import-ndjson`. The target table must match its rows. The importer keeps bounded input and request buffers, preserves original numeric text, accepts a missing final newline, and settles valid buffered rows before reporting a malformed later line. It makes single-attempt writes and prints the confirmed row count; an interrupted write can still have committed and requires reconciliation before replay.
 
 ## Integration templates
 
 Templates are type-checked but are not directly executable. Copy a template into your application and provide the integrations listed below.
 
-| Template                                                 | Requires                                                              | Shows                                                    |
-| -------------------------------------------------------- | --------------------------------------------------------------------- | -------------------------------------------------------- |
-| [`templates/serverless.ts`](templates/serverless.ts)     | Web-standard `Request`/`Response` and a `waitUntil()` hook            | Writing request events from an HTTP handler              |
-| [`templates/audit-outbox.ts`](templates/audit-outbox.ts) | Implementations of `AuditOutbox.readUnconfirmed()` and `checkpoint()` | Sending saved records and updating the source checkpoint |
+| Template                                                 | Requires                                                                       | Shows                                                    |
+| -------------------------------------------------------- | ------------------------------------------------------------------------------ | -------------------------------------------------------- |
+| [`templates/serverless.ts`](templates/serverless.ts)     | Web-standard `Request`/`Response` and a `waitUntil()` hook                     | Writing request events from an HTTP handler              |
+| [`templates/audit-outbox.ts`](templates/audit-outbox.ts) | Implementations of `AuditOutbox.readUnconfirmed()` and `checkpoint()`          | Sending saved records and updating the source checkpoint |
+| [`templates/retry-append.ts`](templates/retry-append.ts) | Node.js, an existing table, caller-encoded NDJSON, and an AbortSignal deadline | Retrying only confirmed temporary rejections             |
 
 ## Framework and runtime templates
 

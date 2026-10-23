@@ -18,14 +18,24 @@ CommonJS does not have a package export. Existing CommonJS applications can load
 `src/index.ts` is the declaration root. New application examples should use:
 
 - `Client.query()`, `Client.statement()`, and `Client.statementHandle()`
-- `StatementHandle.lastStatus()` for the local snapshot, `status()` for one remote update, and `wait()` for polling to completion
+- `StatementHandle.snapshot()` for a caller-owned local snapshot, `refresh()` for one remote update, and `wait()` for polling to completion
 - `WaitOptions` for query and statement polling configuration
-- catalog list/fetch methods or the automatic catalog iterators
+- declarative Catalog selectors with `get()`, `apply()`, and `delete()`
 - `Client.table(name, { database, schema })`
-- `Table.describe()`, `Table.append()`, and `Table.appendStream()`
+- `Table.catalog()`, `Table.append()`, and `Table.appendStream()`
 - `ResultSet.rawRows()`, `toValues()`, `toObjects()`, and `first()`
 
-Compatibility aliases remain available for previously published names. Do not add wire-level request payloads to the root exports unless applications must construct them directly.
+The native 0.6 API removes legacy aliases; keep the migration table in README.md current. Do not add wire-level request payloads to the root exports unless applications must construct them directly.
+
+## Lifecycle and delivery contracts
+
+Statement handles retain complete, monotonic snapshots. Caller mutation, delayed refreshes, and cancellation races must not change a cached terminal result. Server cancellation has a distinct error kind; a local signal only interrupts waiting.
+
+Catalog resources validate known structure and preserve extensions without projecting into a second model. Definitions and ETags travel together; interrupted mutations remain unknown and are never replayed. Table identity defaults must match across ScopeQL, Catalog, and Append.
+
+Append keeps bounded admission, batch size, concurrency, and settlement barriers. Confirmed transient rejection is retryable; unknown replay requires explicit opt-in and respects server refusal. Client timeouts and cancellations are never replayed. Stream statistics retain complete errors, and shutdown settles admitted rows before returning a final result or failure. Fetch redirect behavior remains the transport's default.
+
+Run `pnpm test:integration` with `SCOPEDB_ENDPOINT` and `SCOPEDB_API_KEY` for the opt-in native protocol test. It creates and removes a unique temporary schema. Use a bounded workload in shared environments; deterministic local tests cover running-cancellation and delayed-response races. Keep endpoints, credentials, and infrastructure identifiers out of public validation notes.
 
 ## Releasing
 
