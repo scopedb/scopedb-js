@@ -901,23 +901,12 @@ export class AppendStream<Policy extends AppendFailurePolicy = "stop"> {
     let ambiguous = false;
     const deadline = performance.now() + this.config.retry.maxElapsedTimeMs;
     const elapsed = new AbortController();
-    const waitController = new AbortController();
-    const waitSources = [elapsed.signal, this.fatalController.signal];
-    const abortWait = () => {
-      const source = waitSources.find((signal) => signal.aborted);
-      if (source !== undefined) waitController.abort(source.reason);
-    };
-    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timer = setTimeout(() =>
+      elapsed.abort(
+        new DOMException("append time budget expired", "TimeoutError"),
+      ), this.config.retry.maxElapsedTimeMs);
     let lastError: AppendRowsError | undefined;
     try {
-      timer = setTimeout(() =>
-        elapsed.abort(
-          new DOMException("append time budget expired", "TimeoutError"),
-        ), this.config.retry.maxElapsedTimeMs);
-      for (const signal of waitSources) {
-        signal.addEventListener("abort", abortWait, { once: true });
-      }
-      abortWait();
       for (;;) {
         this.checkFatal();
         if (elapsed.signal.aborted || performance.now() >= deadline) {
@@ -969,11 +958,12 @@ export class AppendStream<Policy extends AppendFailurePolicy = "stop"> {
         const jitter = backoffMs / 2 + Math.random() * backoffMs / 2;
         const delay = Math.max(jitter, lastError.retryAfterMs ?? 0);
         const wakeAt = Math.min(performance.now() + delay, deadline);
-        while (!waitController.signal.aborted && performance.now() < wakeAt) {
-          await sleep(
-            Math.ceil(wakeAt - performance.now()),
-            waitController.signal,
-          );
+        // The deadline bounds this wait; only a fatal stream failure needs to wake it early.
+        while (
+          !elapsed.signal.aborted && !this.fatalController.signal.aborted &&
+          performance.now() < wakeAt
+        ) {
+          await sleep(Math.ceil(wakeAt - performance.now()), this.fatalController.signal);
         }
         if (elapsed.signal.aborted || performance.now() >= deadline) {
           throw retryExhaustedError(retries, lastError);
@@ -995,9 +985,6 @@ export class AppendStream<Policy extends AppendFailurePolicy = "stop"> {
         : error;
     } finally {
       clearTimeout(timer);
-      for (const signal of waitSources) {
-        signal.removeEventListener("abort", abortWait);
-      }
     }
   }
 
@@ -1091,40 +1078,31 @@ export class AppendStream<Policy extends AppendFailurePolicy = "stop"> {
     droppedRowsAtBarrier: number,
     startedAt: number,
   ): BarrierOutput {
-    const output = this.config.failurePolicy === "continue"
-      ? this.takeDeliveryReport(droppedRowsAtBarrier, startedAt)
-      : this.takeStrictResult();
     const previous = this.unobservedBarriers.splice(0);
-    if (previous.length === 0) return output;
-
-    const barriers = [...previous, { output, startedAt }];
     if (this.config.failurePolicy === "continue") {
-      const report = mergeDeliveryReports(
-        barriers.map((barrier) => barrier.output as AppendDeliveryReport),
-        startedAt,
-      );
-      this.lastReport = report;
-      return report;
+      const counters = Object.keys(this.interval) as Array<keyof IntervalCounters>;
+      let droppedRows = 0;
+      for (const { output } of previous) {
+        const report = output as AppendDeliveryReport;
+        for (const field of counters) {
+          this.interval[field] += report[field];
+        }
+        droppedRows += report.droppedRows;
+      }
+      return this.takeDeliveryReport(droppedRowsAtBarrier, startedAt, droppedRows);
     }
 
-    let hasResult = false;
-    let insertedRows = 0;
-    for (const barrier of barriers) {
-      if (barrier.output === null) continue;
-      const committed = barrier.output as AppendRowsResult;
-      hasResult = true;
-      insertedRows += committed.num_rows_inserted;
-    }
-    return hasResult
-      ? { status: "committed", num_rows_inserted: insertedRows }
-      : null;
-  }
-
-  private takeStrictResult(): AppendRowsResult | null {
-    const result = this.interval.committedBatches === 0 ? null : {
+    let result = this.interval.committedBatches === 0 ? null : {
       status: "committed" as const,
       num_rows_inserted: this.interval.committedRows,
     };
+    for (const { output } of previous) {
+      const committed = output as AppendRowsResult | null;
+      if (committed !== null) {
+        result ??= { status: "committed", num_rows_inserted: 0 };
+        result.num_rows_inserted += committed.num_rows_inserted;
+      }
+    }
     this.interval = newIntervalCounters();
     return result;
   }
@@ -1132,9 +1110,10 @@ export class AppendStream<Policy extends AppendFailurePolicy = "stop"> {
   private takeDeliveryReport(
     droppedRowsAtBarrier: number,
     startedAt: number,
+    unobservedDroppedRows: number,
   ): AppendDeliveryReport {
     const counters = this.interval;
-    const droppedRows = Math.max(
+    const droppedRows = unobservedDroppedRows + Math.max(
       0,
       droppedRowsAtBarrier - this.reportedDroppedRows,
     );
@@ -1153,15 +1132,8 @@ export class AppendStream<Policy extends AppendFailurePolicy = "stop"> {
       : "failed";
     const report: AppendDeliveryReport = {
       outcome,
-      acceptedRows: counters.acceptedRows,
-      committedRows: counters.committedRows,
-      failedRows: counters.failedRows,
-      unknownRows: counters.unknownRows,
+      ...counters,
       droppedRows,
-      committedBatches: counters.committedBatches,
-      failedBatches: counters.failedBatches,
-      unknownBatches: counters.unknownBatches,
-      retries: counters.retries,
       durationMs: Math.max(0, Date.now() - startedAt),
     };
     this.lastReport = report;
@@ -1536,32 +1508,6 @@ function newIntervalCounters(): IntervalCounters {
     failedBatches: 0,
     unknownBatches: 0,
     retries: 0,
-  };
-}
-
-function mergeDeliveryReports(
-  reports: readonly AppendDeliveryReport[],
-  startedAt: number,
-): AppendDeliveryReport {
-  const totals = { ...newIntervalCounters(), droppedRows: 0 };
-  const counters = Object.keys(totals) as Array<keyof typeof totals>;
-  for (const report of reports) {
-    for (const field of counters) {
-      totals[field] += report[field];
-    }
-  }
-  const lostRows = totals.failedRows + totals.unknownRows + totals.droppedRows;
-  const outcome: AppendDeliveryReport["outcome"] = lostRows === 0
-    ? "ok"
-    : totals.committedRows > 0
-    ? "partial"
-    : totals.unknownRows > 0
-    ? "unknown"
-    : "failed";
-  return {
-    outcome,
-    ...totals,
-    durationMs: Math.max(0, Date.now() - startedAt),
   };
 }
 

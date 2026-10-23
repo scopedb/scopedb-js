@@ -437,7 +437,6 @@ export class Client {
       );
     }
     const { body, uncompressedBytes } = await gzipJsonRequestBody(init.body);
-    init.signal?.throwIfAborted();
     const headers = new Headers(init.headers);
     headers.set("Content-Encoding", "gzip");
     headers.set(
@@ -641,16 +640,9 @@ async function withCallerAbort<T>(
   const aborted = new Promise<never>((_resolve, reject) => {
     onAbort = () => reject(signal.reason);
     signal.addEventListener("abort", onAbort, { once: true });
-    if (signal.aborted) onAbort();
   });
   try {
-    return await Promise.race([
-      (async () => {
-        signal.throwIfAborted();
-        return operation();
-      })(),
-      aborted,
-    ]);
+    return await Promise.race([operation(), aborted]);
   } catch (cause) {
     if (signal.aborted) throw signal.reason;
     throw cause;

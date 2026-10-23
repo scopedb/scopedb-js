@@ -151,42 +151,24 @@ it("rejects resource names that URL normalization could turn into a parent delet
   assert.equal(calls.length, 0);
 });
 
-it("preserves definite Catalog failure classifications", async () => {
-  const scenarios = [
-    {
-      status: 503,
-      code: "unavailable",
-      classify: (error: ScopeDBError) =>
-        error.isTemporary() && error.retryable && !error.isPersistent(),
-    },
-    {
-      status: 412,
-      code: "catalog_version_mismatch",
-      classify: (error: ScopeDBError) =>
-        error.isPermanent() && !error.retryable && !error.isPersistent(),
-    },
-    {
-      status: 500,
-      code: "catalog_commit_outcome_unknown",
-      classify: (error: ScopeDBError) =>
-        error.isPersistent() && !error.retryable,
-    },
-  ];
-  for (const scenario of scenarios) {
+it("preserves native Catalog outcome classifications", async () => {
+  for (const [status, code, classification] of [
+    [503, "unavailable", "temporary"],
+    [412, "catalog_version_mismatch", "permanent"],
+    [500, "catalog_commit_outcome_unknown", "persistent"],
+  ] as const) {
     const { fn, calls } = makeFetchStub([
-      jsonResponse(scenario.status, {
-        code: scenario.code,
-        message: "catalog mutation failed",
-      }),
+      jsonResponse(status, { code, message: "catalog mutation failed" }),
     ]);
     const resource = new Client("https://example.com", { fetch: fn })
       .table("events").catalog();
-    await assert.rejects(
-      resource.apply({ name: "events" }),
-      (error: unknown) =>
-        error instanceof ScopeDBError && error.code === scenario.code &&
-        scenario.classify(error),
-    );
+    await assert.rejects(resource.apply({ name: "events" }), (error) => {
+      assert.ok(error instanceof ScopeDBError);
+      assert.equal(error.code, code);
+      assert.equal(error.status(), classification);
+      assert.equal(error.retryable, classification === "temporary");
+      return true;
+    });
     assert.equal(calls.length, 1);
   }
 });

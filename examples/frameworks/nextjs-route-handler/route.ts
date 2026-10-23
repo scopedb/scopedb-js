@@ -154,9 +154,7 @@ function hasOnlySafeJsonNumbers(root: unknown): boolean {
           (Number.isInteger(value) && !Number.isSafeInteger(value))) {
         return false;
       }
-    } else if (Array.isArray(value)) {
-      for (const child of value) pending.push(child);
-    } else if (isJsonObject(value)) {
+    } else if (typeof value === "object" && value !== null) {
       for (const child of Object.values(value)) pending.push(child);
     }
   }

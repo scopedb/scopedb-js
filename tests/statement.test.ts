@@ -19,6 +19,7 @@ import { describe, it } from "node:test";
 import { Client } from "../src/client.js";
 import { ScopeDBError } from "../src/errors.js";
 import { StatementHandle } from "../src/statement.js";
+import { Deferred } from "../src/stream-internals.js";
 import {
   cancelledStatus,
   emptyResultSet,
@@ -386,25 +387,19 @@ it("retains the full result when completion races with cancellation", async () =
 });
 
 it("keeps the statement ID captured for each submission", async () => {
-  let started!: () => void;
-  const fetching = new Promise<void>((resolve) => {
-    started = resolve;
-  });
-  let respond!: (response: Response) => void;
-  const response = new Promise<Response>((resolve) => {
-    respond = resolve;
-  });
+  const started = new Deferred<void>();
+  const response = new Deferred<Response>();
   const client = new Client("https://example.com", {
     fetch: async () => {
-      started();
-      return response;
+      started.resolve();
+      return response.promise;
     },
   });
   const statement = client.statement("SELECT 1").withStatementId("stmt-a");
   const submitting = statement.submit();
-  await fetching;
+  await started.promise;
   statement.withStatementId("stmt-b");
-  respond(jsonResponse(200, pendingStatus("stmt-a")));
+  response.resolve(jsonResponse(200, pendingStatus("stmt-a")));
 
   const handle = await submitting;
   assert.equal(handle.statementId, "stmt-a");
@@ -428,14 +423,11 @@ it("accepts equivalent UUID spellings for statement handles", async () => {
   }
 });
 
-it("settles statement waits with the caller reason when fetch ignores abort", async () => {
-  let started!: () => void;
-  const fetching = new Promise<void>((resolve) => {
-    started = resolve;
-  });
+it("settles statement waits with the caller reason when fetch ignores abort", { timeout: 1_000 }, async () => {
+  const started = new Deferred<void>();
   const client = new Client("https://example.com", {
     fetch: async () => {
-      started();
+      started.resolve();
       return new Promise<Response>(() => {});
     },
   });
@@ -444,14 +436,10 @@ it("settles statement waits with the caller reason when fetch ignores abort", as
   const waiting = client.statementHandle("stmt-1").refresh({
     signal: controller.signal,
   });
-  await fetching;
+  await started.promise;
   controller.abort(reason);
 
-  const outcome = await Promise.race([
-    waiting.then(() => "resolved", (error: unknown) => error),
-    new Promise<string>((resolve) => setTimeout(() => resolve("timed out"), 25)),
-  ]);
-  assert.equal(outcome, reason);
+  await assert.rejects(waiting, (error: unknown) => error === reason);
 });
 
 for (const status of [undefined, 408, 429, 502]) {
@@ -492,10 +480,7 @@ for (const status of [200, 503]) {
   it(`preserves the caller abort reason while reading a ${status} statement response`, async () => {
     const controller = new AbortController();
     const reason = new Error("caller stopped reading");
-    let started!: () => void;
-    const fetching = new Promise<void>((resolve) => {
-      started = resolve;
-    });
+    const started = new Deferred<void>();
     const client = new Client("https://example.com", {
       fetch: async () => {
         const body = new ReadableStream<Uint8Array>({
@@ -505,14 +490,14 @@ for (const status of [200, 503]) {
             }, { once: true });
           },
         });
-        started();
+        started.resolve();
         return new Response(body, { status });
       },
     });
     const waiting = client.statementHandle("stmt-1").refresh({
       signal: controller.signal,
     });
-    await fetching;
+    await started.promise;
     controller.abort(reason);
 
     await assert.rejects(waiting, (error: unknown) => error === reason);
