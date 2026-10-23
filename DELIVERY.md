@@ -25,7 +25,11 @@ CommonJS does not have a package export. Existing CommonJS applications can load
 - `Table.catalog()`, `Table.append()`, and `Table.appendStream()`
 - `ResultSet.rawRows()`, `toValues()`, `toObjects()`, and `first()`
 
-The native 0.6 API removes legacy aliases; keep the migration table in README.md current. Do not add wire-level request payloads to the root exports unless applications must construct them directly.
+The SDK 0.3 API removes legacy aliases; keep [Upgrade from 0.2 to 0.3](docs/migration-0.3.md) current. Do not add wire-level request payloads to the root exports unless applications must construct them directly.
+
+## User documentation
+
+Keep README.md focused on installation, a runnable query, a small write example, and task links. Put detailed contracts and recipes in [the usage guide](docs/usage.md). Organize migration guidance by SDK version and include Ingest changes in the same guide; do not present internal service versions or rollout steps as customer prerequisites. Include these guides in the npm package.
 
 ## Lifecycle and delivery contracts
 
@@ -35,7 +39,7 @@ Catalog resources validate known structure and preserve extensions without proje
 
 Append keeps bounded admission, batch size, concurrency, and settlement barriers. Confirmed transient rejection is retryable; unknown replay requires explicit opt-in and respects server refusal. Client timeouts and cancellations are never replayed. Stream statistics retain complete errors, and shutdown settles admitted rows before returning a final result or failure. Fetch redirect behavior remains the transport's default.
 
-Run `pnpm test:integration` with `SCOPEDB_ENDPOINT` and `SCOPEDB_API_KEY` for the opt-in native protocol test. It creates and removes a unique temporary schema. Use a bounded workload in shared environments; deterministic local tests cover running-cancellation and delayed-response races. Keep endpoints, credentials, and infrastructure identifiers out of public validation notes.
+Run `pnpm test:integration` with `SCOPEDB_ENDPOINT` and `SCOPEDB_API_KEY` for the two opt-in live integration suites. They cover the native lifecycle, Append encodings, and atomic rejection, and each creates and removes a unique temporary schema. Default CI uses mocks and skips these live suites unless an endpoint is configured. Use a bounded workload in shared environments; deterministic local tests cover running-cancellation and delayed-response races. Keep endpoints, credentials, and infrastructure identifiers out of public validation notes.
 
 ## Releasing
 

@@ -4,41 +4,32 @@ All significant changes to the ScopeDB JavaScript SDK are documented in this fil
 
 ## Unreleased
 
+## v0.3.0 (2026-10-23)
+
 ### Breaking Changes
 
-* Require ScopeDB 0.6.0 and adopt native Statement, declarative Catalog, and table ingest APIs. Remove transform Ingest, paginated Catalog APIs, the old execution timeout option, and `maxParallelism`; see the [migration guide](README.md#migrate-to-scopedb-06).
-
-* Replace Statement status shortcuts with complete `snapshot()`, `refresh()`, `wait()`, and `cancel()` observations. Use `table.catalog()` for definitions, ETags, and conditional mutations. Remove compatibility aliases documented in the migration table.
-
-* Unknown Append outcomes are no longer replayed by default. Use `.retryUnknown(true)` to explicitly accept possible duplicates. Append results use `status`; `AppendRowsError` uses `outcome`; stream `lastFailure.error` retains the complete diagnostic.
+* Replace legacy Ingest APIs with Append, which accepts rows matching the destination columns. Move transformations into producer code or a separate ScopeQL query; see [Upgrade from 0.2 to 0.3](docs/migration-0.3.md).
+* Replace paginated Catalog methods with `client.catalog()` and `table.catalog()`. Replace Statement status helpers with complete observations through `snapshot()`, `refresh()`, `wait()`, and `cancel()`.
+* Remove deprecated compatibility aliases and `withMaxParallelism()`. Replace `withExecTimeout()` with `withMaxElapsedSeconds()` and optional `withMaxEstimatedSeconds()`. Append results now use `status`, errors use `outcome`, and stream failure details are available through `stats().lastFailure.error`.
+* Apply a 30-second default deadline to Append attempts and Catalog mutations, with a separate five-minute per-batch delivery budget for streams. Configure `writeTimeoutMs`, request `timeoutMs`, stream `attemptTimeoutMs`, and `maxElapsedTimeMs` as needed; `null` disables the per-attempt deadline.
 
 ### New Features
 
-* Support complete Catalog replacement/deletion with dry-run, ETags, conditional writes, views, computed columns, and destructive-change controls. Validate known fields while retaining extension fields during read/modify/write.
-
-* Add configurable write deadlines with a 30-second default covering the complete HTTP attempt after local preparation. Set `writeTimeoutMs`, per-request `timeoutMs`, or stream `attemptTimeoutMs` to `null` to disable that deadline; caller cancellation and the stream delivery budget remain effective.
-
-* Preserve structured query errors, unknown error codes, compute seconds, and complete cancellation observations. Confirmed server cancellation reports `StatementCancelled` separately from local request cancellation.
+* Support declarative Catalog replacement and deletion with dry-run, ETags, conditional mutations, views, computed columns, and destructive-change controls. Preserve extension fields during read/modify/write.
+* Add explicit `.retryUnknown(true)` support for callers willing to accept possible duplicate writes. Unknown outcomes remain non-retryable by default.
+* Expose structured server errors, compute usage, and write interruption details. Distinguish confirmed server cancellation from aborting local waiting.
 
 ### Bug Fixes
 
-* Preserve the caller's cancellation reason and settle Statement waits even when a custom fetch ignores aborts. Keep unacknowledged submissions non-retryable while preserving confirmed temporary admission rejections.
-
-* Keep Statement snapshots monotonic and isolated from caller mutation. Prefer newer server progress when concurrent responses arrive out of order and retain terminal results. Reject mismatched response identities while accepting equivalent UUID spellings.
-
-* Preserve definite Catalog temporary/permanent failure classifications, retain unknown gateway outcomes, and reject null storage or search-analyzer fields that native ScopeDB does not accept.
-
-* Honor server retry refusal and preserve full HTTP and timeout diagnostics in Append delivery reports. Carry aborted flush outcomes into the next report and distinguish records that cannot fit the stream buffer from temporary backpressure.
-
-* Stop reading oversized framework request bodies at the 64 KiB limit, including chunked requests, and reject unsafe JSON numbers before appending.
-
-* Preserve signed/unsigned integer boundaries, raw JSON text, and special float values. Reject numeric overflow with row/column context and preserve result columns named `__proto__`.
+* Keep Statement snapshots monotonic and isolated from caller mutation. Preserve terminal results and caller cancellation reasons, and mark unacknowledged submissions as non-retryable.
+* Carry cancelled flush outcomes into the next delivery report without double counting, while retaining complete HTTP and timeout diagnostics.
+* Validate numeric ranges and malformed result cells with row/column diagnostics. Handle special float values, preserve columns named `__proto__`, and reject duplicate column names during object conversion.
+* Enforce the 64 KiB request-body limit in Next.js and Worker templates, including streamed bodies, and reject unsafe JSON numbers before Append.
 
 ### Improvements
 
-* Target 4 MiB Append batches by default, bounded by the 8 MiB and 200,000-row request limits. Direct appends use the same gzip compression and request limits as streams.
-
-* Keep retry attempts and elapsed time bounded, with jitter and `Retry-After` as a lower bound. Client timeouts and cancellations are never replayed; standard fetch redirect behavior is preserved.
+* Use a 4 MiB default Append batch target. Compress direct appends with gzip and enforce the same 8 MiB and 200,000-row request limits as streams.
+* Bound retries by count and elapsed time, add jitter, and honor `Retry-After` and server retry refusal. Client timeouts and cancellations are never replayed.
 
 ## v0.2.2 (2026-08-22)
 

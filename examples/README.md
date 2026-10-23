@@ -1,6 +1,6 @@
 # ScopeDB JavaScript SDK examples
 
-The runnable examples import the public `scopedb` package entry. Start with a quickstart, then choose an example for your application.
+The runnable examples import the public `scopedb` package entry. Start with the [quickstart](../README.md#run-a-query), then choose an example for your application. See the [usage guide](../docs/usage.md) for API contracts or [Upgrade from 0.2 to 0.3](../docs/migration-0.3.md) for existing applications.
 
 The SDK is for trusted server-side code. Never expose `SCOPEDB_API_KEY` from a browser bundle or a Next.js Client Component.
 
