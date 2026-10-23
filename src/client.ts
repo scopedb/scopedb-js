@@ -14,7 +14,12 @@
  * limitations under the License.
  */
 
-import { AppendRowsError, ScopeDBError, asScopeDBError, writeErrorDetailsFromCause } from "./errors.js";
+import {
+  AppendRowsError,
+  asScopeDBError,
+  ScopeDBError,
+  writeErrorDetailsFromCause,
+} from "./errors.js";
 import type {
   AppendRowError,
   AppendRowsErrorPayload,
@@ -23,17 +28,22 @@ import type {
   StatementErrorDetails,
   StatementRequest,
   StatementResultSet,
-  StatementStatus,
+  StatementSnapshot,
 } from "./protocol.js";
-import { Catalog, type CatalogOptions } from "./catalog.js";
+import {
+  Catalog,
+  type CatalogOptions,
+  validateCatalogResponse,
+} from "./catalog.js";
 import type { ResultSet } from "./result.js";
+import { isDataType } from "./protocol.js";
 import { Statement, StatementHandle } from "./statement.js";
 import type { WaitOptions } from "./statement.js";
 import {
-  MAX_APPEND_BODY_BYTES,
-  MAX_TIMER_MS,
   byteLength,
-  positiveIntegerConfig,
+  MAX_APPEND_BODY_BYTES,
+  MAX_APPEND_ROWS,
+  writeTimeoutConfig,
 } from "./stream-internals.js";
 import { Table, type TableOptions } from "./table.js";
 
@@ -42,54 +52,47 @@ export interface RequestOptions {
 }
 
 export interface WriteOptions extends RequestOptions {
-  /** Overrides the client's write timeout for this request, in milliseconds. */
-  timeoutMs?: number;
+  /** Per-request timeout in milliseconds; undefined inherits, null disables the SDK deadline. */
+  timeoutMs?: number | null;
 }
 
 export interface ClientOptions {
   fetch?: typeof globalThis.fetch;
   /**
-   * Timeout for each table append request, including its
-   * response body, in milliseconds. Defaults to 30,000 and must be positive.
+   * Timeout for each table append or catalog mutation, including its
+   * response body, in milliseconds. Defaults to 30,000; null disables the SDK deadline, positive integers override it.
    * The budget starts after local encoding, compression, and request preparation.
    * Stream attemptTimeoutMs settings override this default. A timeout does not
    * roll back the write; its commit outcome can be unknown.
    */
-  writeTimeoutMs?: number;
+  writeTimeoutMs?: number | null;
   /** Default headers sent with every request. */
   headers?: HeadersInit;
   /**
    * ScopeDB API key. It is sent as a Bearer credential and must only be used
-   * from trusted server-side code. It takes precedence over `token` and an
+   * from trusted server-side code. It takes precedence over an
    * `Authorization` value in `headers`.
    */
   apiKey?: string;
-  /**
-   * Bearer token for authentication.
-   * Equivalent to `headers: { Authorization: 'Bearer <token>' }`.
-   * If `apiKey` is also provided, `apiKey` wins.
-   *
-   * @deprecated Use `apiKey`.
-   */
-  token?: string;
 }
 
 export class Client {
   private readonly endpoint: URL;
   private readonly fetchFn: typeof globalThis.fetch;
   private readonly defaultHeaders: Headers;
-  private readonly writeTimeoutMs: number;
+  private readonly writeTimeoutMs: number | null;
 
   constructor(endpoint: string | URL, options: ClientOptions = {}) {
-    this.writeTimeoutMs = positiveIntegerConfig(
+    this.writeTimeoutMs = writeTimeoutConfig(
       "writeTimeoutMs",
-      options.writeTimeoutMs ?? 30_000,
-      MAX_TIMER_MS,
+      options.writeTimeoutMs === undefined ? 30_000 : options.writeTimeoutMs,
     );
     try {
       this.endpoint = normalizeEndpoint(endpoint);
     } catch (cause) {
-      throw new ScopeDBError("ConfigInvalid", "failed to parse endpoint", { cause });
+      throw new ScopeDBError("ConfigInvalid", "failed to parse endpoint", {
+        cause,
+      });
     }
 
     const fetchFn = options.fetch ?? globalThis.fetch;
@@ -98,7 +101,7 @@ export class Client {
     // pass the Client instance as `this` and fail with an illegal invocation.
     this.fetchFn = (input, init) => fetchFn(input, init);
     this.defaultHeaders = new Headers(options.headers);
-    const apiKey = options.apiKey ?? options.token;
+    const apiKey = options.apiKey;
     if (apiKey !== undefined) {
       if (apiKey.length === 0) {
         throw new ScopeDBError("ConfigInvalid", "apiKey must not be empty");
@@ -136,42 +139,77 @@ export class Client {
 
   catalog(): Catalog {
     return new Catalog((method, path, definition, options) =>
-      this.catalogRequest(method, path, definition, options));
+      this.catalogRequest(method, path, definition, options)
+    );
   }
 
-  private async catalogRequest(method: string, path: string[], definition: unknown, options: CatalogOptions): Promise<{ body: Record<string, unknown>; etag: string }> {
+  private async catalogRequest(
+    method: string,
+    path: string[],
+    definition: unknown,
+    options: CatalogOptions,
+  ): Promise<{ body: Record<string, unknown>; etag: string }> {
     const url = this.resourceUrl(["catalog", ...path]);
     if (options.dryRun) url.searchParams.set("dry_run", "true");
-    if (options.allowDestructive) url.searchParams.set("allow_destructive", "true");
+    if (options.allowDestructive) {
+      url.searchParams.set("allow_destructive", "true");
+    }
     const headers = new Headers();
     if (options.ifMatch !== undefined) headers.set("If-Match", options.ifMatch);
-    const body = definition === undefined ? undefined : JSON.stringify(definition);
+    const body = definition === undefined
+      ? undefined
+      : JSON.stringify(definition);
     options.signal?.throwIfAborted();
+    // ScopeDB 0.6 Catalog handlers decode JSON directly without request decompression.
+    const prepared = this.prepareRequest(url, { method, headers, body });
     const mutation = method !== "GET";
     const writing = mutation && !options.dryRun;
     const controller = new AbortController();
     const abort = () => controller.abort(options.signal?.reason);
-    const timeoutMs = mutation ? positiveIntegerConfig("timeoutMs", options.timeoutMs ?? this.writeTimeoutMs, MAX_TIMER_MS) : undefined;
+    const timeoutMs = mutation
+      ? writeTimeoutConfig(
+        "timeoutMs",
+        options.timeoutMs === undefined
+          ? this.writeTimeoutMs
+          : options.timeoutMs,
+      )
+      : null;
     options.signal?.addEventListener("abort", abort, { once: true });
-    const timer = timeoutMs === undefined ? undefined : setTimeout(() => controller.abort(new DOMException("catalog request timed out", "TimeoutError")), timeoutMs);
+    const timer = timeoutMs === null
+      ? undefined
+      : setTimeout(() =>
+        controller.abort(
+          new DOMException("catalog request timed out", "TimeoutError"),
+        ), timeoutMs);
     let rejectAborted!: () => void;
     const aborted = new Promise<never>((_resolve, reject) => {
       rejectAborted = () => reject(controller.signal.reason);
-      controller.signal.addEventListener("abort", rejectAborted, { once: true });
+      controller.signal.addEventListener("abort", rejectAborted, {
+        once: true,
+      });
     });
     let response: Response | undefined;
     let failure: ScopeDBError | undefined;
     try {
       return await Promise.race([
         (async () => {
-          response = await this.request(url, { method, headers, body, signal: controller.signal });
+          response = await this.sendRequest(prepared.url, {
+            ...prepared.init,
+            signal: controller.signal,
+          });
           if (!response.ok) {
             failure = await responseToError(response);
             if (writing) {
-              if (failure.cause !== undefined && response.status >= 500) {
-                failure = new ScopeDBError("CatalogFailed", "catalog commit outcome is unknown", {
-                  cause: failure, code: "catalog_commit_outcome_unknown", ...responseMetadata(response),
-                });
+              if (failure.code === undefined && response.status >= 500) {
+                failure = new ScopeDBError(
+                  "CatalogFailed",
+                  "catalog commit outcome is unknown",
+                  {
+                    cause: failure,
+                    code: "catalog_commit_outcome_unknown",
+                    ...responseMetadata(response),
+                  },
+                );
               }
               failure.setPersistent();
             }
@@ -179,23 +217,32 @@ export class Client {
           }
           const value: unknown = await response.json();
           const etag = response.headers.get("etag");
-          if (!isRecord(value) || !etag ||
-              (method === "GET" ? (path.length === 0 ? !Array.isArray(value["databases"]) : value["name"] !== path.at(-1)) :
-                !(typeof value["destructive"] === "boolean" &&
-                  (value["before"] === null || isRecord(value["before"])) &&
-                  (value["after"] === null || isRecord(value["after"]))))) {
-            throw new Error("invalid catalog response");
+          if (!isRecord(value) || !etag) {
+            throw new Error("invalid catalog response or missing ETag");
           }
+          validateCatalogResponse(value, path, method);
           return { body: value, etag };
         })(),
         aborted,
       ]);
     } catch (cause) {
       if (failure !== undefined && cause === failure) throw cause;
-      throw new ScopeDBError("CatalogFailed", writing ? "catalog commit outcome is unknown" : "failed to read catalog", {
-        cause, code: writing ? "catalog_commit_outcome_unknown" : undefined,
-        ...(response === undefined ? {} : responseMetadata(response)),
-      }).setPersistent();
+      throw new ScopeDBError(
+        "CatalogFailed",
+        writing
+          ? "catalog commit outcome is unknown"
+          : "failed to read catalog",
+        {
+          cause,
+          code: writing ? "catalog_commit_outcome_unknown" : undefined,
+          status: writing
+            ? "persistent"
+            : cause instanceof ScopeDBError
+            ? cause.status()
+            : "permanent",
+          ...(response === undefined ? {} : responseMetadata(response)),
+        },
+      );
     } finally {
       clearTimeout(timer);
       options.signal?.removeEventListener("abort", abort);
@@ -205,7 +252,7 @@ export class Client {
 
   /**
    * Appends at most 8 MiB of uncompressed newline-delimited JSON.
-   * @deprecated Use `client.table(name, location).append(ndjson)`.
+   * @internal Transport used by Table and AppendStream.
    */
   async appendRows(
     database: string,
@@ -222,7 +269,7 @@ export class Client {
       throw new AppendRowsError(
         {
           message,
-          append_state: "rejected",
+          status: "rejected",
           row_errors: [],
           row_errors_truncated: false,
         },
@@ -230,19 +277,48 @@ export class Client {
       );
     }
     const expectedRows = countNDJSONRows(ndjson);
+    if (expectedRows > MAX_APPEND_ROWS) {
+      const message =
+        `append payload contains ${expectedRows} rows, exceeds the ${MAX_APPEND_ROWS}-row append limit`;
+      throw new AppendRowsError({
+        message,
+        status: "rejected",
+        row_errors: [],
+        row_errors_truncated: false,
+      }, message);
+    }
     const { body } = await gzipJsonRequestBody(ndjson);
-    const url = this.resourceUrl(["catalog", "databases", database, "schemas", schema, "tables", table, "ingest"]);
+    const url = this.resourceUrl([
+      "catalog",
+      "databases",
+      database,
+      "schemas",
+      schema,
+      "tables",
+      table,
+      "ingest",
+    ]);
     return this.appendRequest(
       url,
       {
         method: "POST",
-        headers: { "Content-Type": "application/x-ndjson", "Content-Encoding": "gzip" },
+        headers: {
+          "Content-Type": "application/x-ndjson",
+          "Content-Encoding": "gzip",
+        },
         body,
       },
       options,
       (value) => {
-        const wire = expectResponse(value, isAppendRowsResult, "append response");
-        const result: AppendRowsResult = { append_state: wire.status, num_rows_inserted: wire.num_rows_inserted };
+        const wire = expectResponse(
+          value,
+          isAppendRowsResult,
+          "append response",
+        );
+        const result: AppendRowsResult = {
+          status: wire.status,
+          num_rows_inserted: wire.num_rows_inserted,
+        };
         if (result.num_rows_inserted !== expectedRows) {
           throw new ScopeDBError(
             "Unexpected",
@@ -254,27 +330,27 @@ export class Client {
     );
   }
 
-  /** @deprecated Use `client.statement(scopeql).submit()`. */
+  /** @internal Transport used by Statement.submit(). */
   async submitStatement(
     request: StatementRequest,
     options: RequestOptions = {},
-  ): Promise<StatementStatus> {
+  ): Promise<StatementSnapshot> {
     return expectResponse(
       await this.requestJson("v1/statements", {
         method: "POST",
         body: JSON.stringify(request),
         signal: options.signal,
       }),
-      isStatementStatus,
+      isStatementSnapshot,
       "statement response",
     );
   }
 
-  /** @deprecated Use `client.statementHandle(id).status()` or `.wait()`. */
+  /** @internal Transport used by StatementHandle.refresh(). */
   async fetchStatement(
     statementId: string,
     options: RequestOptions = {},
-  ): Promise<StatementStatus> {
+  ): Promise<StatementSnapshot> {
     const url = this.resourceUrl(["statements", statementId]);
     url.searchParams.set("format", "json");
     return expectResponse(
@@ -282,16 +358,16 @@ export class Client {
         method: "GET",
         signal: options.signal,
       }),
-      isStatementStatus,
+      isStatementSnapshot,
       "statement response",
     );
   }
 
-  /** @deprecated Use `client.statementHandle(id).cancel()`. */
+  /** @internal Transport used by StatementHandle.cancel(). */
   async cancelStatement(
     statementId: string,
     options: RequestOptions = {},
-  ): Promise<StatementStatus> {
+  ): Promise<StatementSnapshot> {
     const url = this.resourceUrl(["statements", statementId, "cancel"]);
     url.searchParams.set("format", "json");
     return expectResponse(
@@ -299,13 +375,19 @@ export class Client {
         method: "POST",
         signal: options.signal,
       }),
-      isStatementStatus,
+      isStatementSnapshot,
       "statement cancellation response",
     );
   }
 
-  private async requestJson<T>(path: string | URL, init: RequestInit): Promise<T> {
-    const response = await this.request(path, await this.prepareJsonRequest(init));
+  private async requestJson<T>(
+    path: string | URL,
+    init: RequestInit,
+  ): Promise<T> {
+    const response = await this.request(
+      path,
+      await this.prepareJsonRequest(init),
+    );
     if (!response.ok) {
       throw await responseToError(response);
     }
@@ -318,12 +400,18 @@ export class Client {
     }
     init.signal?.throwIfAborted();
     if (typeof init.body !== "string") {
-      throw new ScopeDBError("Unexpected", "JSON request body must be a string before compression");
+      throw new ScopeDBError(
+        "Unexpected",
+        "JSON request body must be a string before compression",
+      );
     }
     const { body, uncompressedBytes } = await gzipJsonRequestBody(init.body);
     const headers = new Headers(init.headers);
     headers.set("Content-Encoding", "gzip");
-    headers.set("X-ScopeDB-Uncompressed-Content-Length", String(uncompressedBytes));
+    headers.set(
+      "X-ScopeDB-Uncompressed-Content-Length",
+      String(uncompressedBytes),
+    );
     return { ...init, body, headers };
   }
 
@@ -336,43 +424,63 @@ export class Client {
     // Cancellation before sending cannot have an ambiguous commit outcome.
     const signal = options.signal;
     signal?.throwIfAborted();
-    const timeoutMs = positiveIntegerConfig(
+    const timeoutMs = writeTimeoutConfig(
       "timeoutMs",
-      options.timeoutMs ?? this.writeTimeoutMs,
-      MAX_TIMER_MS,
+      options.timeoutMs === undefined ? this.writeTimeoutMs : options.timeoutMs,
     );
     const prepared = this.prepareRequest(path, init);
     signal?.throwIfAborted();
     const controller = new AbortController();
-    const abort = () => controller.abort(
-      new ScopeDBError("Unexpected", "write request cancelled; commit outcome is unknown", {
-        cause: signal?.reason,
-        writeDetails: {
-          reason: signal?.reason instanceof DOMException && signal.reason.name === "TimeoutError"
-            ? "timeout"
-            : "cancelled",
-          outcome: "unknown",
-        },
-      }).setPersistent(),
-    );
+    const abort = () =>
+      controller.abort(
+        new ScopeDBError(
+          "Unexpected",
+          "write request cancelled; commit outcome is unknown",
+          {
+            cause: signal?.reason,
+            writeDetails: {
+              reason: signal?.reason instanceof DOMException &&
+                  signal.reason.name === "TimeoutError"
+                ? "timeout"
+                : "cancelled",
+              outcome: "unknown",
+            },
+          },
+        ).setPersistent(),
+      );
     signal?.addEventListener("abort", abort, { once: true });
-    const timer = setTimeout(() => controller.abort(
-      new ScopeDBError("Unexpected", "write request timed out; commit outcome is unknown", {
-        cause: new DOMException("write request timed out", "TimeoutError"),
-        writeDetails: { reason: "timeout", outcome: "unknown" },
-      }).withContext("write_timeout_ms", timeoutMs).setPersistent(),
-    ), timeoutMs);
+    const timer = timeoutMs === null
+      ? undefined
+      : setTimeout(() =>
+        controller.abort(
+          new ScopeDBError(
+            "Unexpected",
+            "write request timed out; commit outcome is unknown",
+            {
+              cause: new DOMException(
+                "write request timed out",
+                "TimeoutError",
+              ),
+              writeDetails: { reason: "timeout", outcome: "unknown" },
+            },
+          ).withContext("write_timeout_ms", timeoutMs).setPersistent(),
+        ), timeoutMs);
     let rejectAborted!: () => void;
     const aborted = new Promise<never>((_resolve, reject) => {
       rejectAborted = () => reject(controller.signal.reason);
-      controller.signal.addEventListener("abort", rejectAborted, { once: true });
+      controller.signal.addEventListener("abort", rejectAborted, {
+        once: true,
+      });
     });
     let response: Response | undefined;
     let responseFailure: ScopeDBError | undefined;
     try {
       return await Promise.race([
         (async () => {
-          response = await this.sendRequest(prepared.url, { ...prepared.init, signal: controller.signal });
+          response = await this.sendRequest(prepared.url, {
+            ...prepared.init,
+            signal: controller.signal,
+          });
           if (!response.ok) {
             responseFailure = await responseToError(response);
             throw responseFailure;
@@ -387,16 +495,23 @@ export class Client {
         "failed to append rows",
         cause,
       );
-      const writeDetails = error.writeDetails ?? writeErrorDetailsFromCause(error);
-      if (responseFailure !== undefined && cause === responseFailure && writeDetails === undefined) {
+      const writeDetails = error.writeDetails ??
+        writeErrorDetailsFromCause(error);
+      if (
+        responseFailure !== undefined && cause === responseFailure &&
+        writeDetails === undefined
+      ) {
         if (error instanceof AppendRowsError) {
           throw error;
         }
       }
-      const metadata = response === undefined ? undefined : responseMetadata(response);
+      const metadata = response === undefined
+        ? undefined
+        : responseMetadata(response);
       const errorOptions = {
         cause: error,
         code: error.code,
+        serverRetryable: error.serverRetryable,
         details: error.details,
         httpStatus: error.httpStatus ?? metadata?.httpStatus,
         requestId: error.requestId ?? metadata?.requestId,
@@ -404,7 +519,12 @@ export class Client {
         writeDetails,
       };
       const unknown = new AppendRowsError(
-        { message: error.message, append_state: "unknown", row_errors: [], row_errors_truncated: false },
+        {
+          message: error.message,
+          status: "unknown",
+          row_errors: [],
+          row_errors_truncated: false,
+        },
         error.message,
         errorOptions,
       );
@@ -419,12 +539,18 @@ export class Client {
     }
   }
 
-  private async request(path: string | URL, init: RequestInit): Promise<Response> {
+  private async request(
+    path: string | URL,
+    init: RequestInit,
+  ): Promise<Response> {
     const prepared = this.prepareRequest(path, init);
     return this.sendRequest(prepared.url, prepared.init);
   }
 
-  private prepareRequest(path: string | URL, init: RequestInit): { url: URL; init: RequestInit } {
+  private prepareRequest(
+    path: string | URL,
+    init: RequestInit,
+  ): { url: URL; init: RequestInit } {
     const headers = new Headers(this.defaultHeaders);
     headers.set("Accept", "application/json");
     headers.set("X-ScopeDB-Client", "scopedb-js");
@@ -446,7 +572,11 @@ export class Client {
       if (init.signal?.aborted === true) {
         throw init.signal.reason;
       }
-      throw asScopeDBError("Unexpected", `failed to send request to ${url}`, cause).setTemporary();
+      throw asScopeDBError(
+        "Unexpected",
+        `failed to send request to ${url}`,
+        cause,
+      ).setTemporary();
     }
   }
 
@@ -455,8 +585,15 @@ export class Client {
   }
 
   private resourceUrl(segments: readonly string[]): URL {
-    if (segments.some((segment) => segment === "" || segment === "." || segment === "..")) {
-      throw new ScopeDBError("ConfigInvalid", "resource names must not be empty or dot segments");
+    if (
+      segments.some((segment) =>
+        segment === "" || segment === "." || segment === ".."
+      )
+    ) {
+      throw new ScopeDBError(
+        "ConfigInvalid",
+        "resource names must not be empty or dot segments",
+      );
     }
     return this.makeUrl(["v1", ...segments].map(encodeURIComponent).join("/"));
   }
@@ -492,7 +629,8 @@ function normalizeEndpoint(endpoint: string | URL): URL {
 }
 
 async function responseToError(response: Response): Promise<ScopeDBError> {
-  const retryableByStatus = response.status === 408 || response.status === 429 ||
+  const retryableByStatus = response.status === 408 ||
+    response.status === 429 ||
     response.status >= 500;
   let body: string;
   try {
@@ -517,7 +655,9 @@ async function responseToError(response: Response): Promise<ScopeDBError> {
     const parsed = parseErrorPayload(payload);
     if (parsed !== undefined) {
       message = parsed.message;
-      code = typeof parsed.raw["code"] === "string" ? parsed.raw["code"] : undefined;
+      code = typeof parsed.raw["code"] === "string"
+        ? parsed.raw["code"]
+        : undefined;
       details = parsed.raw["details"];
       requestId = parsed.requestId ?? requestId;
       serverRetryable = parsed.retryable;
@@ -528,14 +668,16 @@ async function responseToError(response: Response): Promise<ScopeDBError> {
   }
 
   const metadata = {
-    code, details,
+    code,
+    details,
+    serverRetryable,
     ...responseMetadata(response),
     ...(requestId === undefined ? {} : { requestId }),
   };
   const error = appendPayload === undefined
     ? new ScopeDBError("Unexpected", message, metadata)
     : new AppendRowsError(appendPayload, message, metadata);
-  if (error instanceof AppendRowsError && error.appendState === "unknown") {
+  if (error instanceof AppendRowsError && error.outcome === "unknown") {
     // Retrying an append with an unknown commit outcome can insert duplicates.
     return error.setPersistent();
   }
@@ -617,8 +759,8 @@ function asAppendRowsErrorPayload(
 ): AppendRowsErrorPayload | undefined {
   const details = value["details"];
   if (!isRecord(details)) return undefined;
-  const appendState = details["status"];
-  if (appendState !== "rejected" && appendState !== "unknown") {
+  const outcome = details["status"];
+  if (outcome !== "rejected" && outcome !== "unknown") {
     return undefined;
   }
 
@@ -627,13 +769,15 @@ function asAppendRowsErrorPayload(
     return undefined;
   }
   const rowErrorsTruncated = details["row_errors_truncated"];
-  if (rowErrorsTruncated !== undefined && typeof rowErrorsTruncated !== "boolean") {
+  if (
+    rowErrorsTruncated !== undefined && typeof rowErrorsTruncated !== "boolean"
+  ) {
     return undefined;
   }
 
   return {
     message,
-    append_state: appendState,
+    status: outcome,
     row_errors: rowErrors ?? [],
     row_errors_truncated: rowErrorsTruncated ?? false,
   };
@@ -678,7 +822,7 @@ function expectResponse<T>(
   return value;
 }
 
-function isStatementStatus(value: unknown): value is StatementStatus {
+function isStatementSnapshot(value: unknown): value is StatementSnapshot {
   if (
     !isRecord(value) ||
     typeof value["statement_id"] !== "string" ||
@@ -725,9 +869,10 @@ const STATEMENT_PROGRESS_FIELDS = [
 ] as const;
 
 function isStatementProgress(value: unknown): boolean {
-  return isRecord(value) && STATEMENT_PROGRESS_FIELDS.every((field) =>
-    typeof value[field] === "number" && Number.isFinite(value[field])
-  );
+  return isRecord(value) &&
+    STATEMENT_PROGRESS_FIELDS.every((field) =>
+      typeof value[field] === "number" && Number.isFinite(value[field])
+    );
 }
 
 function isStatementResultSet(value: unknown): value is StatementResultSet {
@@ -745,11 +890,12 @@ function isStatementResultSet(value: unknown): value is StatementResultSet {
   }
   const fields = value["metadata"]["fields"];
   const rows = value["rows"];
-  return rows.length === value["metadata"]["num_rows"] && rows.every((row) =>
-    Array.isArray(row) &&
-    row.length === fields.length &&
-    row.every((cell) => cell === null || typeof cell === "string")
-  );
+  return rows.length === value["metadata"]["num_rows"] &&
+    rows.every((row) =>
+      Array.isArray(row) &&
+      row.length === fields.length &&
+      row.every((cell) => cell === null || typeof cell === "string")
+    );
 }
 
 function isFieldSchemaPayload(value: unknown): boolean {
@@ -758,37 +904,21 @@ function isFieldSchemaPayload(value: unknown): boolean {
     isDataType(value["data_type"]);
 }
 
-function isStatementErrorDetails(value: unknown): value is StatementErrorDetails {
+function isStatementErrorDetails(
+  value: unknown,
+): value is StatementErrorDetails {
   return isRecord(value) &&
     typeof value["code"] === "string" &&
     typeof value["message"] === "string";
-}
-
-const DATA_TYPES = new Set<DataType>([
-  "int",
-  "uint",
-  "u_int",
-  "float",
-  "timestamp",
-  "interval",
-  "boolean",
-  "string",
-  "binary",
-  "array",
-  "object",
-  "any",
-  "null",
-]);
-
-function isDataType(value: unknown): value is DataType {
-  return typeof value === "string" && DATA_TYPES.has(value as DataType);
 }
 
 function countNDJSONRows(ndjson: string): number {
   return ndjson.split("\n").filter((line) => line.trim().length > 0).length;
 }
 
-function isAppendRowsResult(value: unknown): value is { status: "committed"; num_rows_inserted: number } {
+function isAppendRowsResult(
+  value: unknown,
+): value is { status: "committed"; num_rows_inserted: number } {
   return isRecord(value) &&
     value["status"] === "committed" &&
     typeof value["num_rows_inserted"] === "number" &&

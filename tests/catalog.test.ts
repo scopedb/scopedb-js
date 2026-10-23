@@ -18,11 +18,7 @@ import assert from "node:assert/strict";
 import { it } from "node:test";
 import { Client } from "../src/client.js";
 import { ScopeDBError } from "../src/errors.js";
-import {
-  jsonResponse,
-  makeFetchStub,
-  parseJsonRequestBody,
-} from "./helpers.js";
+import { jsonResponse, makeFetchStub } from "./helpers.js";
 
 it("previews a replacement and applies it with the opaque ETag and escaped identity", async () => {
   const before = { name: "events/2026", tables: [] };
@@ -33,16 +29,16 @@ it("previews a replacement and applies it with the opaque ETag and escaped ident
     ],
   };
   const { fn, calls } = makeFetchStub([
-    jsonResponse(200, before, { ETag: '\"v1\"' }),
+    jsonResponse(200, before, { ETag: '"v1"' }),
     jsonResponse(
       200,
       { before, after, destructive: false },
-      { ETag: '\"v1\"' },
+      { ETag: '"v1"' },
     ),
     jsonResponse(
       200,
       { before, after, destructive: false },
-      { ETag: '\"v2\"' },
+      { ETag: '"v2"' },
     ),
     jsonResponse(412, {
       code: "catalog_version_mismatch",
@@ -64,7 +60,7 @@ it("previews a replacement and applies it with the opaque ETag and escaped ident
   assert.deepEqual(preview.after, after);
   assert.equal(preview.etag, snapshot.etag);
   const applied = await resource.apply(after, { ifMatch: preview.etag });
-  assert.equal(applied.etag, '\"v2\"');
+  assert.equal(applied.etag, '"v2"');
   await assert.rejects(
     resource.apply(after, { ifMatch: preview.etag }),
     (error: unknown) => {
@@ -85,13 +81,14 @@ it("previews a replacement and applies it with the opaque ETag and escaped ident
     new Headers(calls[2]!.init?.headers).get("If-Match"),
     snapshot.etag,
   );
-  assert.deepEqual(parseJsonRequestBody(calls[2]!.init), after);
+  // Match the native Catalog handler's JSON decoder; it does not decompress requests.
+  assert.deepEqual(await new Response(calls[2]!.init?.body).json(), after);
 });
 
 it("does not retry or claim rollback when a catalog write response is unreadable", async () => {
   const response = new Response("invalid json", {
     status: 200,
-    headers: { ETag: '\"v2\"', "X-Request-ID": "request-1" },
+    headers: { ETag: '"v2"', "X-Request-ID": "request-1" },
   });
   const { fn, calls } = makeFetchStub([response]);
   const resource = new Client("https://example.com", { fetch: fn })

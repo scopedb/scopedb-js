@@ -16,37 +16,26 @@
 
 import type { Client, RequestOptions } from "./client.js";
 import { ScopeDBError } from "./errors.js";
-import type {
-  ResultFormat,
-  StatementEstimatedProgress,
-  StatementStatus,
-} from "./protocol.js";
-import { statementIsFinished, statementIsTerminated } from "./protocol.js";
-import type { Value } from "./result.js";
+import type { StatementSnapshot } from "./protocol.js";
+import { statementIsTerminated } from "./protocol.js";
 import { ResultSet } from "./result.js";
+import {
+  MAX_TIMER_MS,
+  nonnegativeIntegerConfig,
+  sleep,
+} from "./stream-internals.js";
 
 export interface WaitOptions extends RequestOptions {
-  /**
-   * Initial polling delay in milliseconds.
-   * The delay doubles on each poll up to `maxDelayMs`.
-   * @default 5
-   */
+  /** Initial polling delay in milliseconds; doubles up to maxDelayMs. Defaults to 5. */
   initialDelayMs?: number;
-  /**
-   * Maximum polling delay in milliseconds.
-   * @default 1000
-   */
+  /** Maximum polling delay in milliseconds. Defaults to 1,000. */
   maxDelayMs?: number;
 }
-
-/** @deprecated Use `WaitOptions`. */
-export type FetchOptions = WaitOptions;
 
 export class Statement {
   private statementIdValue?: string;
   private maxElapsedSeconds?: number;
   private maxEstimatedSeconds?: number;
-  private readonly format: ResultFormat = "json";
 
   constructor(
     private readonly client: Client,
@@ -69,160 +58,127 @@ export class Statement {
   }
 
   async submit(options: RequestOptions = {}): Promise<StatementHandle> {
-    const status = await this.client.submitStatement(
-      {
-        statement: this.statementText,
-        statement_id: this.statementIdValue,
-        max_elapsed_seconds: this.maxElapsedSeconds,
-        max_estimated_seconds: this.maxEstimatedSeconds,
-        format: this.format,
-      },
-      options,
-    );
-
+    const snapshot = await this.client.submitStatement({
+      statement: this.statementText,
+      statement_id: this.statementIdValue,
+      max_elapsed_seconds: this.maxElapsedSeconds,
+      max_estimated_seconds: this.maxEstimatedSeconds,
+      format: "json",
+    }, options);
     return new StatementHandle(
       this.client,
-      status.statement_id,
-      this.format,
-      status,
+      this.statementIdValue ?? snapshot.statement_id,
+      snapshot,
     );
   }
 
   async execute(options: WaitOptions = {}): Promise<ResultSet> {
-    const handle = await this.submit(options);
-    return handle.wait(options);
-  }
-
-  /**
-   * Executes the statement and returns the first row as a plain object, or
-   * `null` if the result set is empty.
-   *
-   * Useful for point lookups and aggregate queries that return at most one row.
-   *
-   * @example
-   * const row = await client.statement("FROM events AGGREGATE count() AS n").executeOne();
-   * console.log(row?.["n"]); // bigint
-   *
-   * @deprecated Use `execute()` followed by `ResultSet.first()`.
-   */
-  async executeOne(
-    options: WaitOptions = {},
-  ): Promise<Record<string, Value> | null> {
-    return (await this.execute(options)).first();
+    return (await this.submit(options)).wait(options);
   }
 }
 
 export class StatementHandle {
+  private currentSnapshot?: StatementSnapshot;
+
   constructor(
     private readonly client: Client,
     readonly statementId: string,
-    private readonly format: ResultFormat = "json",
-    private currentStatus?: StatementStatus,
-  ) {}
-
-  /** Returns the latest status snapshot held by this handle without making a request. */
-  lastStatus(): StatementStatus | undefined {
-    return this.currentStatus;
+    snapshot?: StatementSnapshot,
+  ) {
+    if (snapshot !== undefined) this.remember(snapshot);
   }
 
-  progress(): StatementEstimatedProgress | undefined {
-    return this.currentStatus?.progress;
+  /** Returns a caller-owned copy of the latest observation without a request. */
+  snapshot(): StatementSnapshot | undefined {
+    return this.currentSnapshot === undefined
+      ? undefined
+      : structuredClone(this.currentSnapshot);
   }
 
-  resultSet(): ResultSet | null {
+  /** Fetches one observation, or returns a cached terminal snapshot. Failed requests leave the cache intact. */
+  async refresh(options: RequestOptions = {}): Promise<StatementSnapshot> {
     if (
-      this.currentStatus === undefined ||
-      !statementIsFinished(this.currentStatus)
+      this.currentSnapshot !== undefined &&
+      statementIsTerminated(this.currentSnapshot)
     ) {
-      return null;
+      return structuredClone(this.currentSnapshot);
     }
-    return ResultSet.fromStatementResultSet(this.currentStatus.result_set);
-  }
-
-  /** Fetches and returns the latest status, or reuses a cached terminal status. */
-  async status(options: RequestOptions = {}): Promise<StatementStatus> {
-    if (
-      this.currentStatus !== undefined &&
-      statementIsTerminated(this.currentStatus)
-    ) {
-      return this.currentStatus;
-    }
-
-    this.currentStatus = await this.client.fetchStatement(
-      this.statementId,
-      options,
+    return this.remember(
+      await this.client.fetchStatement(this.statementId, options),
     );
-    return this.currentStatus;
   }
 
-  /** @deprecated Use `status()`. */
-  async fetchOnce(options: RequestOptions = {}): Promise<void> {
-    await this.status(options);
-  }
-
-  /** Waits for the statement to terminate and returns its result set. */
+  /** Waits for a terminal result. Aborting stops local waiting; use cancel() to request server cancellation. */
   async wait(options: WaitOptions = {}): Promise<ResultSet> {
-    let delayMs = options.initialDelayMs ?? 5;
-    const maxDelayMs = options.maxDelayMs ?? 1000;
-
+    let delayMs = nonnegativeIntegerConfig(
+      "initialDelayMs",
+      options.initialDelayMs ?? 5,
+      MAX_TIMER_MS,
+    );
+    const maxDelayMs = nonnegativeIntegerConfig(
+      "maxDelayMs",
+      options.maxDelayMs ?? 1_000,
+      MAX_TIMER_MS,
+    );
+    delayMs = Math.min(delayMs, maxDelayMs);
     for (;;) {
-      await this.status(options);
-
-      if (this.currentStatus === undefined) {
-        throw new ScopeDBError(
-          "Unexpected",
-          "statement fetch returned no status",
-        );
-      }
-
-      switch (this.currentStatus.status) {
+      options.signal?.throwIfAborted();
+      const snapshot = await this.refresh(options);
+      switch (snapshot.status) {
         case "finished":
-          return ResultSet.fromStatementResultSet(
-            this.currentStatus.result_set,
-          );
+          return ResultSet.fromStatementResultSet(snapshot.result_set);
         case "failed":
-          throw new ScopeDBError(
-            "StatementFailed",
-            this.currentStatus.error.message,
-            {
-              code: this.currentStatus.error.code,
-              details: this.currentStatus.error.details,
-              statementDetails: this.currentStatus.error,
-            },
-          );
+          throw new ScopeDBError("StatementFailed", snapshot.error.message, {
+            code: snapshot.error.code,
+            details: snapshot.error.details,
+            statementDetails: snapshot.error,
+          });
         case "cancelled":
           throw new ScopeDBError(
-            "StatementFailed",
+            "StatementCancelled",
             `statement ${this.statementId} is cancelled`,
           );
         case "pending":
         case "running":
           await sleep(delayMs, options.signal);
-          if (delayMs < maxDelayMs) {
-            delayMs = Math.min(delayMs * 2, maxDelayMs);
-          }
-          break;
+          delayMs = Math.min(delayMs * 2, maxDelayMs);
       }
     }
   }
 
-  /** @deprecated Use `wait()`. */
-  async fetch(options: WaitOptions = {}): Promise<ResultSet> {
-    return this.wait(options);
+  /** Requests cancellation and returns the observed state, which may still be running or already finished/failed. */
+  async cancel(options: RequestOptions = {}): Promise<StatementSnapshot> {
+    if (
+      this.currentSnapshot !== undefined &&
+      statementIsTerminated(this.currentSnapshot)
+    ) {
+      return structuredClone(this.currentSnapshot);
+    }
+    return this.remember(
+      await this.client.cancelStatement(this.statementId, options),
+    );
   }
 
-  /** Cancels execution and retains the complete resulting status, including results or errors. */
-  async cancel(options: RequestOptions = {}): Promise<StatementStatus> {
+  private remember(snapshot: StatementSnapshot): StatementSnapshot {
+    if (snapshot.statement_id !== this.statementId) {
+      throw new ScopeDBError(
+        "Unexpected",
+        "statement response ID does not match the handle",
+      );
+    }
+    const previous = this.currentSnapshot;
+    // Concurrent refresh/cancel responses may arrive out of order. Terminal
+    // results stay cached even after the server expires its saved result.
     if (
-      this.currentStatus !== undefined &&
-      statementIsTerminated(this.currentStatus)
-    )
-      return this.currentStatus;
-    this.currentStatus = await this.client.cancelStatement(
-      this.statementId,
-      options,
-    );
-    return this.currentStatus;
+      previous === undefined || !(statementIsTerminated(previous) ||
+        (previous.status === "running" && snapshot.status === "pending") ||
+        (previous.status === snapshot.status &&
+          previous.progress.nanos_from_submitted >
+            snapshot.progress.nanos_from_submitted))
+    ) {
+      this.currentSnapshot = structuredClone(snapshot);
+    }
+    return this.snapshot()!;
   }
 }
 
@@ -234,23 +190,4 @@ function durationLimit(seconds: number): number {
     );
   }
   return seconds;
-}
-
-async function sleep(ms: number, signal?: AbortSignal): Promise<void> {
-  if (signal?.aborted) {
-    throw signal.reason ?? new Error("aborted");
-  }
-
-  await new Promise<void>((resolve, reject) => {
-    const timer = setTimeout(() => {
-      signal?.removeEventListener("abort", onAbort);
-      resolve();
-    }, ms);
-    const onAbort = () => {
-      clearTimeout(timer);
-      reject(signal?.reason ?? new Error("aborted"));
-    };
-
-    signal?.addEventListener("abort", onAbort, { once: true });
-  });
 }

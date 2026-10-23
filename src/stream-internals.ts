@@ -17,6 +17,7 @@
 import { ScopeDBError } from "./errors.js";
 
 export const MAX_TIMER_MS = 2_147_483_647;
+export const MAX_APPEND_ROWS = 200_000;
 export const MAX_APPEND_BODY_BYTES = 8 * 1024 * 1024;
 
 export function positiveIntegerConfig(
@@ -194,7 +195,9 @@ export class AsyncBoundedQueue<T> {
     return deferred.promise;
   }
 
-  tryReceiveHeadIf(predicate: (item: T) => boolean): T | typeof QUEUE_HEAD_UNAVAILABLE {
+  tryReceiveHeadIf(
+    predicate: (item: T) => boolean,
+  ): T | typeof QUEUE_HEAD_UNAVAILABLE {
     if (this.items.length > 0) {
       const item = this.items[0]!;
       if (!predicate(item)) {
@@ -422,7 +425,8 @@ export class PendingBytesBudget {
 }
 
 export function abortReason(signal: AbortSignal): unknown {
-  return signal.reason ?? new DOMException("The operation was aborted", "AbortError");
+  return signal.reason ??
+    new DOMException("The operation was aborted", "AbortError");
 }
 
 export function throwIfAborted(signal?: AbortSignal): void {
@@ -491,4 +495,13 @@ export async function waitForAck<T>(
     }
     throw makeClosedError();
   }
+}
+
+export function writeTimeoutConfig(
+  name: string,
+  value: number | null,
+): number | null {
+  return value === null
+    ? null
+    : positiveIntegerConfig(name, value, MAX_TIMER_MS);
 }

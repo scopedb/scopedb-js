@@ -6,28 +6,33 @@ All significant changes to the ScopeDB JavaScript SDK are documented in this fil
 
 ### Breaking Changes
 
-* Require ScopeDB 0.6.0 and use native Statement, declarative Catalog, and table ingest APIs. Replace paginated Catalog APIs and the legacy execution timeout option; cancellation retains complete terminal responses.
+* Require ScopeDB 0.6.0 and adopt native Statement, declarative Catalog, and table ingest APIs. Remove transform Ingest, paginated Catalog APIs, the old execution timeout option, and `maxParallelism`; see the [migration guide](README.md#migrate-to-scopedb-06).
 
-* Removed `Client.insert()`, `Client.ingest()`, `Client.ingestStream()`, the ingest stream exports, and ingest protocol types. Use table `append()` or `appendStream()` and shape rows before sending them. See the [migration guide](README.md#migrate-from-ingest) for transformations, batch limits, delivery reports, concurrency, and retries.
+* Replace Statement status shortcuts with complete `snapshot()`, `refresh()`, `wait()`, and `cancel()` observations. Use `table.catalog()` for definitions, ETags, and conditional mutations. Remove compatibility aliases documented in the migration table.
 
-* Removed the statement `maxParallelism` option. Elapsed and estimated duration limits replace the old execution timeout option.
+* Unknown Append outcomes are no longer replayed by default. Use `.retryUnknown(true)` to explicitly accept possible duplicates. Append results use `status`; `AppendRowsError` uses `outcome`; stream `lastFailure.error` retains the complete diagnostic.
 
 ### New Features
 
-* Add complete Catalog replacements and deletion with dry-run, ETags, conditional updates, views, computed columns, and explicit destructive-change authorization. Preserve structured error codes/details and statement compute seconds.
+* Support complete Catalog replacement/deletion with dry-run, ETags, conditional writes, views, computed columns, and destructive-change controls. Validate known fields while retaining extension fields during read/modify/write.
 
-* Table append requests now have a configurable `ClientOptions.writeTimeoutMs`, defaulting to 30 seconds including response-body reads and starting after local encoding, compression, and request preparation. Direct writes accept `WriteOptions.timeoutMs`; streams inherit the client timeout unless an append stream explicitly sets `attemptTimeoutMs()`. Timeout and in-flight cancellation report a `timeout` or `cancelled` reason with an `unknown` outcome through `ScopeDBError.writeDetails`, preserving existing kinds, causes, HTTP diagnostics, and subsequent stream errors, and are never automatically retried, regardless of the caller's abort reason.
+* Add configurable write deadlines with a 30-second default covering the complete HTTP attempt after local preparation. Set `writeTimeoutMs`, per-request `timeoutMs`, or stream `attemptTimeoutMs` to `null` to disable that deadline; caller cancellation and the stream delivery budget remain effective.
+
+* Preserve structured query errors, unknown error codes, compute seconds, and complete cancellation observations. Confirmed server cancellation reports `StatementCancelled` separately from local request cancellation.
 
 ### Bug Fixes
 
-* Preserve HTTP status, request ID, `Retry-After`, and the original cause when reading an error response body fails. Append streams no longer retry known authentication failures as transport failures in this case.
+* Prevent concurrent Statement responses from overwriting cached terminal results or allowing caller mutation to change the handle. Reject mismatched response identities.
+
+* Honor server retry refusal, retain unknown Catalog gateway outcomes, and preserve full HTTP and timeout diagnostics in Append delivery reports. Classify records that cannot fit the configured stream buffer separately from temporary backpressure.
+
+* Preserve signed/unsigned integer boundaries, raw JSON text, and special float values. Reject numeric overflow with row/column context and preserve result columns named `__proto__`.
 
 ### Improvements
 
-* Append streams retry transient unknown outcomes other than client timeouts or cancellations with bounded elapsed time and jitter, honor `Retry-After` as a lower bound, and default every attempt to 30 seconds. Replays may duplicate committed rows.
-* `AppendStream` now targets 4 MiB per batch by default; the maximum configurable target and uncompressed request limit remain 8 MiB.
-* Direct caller-encoded table appends now use the same gzip compression and 8 MiB uncompressed request limit as `AppendStream` batches.
-* Preserve structured failed-statement details, validate successful statement and catalog responses at runtime, reject duplicate result column names in object conversions, and treat committed append row-count mismatches as an unknown commit outcome.
+* Target 4 MiB Append batches by default, bounded by the 8 MiB and 200,000-row request limits. Direct appends use the same gzip compression and request limits as streams.
+
+* Keep retry attempts and elapsed time bounded, with jitter and `Retry-After` as a lower bound. Client timeouts and cancellations are never replayed; standard fetch redirect behavior is preserved.
 
 ## v0.2.2 (2026-08-22)
 

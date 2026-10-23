@@ -72,22 +72,22 @@ For a detached or long-running statement, keep its handle and choose between a l
 ```ts
 const handle = await client.statement("SELECT 1 AS ready").submit();
 
-// Synchronous and local: the snapshot updated by submit(), status(), or wait().
-console.log(handle.lastStatus()?.status);
+// Synchronous and local: the snapshot updated by submit(), refresh(), wait(), or cancel().
+console.log(handle.snapshot()?.status);
 
 // Asynchronous: requests the latest remote status while the statement is active.
-const latest = await handle.status();
+const latest = await handle.refresh();
 console.log(latest.status);
 
 // Polls until the statement terminates and returns its result set.
 const result = await handle.wait();
 ```
 
-`status()` returns the cached snapshot without another request once the handle has reached a terminal state. Use `client.statementHandle(id)` to resume this lifecycle from a previously stored statement ID. `wait()`, `query()`, and `execute()` accept `WaitOptions` when polling delays or cancellation need to be configured.
+`refresh()` returns the cached snapshot without another request once the handle has reached a terminal state. Use `client.statementHandle(id)` to resume this lifecycle from a previously stored statement ID. `wait()`, `query()`, and `execute()` accept `WaitOptions` when polling delays or cancellation need to be configured.
 
 ## Integer representation
 
-`int` and `uint` cells default to JS `bigint` to preserve full I64 precision. This is the safe default but is **not** directly JSON-serializable — `JSON.stringify(rowWithBigInt)` throws `TypeError: Do not know how to serialize a BigInt`.
+`int` and `uint` cells default to JS `bigint` to preserve the full signed and unsigned 64-bit ranges. This is the safe default but is **not** directly JSON-serializable — `JSON.stringify(rowWithBigInt)` throws `TypeError: Do not know how to serialize a BigInt`.
 
 `toValues()`, `toObjects()`, and `first()` accept an optional `{ integerMode }` to opt in to a different representation:
 
@@ -117,25 +117,27 @@ const table = client.table("events", {
   schema: "public",
 });
 
-const description = await table.describe();
-console.log(description.columns);
+const resource = table.catalog();
+const snapshot = await resource.get();
+console.log(snapshot.definition.columns);
+
+snapshot.definition.comment = "Application events";
+const preview = await resource.apply(snapshot.definition, {
+  dryRun: true,
+  ifMatch: snapshot.etag,
+});
+await resource.apply(snapshot.definition, { ifMatch: preview.etag });
 ```
 
 ## Append rows
 
-Every table append HTTP request has a client timeout of
-30 seconds by default. Its budget starts after local encoding, compression, and
-request preparation and covers one HTTP attempt through reading the complete
-response body. Set `ClientOptions.writeTimeoutMs` to a positive integer to change
-it. Direct `table.append()` calls can override it
-with `{ timeoutMs: 60_000 }`. Streams inherit the client timeout unless an append
-stream explicitly sets `attemptTimeoutMs()`. Caller `AbortSignal` cancellation
-still applies. Each attempt gets its own timeout; admission, retry backoff, and
-an entire `flush()`/`shutdown()` barrier are not bounded by it. A timeout or
-in-flight cancellation does not roll back a write: its commit outcome can be
-unknown, and the SDK does not automatically retry it.
+Each append attempt and Catalog mutation defaults to a 30-second SDK deadline. Its budget starts after local encoding, compression, and request preparation and includes reading the complete response. `ClientOptions.writeTimeoutMs` sets the default; direct writes and Catalog mutations accept `timeoutMs`, and streams accept `.attemptTimeoutMs()`. An omitted setting inherits the default; a positive integer overrides it; `null` disables that SDK deadline. Zero is invalid. Caller `AbortSignal` and transport deadlines remain effective. The stream's separate `.maxElapsedTimeMs()` delivery budget still includes all attempts and retry delays, even when its per-attempt deadline is disabled.
 
-Client timeouts after an HTTP attempt begins preserve the existing error kind and cause and add `error.writeDetails` with `{ reason: "timeout", outcome: "unknown" }` and `error.retryable === false`. In-flight caller cancellation uses the `"cancelled"` reason; a caller `TimeoutError` deadline uses `"timeout"`. Cancellation before sending preserves the original abort reason. The structured details remain available on subsequent errors returned by the stream and batch failure events. A server HTTP 408 is still a server response; an explicitly rejected append follows the existing safe retry policy. Reconcile a timed-out or cancelled write before replaying it. Append streams retain their existing at-least-once retry policy for other transient unknown outcomes; those retries may duplicate committed rows.
+A timeout or in-flight cancellation does not roll back a write. Append errors retain their cause and HTTP diagnostics, with `writeDetails: { reason: "timeout" | "cancelled", outcome: "unknown" }`; Catalog mutations report `code: "catalog_commit_outcome_unknown"`. Cancellation before sending preserves the caller's abort reason. Streams never replay client timeouts or cancellations, including when unknown replay is enabled.
+
+Streams retry confirmed transient rejections by default. An unknown outcome stops that batch without replay because the original attempt may have committed. Set `.retryUnknown(true)` only when the application accepts duplicates or can reconcile them; explicit server retry refusal is always honored. `.maxRetries(0)` disables all retries. Direct `append()` and Catalog mutations make one attempt.
+
+HTTP redirects retain the fetch transport's default behavior. A custom `ClientOptions.fetch` can implement an application-specific redirect policy. Redirects are distinct from the SDK's append retry policy and share the attempt deadline.
 
 Use an append stream to write JavaScript objects to an existing table. The SDK groups them into batches automatically. This example uses a table named `sdk_example_events` with `id int` and `name string` columns:
 
@@ -230,7 +232,7 @@ try {
 }
 ```
 
-When a statement reaches the `failed` state, `statementDetails` preserves the server-provided `code`, `message`, and optional code-specific `details` object.
+`stats().lastFailure.error` retains the full batch error, including timeout diagnostics. When a statement reaches the `failed` state, `statementDetails` preserves the server-provided `code`, `message`, and optional code-specific `details` object.
 
 ## CommonJS applications
 
@@ -247,19 +249,37 @@ void main();
 
 ## Migrate to ScopeDB 0.6
 
-- Replace `withExecTimeout("30s")` with `withMaxElapsedSeconds(30)`. `withMaxEstimatedSeconds(5)` independently limits estimated execution time. Both limits must be positive and finite; omit them for the server defaults. Elapsed time includes queueing.
-- Replace `list*`, `fetch*`, and `iterate*` Catalog calls with `client.catalog().get()` or a database/schema/table/view selector followed by `.get()`. There is no pagination. Read the definition from `snapshot.definition` and retain `snapshot.etag` for conditional writes.
-- `Table.describe()` returns `CatalogTable` directly. Use `data_type`, `partition_by`, `cluster_by`, `distinct`, and `retention_days`, replacing the old camelCase table description fields.
-- `cancel()` returns and caches the complete `StatementStatus`. It can contain a finished result or the original failure when completion races with cancellation. Failed statements use `error.code/message/details`; cancelled statements have no server message. Inspect `ScopeDBError.code` and `.details` without assuming the set of codes is closed. Progress includes `compute_seconds`.
-- Table `append()` and `appendStream()` use `/v1/catalog/databases/{db}/schemas/{schema}/tables/{table}/ingest`. Their delivery/report APIs remain unchanged; the wire outcome is now `status` on success and `details.status` on failure. A missing or unreadable outcome remains unknown and must not be treated as a safe rejection.
+This is a breaking release requiring ScopeDB 0.6.0 or later. Upgrading the server from 0.5 clears statement history and saved results; previously saved handles cannot be resumed.
 
-Upgrading the server from 0.5 clears statement history and saved results. Previously saved statement handles cannot be resumed.
+| Previous API                                                                              | Replacement                                                                                           |
+| ----------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------- |
+| `withExecTimeout("30s")`                                                                  | `withMaxElapsedSeconds(30)`; optionally `withMaxEstimatedSeconds(5)`                                  |
+| Catalog `list*`, `fetch*`, `iterate*`                                                     | Select the resource through `client.catalog()`, then `get()`                                          |
+| `table.describe()`, `tableSchema()`, `apply()`, `drop()`                                  | `table.catalog().get()`, `.apply()`, `.delete()`                                                      |
+| `lastStatus()`, `status()` / `fetchOnce()`, `fetch()`                                     | `snapshot()`, `refresh()`, `wait()`                                                                   |
+| Handle `progress()` / `resultSet()`                                                       | Inspect the complete snapshot; use `wait()` for a cached completed result                             |
+| `StatementStatus*`, `FetchOptions`                                                        | `StatementSnapshot*`, `WaitOptions`                                                                   |
+| Append result `append_state`, error `appendState`                                         | Result `status`, error `outcome`                                                                      |
+| `stats().lastFailure.message` and partial diagnostics                                     | `stats().lastFailure.error`, including code, details, HTTP metadata, timeout reason, and cause        |
+| `token`                                                                                   | `apiKey`                                                                                              |
+| `table.withDatabase()` / `withSchema()`                                                   | `client.table(name, { database, schema })`                                                            |
+| `jsonRows()`, `intoValues()`, `intoObjects()`, `IntoOptions`                              | `rawRows()`, `toValues()`, `toObjects()`, `ResultOptions`                                             |
+| `executeOne()`                                                                            | `(await statement.execute()).first()`                                                                 |
+| `batchBytes`, `flushInterval`, `maxPendingBytes`, `maxInFlightRequests`, `attemptTimeout` | `targetBatchBytes`, `flushIntervalMs`, `maxBufferedBytes`, `maxConcurrentBatches`, `attemptTimeoutMs` |
+| `u_int`                                                                                   | `uint`                                                                                                |
+| Low-level `Client` transport methods                                                      | `Table.append()`, `Statement.submit()`, `StatementHandle.refresh()` / `cancel()`                      |
+
+Statement snapshots include identity, status, progress, and either the complete result or original failure. `snapshot()` is local; `refresh()` observes the server; both return caller-owned copies. Concurrent refreshes and cancellation cannot replace a terminal state with an older response. `cancel()` can return pending/running, finished, failed, or cancelled: inspect the observation. `wait()` reports confirmed server cancellation as `ScopeDBError.kind === "StatementCancelled"`; aborting its signal only stops local waiting. Failed statements retain `code`, `message`, `details`, and unknown future error codes. Client query waiting has no additional deadline unless the caller supplies a signal; server execution limits still apply.
+
+Catalog reads retain the complete definition and opaque ETag. Carry that ETag through dry-run and apply/delete to reject intervening changes. Replacements clear omitted fields and children. Known fields are validated, while extension fields survive a read/modify/write cycle. Table identifiers now always include database/schema defaults, matching the Catalog and Append target.
+
+Table writes use the native catalog ingest endpoint. Unknown outcomes require explicit replay opt-in; direct writes remain single attempts. Integer results default to exact `bigint`, with decimal strings available for JSON consumers. NDJSON input on ScopeDB 0.6 is limited to signed 64-bit integer literals even for `uint` columns; query results support the full unsigned range. Preserve caller-encoded NDJSON text when importing large integers instead of parsing and reserializing through JavaScript numbers.
 
 ## Migrate from Ingest
 
 `Client.insert()`, `Client.ingest()`, `Client.ingestStream()`, `IngestStream`, `IngestStreamBuilder`, and the ingest protocol types have been removed. Use `client.table(name).append(ndjson)` for one request or `.appendStream().build()` to batch JavaScript objects. This SDK version requires ScopeDB 0.6.0 or later.
 
-Append accepts rows matching the destination columns, not a ScopeQL statement. Move field renaming, type conversion, filtering, and routing into the producer before calling `send()`. See [`append-transform.ts`](examples/append-transform.ts) for a runnable example:
+Append accepts rows matching the destination columns, not a ScopeQL statement. Move field renaming, type conversion, filtering, and routing into the producer before calling `send()`. For a small producer-side mapping:
 
 ```ts
 const source = { ts: "2026-03-13T12:00:00Z", name: "scopedb" };
@@ -282,7 +302,7 @@ Review these behavior changes when migrating:
 - Append batches allow up to 8 MiB of uncompressed NDJSON and 200,000 rows. Reduce an old ingest batch-byte target above 8 MiB.
 - `flush()` and `shutdown()` in the default stop policy return `AppendRowsResult | null`: read `num_rows_inserted`, with `null` for an empty barrier. The continue policy returns an `AppendDeliveryReport` for activity since the previous report; check `outcome` and `committedRows`. Direct `append()` returns `AppendRowsResult`.
 - Append streams send up to four batches concurrently by default. Use `.maxConcurrentBatches(1)` for sequential requests; queries still require `ORDER BY` for ordered results.
-- Append streams may retry transient unknown outcomes, which can duplicate rows. Use `.maxRetries(0)` to preserve the old stream's no-replay behavior. Client timeouts and cancellations are never retried. Direct `append()` makes one attempt.
+- Append streams only replay unknown outcomes with `.retryUnknown(true)`, which can duplicate rows. Use `.maxRetries(0)` to disable retries of rejected batches as well. Client timeouts and cancellations are never retried. Direct `append()` makes one attempt.
 
 ## Examples
 

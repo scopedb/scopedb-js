@@ -17,7 +17,6 @@
 export type DataType =
   | "int"
   | "uint"
-  | "u_int" // backward-compat alias for "uint"
   | "float"
   | "timestamp"
   | "interval"
@@ -71,21 +70,21 @@ export interface StatementEstimatedProgress extends StatementProgress {
   nanos_from_started: number;
 }
 
-interface StatementStatusBase {
+interface StatementSnapshotBase {
   statement_id: string;
   created_at: string;
   progress: StatementEstimatedProgress;
 }
 
-export interface StatementStatusPending extends StatementStatusBase {
+export interface StatementSnapshotPending extends StatementSnapshotBase {
   status: "pending";
 }
 
-export interface StatementStatusRunning extends StatementStatusBase {
+export interface StatementSnapshotRunning extends StatementSnapshotBase {
   status: "running";
 }
 
-export interface StatementStatusFinished extends StatementStatusBase {
+export interface StatementSnapshotFinished extends StatementSnapshotBase {
   status: "finished";
   result_set: StatementResultSet;
 }
@@ -98,21 +97,21 @@ export interface StatementErrorDetails {
   details?: unknown;
 }
 
-export interface StatementStatusFailed extends StatementStatusBase {
+export interface StatementSnapshotFailed extends StatementSnapshotBase {
   status: "failed";
   error: StatementErrorDetails;
 }
 
-export interface StatementStatusCancelled extends StatementStatusBase {
+export interface StatementSnapshotCancelled extends StatementSnapshotBase {
   status: "cancelled";
 }
 
-export type StatementStatus =
-  | StatementStatusPending
-  | StatementStatusRunning
-  | StatementStatusFinished
-  | StatementStatusFailed
-  | StatementStatusCancelled;
+export type StatementSnapshot =
+  | StatementSnapshotPending
+  | StatementSnapshotRunning
+  | StatementSnapshotFinished
+  | StatementSnapshotFailed
+  | StatementSnapshotCancelled;
 
 export interface StatementRequest {
   statement: string;
@@ -125,7 +124,7 @@ export interface StatementRequest {
 export type AppendState = "committed" | "rejected" | "unknown";
 
 export interface AppendRowsResult {
-  append_state: "committed";
+  status: "committed";
   num_rows_inserted: number;
 }
 
@@ -138,7 +137,7 @@ export interface AppendRowError {
 /** Normalized SDK diagnostics; Client decodes the server's nested details.status. */
 export interface AppendRowsErrorPayload {
   message: string;
-  append_state: Exclude<AppendState, "committed">;
+  status: Exclude<AppendState, "committed">;
   row_errors: AppendRowError[];
   row_errors_truncated: boolean;
 }
@@ -149,14 +148,35 @@ export interface ErrorPayload {
   details?: unknown;
 }
 
-export function statementIsFinished(status: StatementStatus): status is StatementStatusFinished {
+export function statementIsFinished(
+  status: StatementSnapshot,
+): status is StatementSnapshotFinished {
   return status.status === "finished";
 }
 
-export function statementIsTerminated(status: StatementStatus): boolean {
+export function statementIsTerminated(status: StatementSnapshot): boolean {
   return (
     status.status === "finished" ||
     status.status === "failed" ||
     status.status === "cancelled"
   );
+}
+
+const DATA_TYPES = new Set<DataType>([
+  "int",
+  "uint",
+  "float",
+  "timestamp",
+  "interval",
+  "boolean",
+  "string",
+  "binary",
+  "array",
+  "object",
+  "any",
+  "null",
+]);
+
+export function isDataType(value: unknown): value is DataType {
+  return typeof value === "string" && DATA_TYPES.has(value as DataType);
 }

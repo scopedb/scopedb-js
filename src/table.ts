@@ -14,15 +14,14 @@
  * limitations under the License.
  */
 
-import type { Client, RequestOptions, WriteOptions } from "./client.js";
+import type { Client, WriteOptions } from "./client.js";
 import {
-  AppendStreamBuilder,
   type AppendFailurePolicy,
+  AppendStreamBuilder,
   type AppendStreamOptions,
 } from "./append-stream.js";
 import type { AppendRowsResult } from "./protocol.js";
-import type { CatalogTable, CatalogOptions, CatalogResult } from "./catalog.js";
-import { FieldSchema, Schema } from "./result.js";
+import type { CatalogResource, CatalogTable } from "./catalog.js";
 
 export interface TableOptions {
   database?: string;
@@ -30,46 +29,22 @@ export interface TableOptions {
 }
 
 export class Table {
-  private databaseName?: string;
-  private schemaName?: string;
+  private readonly databaseName: string;
+  private readonly schemaName: string;
 
   constructor(
     private readonly client: Client,
     private readonly tableName: string,
     options: TableOptions = {},
   ) {
-    this.databaseName = options.database;
-    this.schemaName = options.schema;
-  }
-
-  /** @deprecated Pass `database` to `Client.table()` instead. */
-  withDatabase(database: string): this {
-    this.databaseName = database;
-    return this;
-  }
-
-  /** @deprecated Pass `schema` to `Client.table()` instead. */
-  withSchema(schema: string): this {
-    this.schemaName = schema;
-    return this;
+    this.databaseName = options.database ?? "scopedb";
+    this.schemaName = options.schema ?? "public";
   }
 
   identifier(): string {
-    const parts: string[] = [];
-    if (this.databaseName !== undefined) {
-      parts.push(quoteIdent(this.databaseName, "`"));
-    }
-    if (this.schemaName !== undefined) {
-      parts.push(quoteIdent(this.schemaName, "`"));
-    }
-    parts.push(quoteIdent(this.tableName, "`"));
-    return parts.join(".");
-  }
-
-  async drop(options: RequestOptions = {}): Promise<void> {
-    await this.client
-      .statement(`DROP TABLE ${this.identifier()}`)
-      .execute(options);
+    return [this.databaseName, this.schemaName, this.tableName].map((name) =>
+      quoteIdent(name, "`")
+    ).join(".");
   }
 
   /** Appends at most 8 MiB of uncompressed newline-delimited JSON. */
@@ -78,8 +53,8 @@ export class Table {
     options: WriteOptions = {},
   ): Promise<AppendRowsResult> {
     return this.client.appendRows(
-      this.databaseName ?? "scopedb",
-      this.schemaName ?? "public",
+      this.databaseName,
+      this.schemaName,
       this.tableName,
       ndjson,
       options,
@@ -99,48 +74,25 @@ export class Table {
   appendStream(
     options?: AppendStreamOptions<AppendFailurePolicy>,
   ): AppendStreamBuilder<AppendFailurePolicy> {
-    const failurePolicy =
-      options === undefined ? "stop" : options?.failurePolicy;
+    const failurePolicy = options === undefined
+      ? "stop"
+      : options?.failurePolicy;
     return AppendStreamBuilder.create(
       this.client,
-      this.databaseName ?? "scopedb",
-      this.schemaName ?? "public",
+      this.databaseName,
+      this.schemaName,
       this.tableName,
       failurePolicy as AppendFailurePolicy,
     );
   }
 
-  /** Returns the table's declarative definition. */
-  async describe(options: RequestOptions = {}): Promise<CatalogTable> {
-    return (await this.resource().get(options)).definition;
-  }
-
-  /** Replaces the complete definition; potentially destructive changes require explicit authorization. */
-  apply(
-    definition: CatalogTable,
-    options: CatalogOptions = {},
-  ): Promise<CatalogResult<CatalogTable>> {
-    return this.resource().apply(definition, options);
-  }
-
-  /** @deprecated Use `describe()`. */
-  async tableSchema(options: RequestOptions = {}): Promise<Schema> {
-    const table = await this.describe(options);
-    return new Schema(
-      (table.columns ?? []).map(
-        (column) => new FieldSchema(column.name, column.data_type),
-      ),
+  /** Selects the complete definition and ETag used for conditional mutations. */
+  catalog(): CatalogResource<CatalogTable> {
+    return this.client.catalog().table(
+      this.databaseName,
+      this.schemaName,
+      this.tableName,
     );
-  }
-
-  private resource() {
-    return this.client
-      .catalog()
-      .table(
-        this.databaseName ?? "scopedb",
-        this.schemaName ?? "public",
-        this.tableName,
-      );
   }
 }
 

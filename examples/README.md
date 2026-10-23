@@ -78,7 +78,9 @@ These examples show common ways to write data:
 | ---------------------------------------------------- | --------------------------------------------------- | ----------------------------------- |
 | [`patterns/bulk-import.ts`](patterns/bulk-import.ts) | Writing many records with `sendAll()`               | `pnpm run example:append-bulk`      |
 | [`patterns/telemetry.ts`](patterns/telemetry.ts)     | Writing logs and events with a continue-mode stream | `pnpm run example:append-telemetry` |
-| [`append-transform.ts`](append-transform.ts)         | Shaping source fields before appending rows         | `pnpm run example:append-transform` |
+| [`import-ndjson.ts`](import-ndjson.ts)               | Importing an NDJSON file without rounding integers  | `pnpm run example:import-ndjson`    |
+
+Set `SCOPEDB_INPUT_FILE` to an NDJSON file before running `example:import-ndjson`. The target table must match its rows. The importer keeps bounded input and request buffers, preserves original numeric text, accepts a missing final newline, and settles valid buffered rows before reporting a malformed later line. It makes single-attempt writes and prints the confirmed row count; an interrupted write can still have committed and requires reconciliation before replay.
 
 ## Integration templates
 

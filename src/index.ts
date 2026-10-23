@@ -17,9 +17,9 @@
 export { Client } from "./client.js";
 export type { ClientOptions, RequestOptions, WriteOptions } from "./client.js";
 export {
+  AppendRetryExhaustedError,
   AppendStream,
   AppendStreamBuilder,
-  AppendRetryExhaustedError,
 } from "./append-stream.js";
 export type {
   AppendAdmissionResult,
@@ -48,37 +48,32 @@ export type {
   AppendRowsResult,
   AppendState,
   DataType,
-  StatementEstimatedProgress,
   StatementErrorDetails,
+  StatementEstimatedProgress,
   StatementProgress,
-  StatementStatus,
-  StatementStatusCancelled,
-  StatementStatusFailed,
-  StatementStatusFinished,
-  StatementStatusPending,
-  StatementStatusRunning,
+  StatementSnapshot,
+  StatementSnapshotCancelled,
+  StatementSnapshotFailed,
+  StatementSnapshotFinished,
+  StatementSnapshotPending,
+  StatementSnapshotRunning,
 } from "./protocol.js";
 export { FieldSchema, ResultSet, Schema } from "./result.js";
-export type {
-  IntegerMode,
-  IntoOptions,
-  ResultOptions,
-  Value,
-} from "./result.js";
+export type { IntegerMode, ResultOptions, Value } from "./result.js";
 export { Statement, StatementHandle } from "./statement.js";
-export type { FetchOptions, WaitOptions } from "./statement.js";
+export type { WaitOptions } from "./statement.js";
 export { Table } from "./table.js";
 export type { TableOptions } from "./table.js";
 
 export { Catalog, CatalogResource } from "./catalog.js";
 export type {
-  CatalogDocument,
-  CatalogDatabase,
-  CatalogSchema,
-  CatalogTable,
   CatalogColumn,
-  CatalogView,
-  CatalogSnapshot,
-  CatalogResult,
+  CatalogDatabase,
+  CatalogDocument,
   CatalogOptions,
+  CatalogResult,
+  CatalogSchema,
+  CatalogSnapshot,
+  CatalogTable,
+  CatalogView,
 } from "./catalog.js";

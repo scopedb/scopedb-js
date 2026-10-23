@@ -37,42 +37,63 @@ describe("Table.identifier — ScopeQL quoting", () => {
   }
 
   it("wraps simple table name in backticks", () => {
-    assert.equal(makeTable("events").identifier(), "`events`");
+    assert.equal(
+      makeTable("events").identifier(),
+      "`scopedb`.`public`.`events`",
+    );
   });
 
   it("escapes backtick in table name", () => {
-    assert.equal(makeTable("my`table").identifier(), "`my\\`table`");
+    assert.equal(
+      makeTable("my`table").identifier(),
+      "`scopedb`.`public`.`my\\`table`",
+    );
   });
 
   it("includes database and schema when set", () => {
     const { fn } = makeFetchStub([]);
     const client = new Client("http://localhost:8080", { fetch: fn });
-    const table = new Table(client, "events").withDatabase("mydb").withSchema("myschema");
+    const table = new Table(client, "events", {
+      database: "mydb",
+      schema: "myschema",
+    });
     assert.equal(table.identifier(), "`mydb`.`myschema`.`events`");
   });
 
-  it("includes only schema when database is not set", () => {
+  it("uses the default database with an explicit schema", () => {
     const { fn } = makeFetchStub([]);
     const client = new Client("http://localhost:8080", { fetch: fn });
-    const table = new Table(client, "events").withSchema("logs");
-    assert.equal(table.identifier(), "`logs`.`events`");
+    const table = new Table(client, "events", { schema: "logs" });
+    assert.equal(table.identifier(), "`scopedb`.`logs`.`events`");
   });
 
-  it("includes only database when schema is not set", () => {
+  it("uses the default schema with an explicit database", () => {
     const { fn } = makeFetchStub([]);
     const client = new Client("http://localhost:8080", { fetch: fn });
-    const table = new Table(client, "events").withDatabase("mydb");
-    assert.equal(table.identifier(), "`mydb`.`events`");
+    const table = new Table(client, "events", { database: "mydb" });
+    assert.equal(table.identifier(), "`mydb`.`public`.`events`");
   });
 
   it("escapes tab, newline, carriage return in table name", () => {
-    assert.equal(makeTable("tab\there").identifier(), "`tab\\there`");
-    assert.equal(makeTable("new\nline").identifier(), "`new\\nline`");
-    assert.equal(makeTable("cr\rhere").identifier(), "`cr\\rhere`");
+    assert.equal(
+      makeTable("tab\there").identifier(),
+      "`scopedb`.`public`.`tab\\there`",
+    );
+    assert.equal(
+      makeTable("new\nline").identifier(),
+      "`scopedb`.`public`.`new\\nline`",
+    );
+    assert.equal(
+      makeTable("cr\rhere").identifier(),
+      "`scopedb`.`public`.`cr\\rhere`",
+    );
   });
 
   it("escapes backslash in table name", () => {
-    assert.equal(makeTable("back\\slash").identifier(), "`back\\\\slash`");
+    assert.equal(
+      makeTable("back\\slash").identifier(),
+      "`scopedb`.`public`.`back\\\\slash`",
+    );
   });
 
   it("escapes control characters using hex notation", () => {
@@ -83,41 +104,18 @@ describe("Table.identifier — ScopeQL quoting", () => {
   });
 });
 
-describe("Table.drop", () => {
-  it("executes DROP TABLE with the correct identifier", async () => {
-    // drop() calls statement(...).execute(), which does POST /v1/statements then GET
-    const finished = finishedStatus(emptyResultSet());
-    const { fn, calls } = makeFetchStub([
-      jsonResponse(200, { status: "pending", statement_id: "s1", created_at: "2024-01-01T00:00:00Z", progress: { total_percentage: 0, compute_seconds: 0, nanos_from_submitted: 0, nanos_from_started: 0, total_stages: 0, total_partitions: 0, total_rows: 0, total_compressed_bytes: 0, total_uncompressed_bytes: 0, scanned_stages: 0, scanned_partitions: 0, scanned_rows: 0, scanned_compressed_bytes: 0, scanned_uncompressed_bytes: 0, skipped_partitions: 0, skipped_rows: 0, skipped_compressed_bytes: 0, skipped_uncompressed_bytes: 0 } }),
-      jsonResponse(200, finished),
-    ]);
-    const client = new Client("http://localhost:8080", { fetch: fn });
-    const table = new Table(client, "my_table");
-
-    await table.drop({ initialDelayMs: 0, maxDelayMs: 0 } as Parameters<typeof table.drop>[0]);
-
-    // First call is POST /v1/statements; verify the statement contains the quoted identifier
-    const body = parseJsonRequestBody(calls[0]!.init) as Record<string, unknown>;
-    assert.ok(
-      (body["statement"] as string).includes("`my_table`"),
-      `statement was: ${body["statement"]}`,
-    );
-    assert.ok(
-      (body["statement"] as string).toLowerCase().includes("drop table"),
-      `statement was: ${body["statement"]}`,
-    );
-  });
-});
-
 describe("Table.append", () => {
   it("posts the NDJSON payload to the fully qualified table ingest endpoint", async () => {
-    const appendResult = { append_state: "committed", num_rows_inserted: 2 };
-    const { fn, calls } = makeFetchStub([jsonResponse(200, { status: "committed", num_rows_inserted: 2 })]);
+    const appendResult = { status: "committed", num_rows_inserted: 2 };
+    const { fn, calls } = makeFetchStub([
+      jsonResponse(200, { status: "committed", num_rows_inserted: 2 }),
+    ]);
     const client = new Client("http://localhost:8080", { fetch: fn });
     const table = client
-      .table("page views?#")
-      .withDatabase("analytics/raw")
-      .withSchema("events 2026");
+      .table("page views?#", {
+        database: "analytics/raw",
+        schema: "events 2026",
+      });
     const ndjson = '{"id":1}\n{"id":2}\n';
 
     assert.deepEqual(await table.append(ndjson), appendResult);
@@ -177,7 +175,7 @@ describe("Table.append", () => {
       () => client.table("events").append(oversized),
       (error: unknown) => {
         assert.ok(error instanceof AppendRowsError);
-        assert.equal(error.appendState, "rejected");
+        assert.equal(error.outcome, "rejected");
         assert.match(error.message, /8388608-byte append limit/);
         return true;
       },
@@ -195,9 +193,10 @@ describe("Table.append", () => {
     controller.abort(reason);
 
     await assert.rejects(
-      () => client.table("events").append('{"id":1}', {
-        signal: controller.signal,
-      }),
+      () =>
+        client.table("events").append('{"id":1}', {
+          signal: controller.signal,
+        }),
       (error: unknown) => error === reason,
     );
     assert.equal(calls.length, 0);
@@ -205,9 +204,17 @@ describe("Table.append", () => {
 
   it("preserves row-level rejection details", async () => {
     const { fn } = makeFetchStub([
-      jsonResponse(422, { message: "row validation failed", code: "ingest_failure", details: { status: "rejected", row_errors: [
-          { row_index: 1, column: "id", message: "expected int, got string" },
-        ], row_errors_truncated: false } }),
+      jsonResponse(422, {
+        message: "row validation failed",
+        code: "ingest_failure",
+        details: {
+          status: "rejected",
+          row_errors: [
+            { row_index: 1, column: "id", message: "expected int, got string" },
+          ],
+          row_errors_truncated: false,
+        },
+      }),
     ]);
     const client = new Client("http://localhost:8080", { fetch: fn });
 
@@ -215,7 +222,7 @@ describe("Table.append", () => {
       () => client.table("events").append('{"id":"bad"}'),
       (error: unknown) => {
         assert.ok(error instanceof AppendRowsError);
-        assert.equal(error.appendState, "rejected");
+        assert.equal(error.outcome, "rejected");
         assert.deepEqual(error.rowErrors, [
           { row_index: 1, column: "id", message: "expected int, got string" },
         ]);
@@ -228,7 +235,15 @@ describe("Table.append", () => {
 
   it("does not mark an unknown commit outcome as automatically retryable", async () => {
     const { fn } = makeFetchStub([
-      jsonResponse(503, { message: "append commit outcome is unknown", code: "ingest_failure", details: { status: "unknown", row_errors: [], row_errors_truncated: false } }),
+      jsonResponse(503, {
+        message: "append commit outcome is unknown",
+        code: "ingest_failure",
+        details: {
+          status: "unknown",
+          row_errors: [],
+          row_errors_truncated: false,
+        },
+      }),
     ]);
     const client = new Client("http://localhost:8080", { fetch: fn });
 
@@ -236,7 +251,7 @@ describe("Table.append", () => {
       () => client.table("events").append('{"id":1}'),
       (error: unknown) => {
         assert.ok(error instanceof AppendRowsError);
-        assert.equal(error.appendState, "unknown");
+        assert.equal(error.outcome, "unknown");
         assert.ok(error.isPersistent());
         return true;
       },
@@ -253,7 +268,7 @@ describe("Table.append", () => {
       () => client.table("events").append('{"id":1}'),
       (error: unknown) => {
         assert.ok(error instanceof AppendRowsError);
-        assert.equal(error.appendState, "unknown");
+        assert.equal(error.outcome, "unknown");
         assert.ok(error.isPersistent());
         assert.match(error.message, /2 inserted rows for a 1-row request/);
         return true;
@@ -283,7 +298,7 @@ describe("Table.append", () => {
         () => client.table("events").append('{"id":1}'),
         (error: unknown) => {
           assert.ok(error instanceof AppendRowsError);
-          assert.equal(error.appendState, "unknown");
+          assert.equal(error.outcome, "unknown");
           assert.equal(error.httpStatus, 200);
           assert.equal(error.requestId, requestId);
           return true;
@@ -293,46 +308,7 @@ describe("Table.append", () => {
   });
 });
 
-describe("Table.tableSchema", () => {
-  it("uses the RESTful table resource", async () => {
-    const resource = {
-      database: "analytics",
-      schema: "events",
-      name: "page_views",
-      columns: [
-        { name: "id", data_type: "int", comment: "identifier" },
-        { name: "occurred_at", data_type: "timestamp", comment: null },
-      ],
-      partition_by: [],
-      cluster_by: [],
-      distinct: { on: [], by: [] },
-      retention_days: null,
-      comment: null,
-    };
-    const { fn, calls } = makeFetchStub([jsonResponse(200, resource, { ETag: '"v1"' })]);
-    const client = new Client("http://localhost:8080", { fetch: fn });
-    const table = client
-      .table("page_views")
-      .withDatabase("analytics")
-      .withSchema("events");
-
-    const schema = await table.tableSchema();
-
-    assert.deepEqual(
-      schema.fields().map((field) => [field.name(), field.dataType()]),
-      [
-        ["id", "int"],
-        ["occurred_at", "timestamp"],
-      ],
-    );
-    assert.equal(calls.length, 1);
-    assert.equal((calls[0]!.init as RequestInit).method, "GET");
-    assert.equal(
-      calls[0]!.url,
-      "http://localhost:8080/v1/catalog/databases/analytics/schemas/events/tables/page_views",
-    );
-  });
-
+describe("Table.catalog", () => {
   it("describes the complete table as a reusable declarative definition", async () => {
     const resource = {
       database: "analytics",
@@ -347,15 +323,18 @@ describe("Table.tableSchema", () => {
       retention_days: 30,
       comment: "page views",
     };
-    const { fn } = makeFetchStub([jsonResponse(200, resource, { ETag: '"v1"' })]);
+    const { fn } = makeFetchStub([
+      jsonResponse(200, resource, { ETag: '"v1"' }),
+    ]);
     const client = new Client("http://localhost:8080", { fetch: fn });
 
     const description = await client.table("page_views", {
       database: "analytics",
       schema: "events",
-    }).describe();
+    }).catalog().get();
 
-    assert.deepEqual(description, resource);
+    assert.deepEqual(description.definition, resource);
+    assert.equal(description.etag, '"v1"');
   });
 
   it("does not let request options override the table handle identity", async () => {
@@ -370,7 +349,9 @@ describe("Table.tableSchema", () => {
       retention_days: null,
       comment: null,
     };
-    const { fn, calls } = makeFetchStub([jsonResponse(200, resource, { ETag: '"v1"' })]);
+    const { fn, calls } = makeFetchStub([
+      jsonResponse(200, resource, { ETag: '"v1"' }),
+    ]);
     const client = new Client("http://localhost:8080", { fetch: fn });
     const widerOptions = {
       database: "other",
@@ -381,7 +362,7 @@ describe("Table.tableSchema", () => {
     await client.table("page_views", {
       database: "analytics",
       schema: "events",
-    }).describe(widerOptions);
+    }).catalog().get(widerOptions);
 
     assert.equal(
       calls[0]!.url,

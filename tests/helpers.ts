@@ -18,7 +18,7 @@ import type {
   StatementErrorDetails,
   StatementEstimatedProgress,
   StatementResultSet,
-  StatementStatus,
+  StatementSnapshot,
 } from "../src/protocol.js";
 import { gunzipSync } from "node:zlib";
 
@@ -34,12 +34,11 @@ export function makeFetchStub(responses: Response[]): FetchStub {
   let index = 0;
 
   const fn: typeof globalThis.fetch = async (input, init) => {
-    const url =
-      input instanceof URL
-        ? input.toString()
-        : typeof input === "string"
-          ? input
-          : (input as Request).url;
+    const url = input instanceof URL
+      ? input.toString()
+      : typeof input === "string"
+      ? input
+      : (input as Request).url;
     calls.push({ url, init });
 
     const response = responses[index++];
@@ -54,7 +53,11 @@ export function makeFetchStub(responses: Response[]): FetchStub {
   return { fn, calls };
 }
 
-export function jsonResponse(status: number, body: unknown, headers: HeadersInit = {}): Response {
+export function jsonResponse(
+  status: number,
+  body: unknown,
+  headers: HeadersInit = {},
+): Response {
   return new Response(JSON.stringify(body), {
     status,
     headers: { "Content-Type": "application/json", ...headers },
@@ -115,23 +118,42 @@ export function emptyProgress(): StatementEstimatedProgress {
   };
 }
 
-export function pendingStatus(statementId = "stmt-1"): StatementStatus {
-  return { status: "pending", statement_id: statementId, created_at: "2024-01-01T00:00:00Z", progress: emptyProgress() };
+export function pendingStatus(statementId = "stmt-1"): StatementSnapshot {
+  return {
+    status: "pending",
+    statement_id: statementId,
+    created_at: "2024-01-01T00:00:00Z",
+    progress: emptyProgress(),
+  };
 }
 
-export function runningStatus(statementId = "stmt-1"): StatementStatus {
-  return { status: "running", statement_id: statementId, created_at: "2024-01-01T00:00:00Z", progress: emptyProgress() };
+export function runningStatus(statementId = "stmt-1"): StatementSnapshot {
+  return {
+    status: "running",
+    statement_id: statementId,
+    created_at: "2024-01-01T00:00:00Z",
+    progress: emptyProgress(),
+  };
 }
 
-export function finishedStatus(resultSet: StatementResultSet, statementId = "stmt-1"): StatementStatus {
-  return { status: "finished", statement_id: statementId, created_at: "2024-01-01T00:00:00Z", progress: emptyProgress(), result_set: resultSet };
+export function finishedStatus(
+  resultSet: StatementResultSet,
+  statementId = "stmt-1",
+): StatementSnapshot {
+  return {
+    status: "finished",
+    statement_id: statementId,
+    created_at: "2024-01-01T00:00:00Z",
+    progress: emptyProgress(),
+    result_set: resultSet,
+  };
 }
 
 export function failedStatus(
   message: string,
   statementId = "stmt-1",
   error?: StatementErrorDetails,
-): StatementStatus {
+): StatementSnapshot {
   return {
     status: "failed",
     statement_id: statementId,
@@ -141,8 +163,16 @@ export function failedStatus(
   };
 }
 
-export function cancelledStatus(_message: string, statementId = "stmt-1"): StatementStatus {
-  return { status: "cancelled", statement_id: statementId, created_at: "2024-01-01T00:00:00Z", progress: emptyProgress() };
+export function cancelledStatus(
+  _message: string,
+  statementId = "stmt-1",
+): StatementSnapshot {
+  return {
+    status: "cancelled",
+    statement_id: statementId,
+    created_at: "2024-01-01T00:00:00Z",
+    progress: emptyProgress(),
+  };
 }
 
 export function emptyResultSet(): StatementResultSet {
