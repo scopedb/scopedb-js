@@ -19,6 +19,7 @@ import { describe, it } from "node:test";
 import { Client } from "../src/client.js";
 import { ScopeDBError } from "../src/errors.js";
 import { StatementHandle } from "../src/statement.js";
+import { Deferred } from "../src/stream-internals.js";
 import {
   cancelledStatus,
   emptyResultSet,
@@ -384,3 +385,121 @@ it("retains the full result when completion races with cancellation", async () =
   assert.equal((await handle.wait()).toObjects()[0]?.["id"], 7n);
   assert.equal(calls.length, 1);
 });
+
+it("keeps the statement ID captured for each submission", async () => {
+  const started = new Deferred<void>();
+  const response = new Deferred<Response>();
+  const client = new Client("https://example.com", {
+    fetch: async () => {
+      started.resolve();
+      return response.promise;
+    },
+  });
+  const statement = client.statement("SELECT 1").withStatementId("stmt-a");
+  const submitting = statement.submit();
+  await started.promise;
+  statement.withStatementId("stmt-b");
+  response.resolve(jsonResponse(200, pendingStatus("stmt-a")));
+
+  const handle = await submitting;
+  assert.equal(handle.statementId, "stmt-a");
+  assert.equal(handle.snapshot()?.statement_id, "stmt-a");
+});
+
+it("accepts equivalent UUID spellings for statement handles", async () => {
+  const canonical = "01890a5d-4ac8-7c3f-b8a2-2f50f2dca7c4";
+  for (const supplied of [canonical.toUpperCase(), canonical.replaceAll("-", "")]) {
+    const { fn } = makeFetchStub([
+      jsonResponse(200, pendingStatus(canonical)),
+      jsonResponse(200, runningStatus(canonical)),
+    ]);
+    const client = new Client("https://example.com", { fetch: fn });
+    const handle = await client.statement("SELECT 1")
+      .withStatementId(supplied)
+      .submit();
+
+    assert.equal(handle.statementId, canonical);
+    assert.equal((await handle.refresh()).statement_id, canonical);
+  }
+});
+
+it("settles statement waits with the caller reason when fetch ignores abort", { timeout: 1_000 }, async () => {
+  const started = new Deferred<void>();
+  const client = new Client("https://example.com", {
+    fetch: async () => {
+      started.resolve();
+      return new Promise<Response>(() => {});
+    },
+  });
+  const controller = new AbortController();
+  const reason = new Error("caller stopped waiting");
+  const waiting = client.statementHandle("stmt-1").refresh({
+    signal: controller.signal,
+  });
+  await started.promise;
+  controller.abort(reason);
+
+  await assert.rejects(waiting, (error: unknown) => error === reason);
+});
+
+for (const status of [undefined, 408, 429, 502]) {
+  it(`does not mark an unacknowledged submission as retryable (${status ?? "transport"})`, async () => {
+    let calls = 0;
+    const client = new Client("https://example.com", {
+      fetch: async () => {
+        calls++;
+        if (status === undefined) throw new TypeError("connection lost after acceptance");
+        return new Response("gateway failure", { status });
+      },
+    });
+    await assert.rejects(client.statement("FROM incoming_events SELECT id INSERT INTO events").submit(), (error) => {
+      assert.ok(error instanceof ScopeDBError);
+      assert.equal(error.retryable, false);
+      assert.equal(error.code, "statement_submission_outcome_unknown");
+      assert.equal(error.httpStatus, status);
+      assert.ok(error.cause instanceof ScopeDBError);
+      return true;
+    });
+    assert.equal(calls, 1);
+  });
+}
+
+it("preserves a confirmed temporary statement admission rejection", async () => {
+  const client = new Client("https://example.com", {
+    fetch: async () => jsonResponse(503, { code: "unavailable", message: "draining" }),
+  });
+  await assert.rejects(client.statement("SELECT 1").submit(), (error) => {
+    assert.ok(error instanceof ScopeDBError);
+    assert.equal(error.code, "unavailable");
+    assert.equal(error.retryable, true);
+    return true;
+  });
+});
+
+for (const status of [200, 503]) {
+  it(`preserves the caller abort reason while reading a ${status} statement response`, async () => {
+    const controller = new AbortController();
+    const reason = new Error("caller stopped reading");
+    const started = new Deferred<void>();
+    const client = new Client("https://example.com", {
+      fetch: async () => {
+        const body = new ReadableStream<Uint8Array>({
+          start(stream) {
+            controller.signal.addEventListener("abort", () => {
+              stream.error(reason);
+            }, { once: true });
+          },
+        });
+        started.resolve();
+        return new Response(body, { status });
+      },
+    });
+    const waiting = client.statementHandle("stmt-1").refresh({
+      signal: controller.signal,
+    });
+    await started.promise;
+    controller.abort(reason);
+
+    await assert.rejects(waiting, (error: unknown) => error === reason);
+  });
+}

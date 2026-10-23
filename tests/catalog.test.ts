@@ -150,3 +150,65 @@ it("rejects resource names that URL normalization could turn into a parent delet
   }
   assert.equal(calls.length, 0);
 });
+
+it("preserves native Catalog outcome classifications", async () => {
+  for (const [status, code, classification] of [
+    [503, "unavailable", "temporary"],
+    [412, "catalog_version_mismatch", "permanent"],
+    [500, "catalog_commit_outcome_unknown", "persistent"],
+  ] as const) {
+    const { fn, calls } = makeFetchStub([
+      jsonResponse(status, { code, message: "catalog mutation failed" }),
+    ]);
+    const resource = new Client("https://example.com", { fetch: fn })
+      .table("events").catalog();
+    await assert.rejects(resource.apply({ name: "events" }), (error) => {
+      assert.ok(error instanceof ScopeDBError);
+      assert.equal(error.code, code);
+      assert.equal(error.status(), classification);
+      assert.equal(error.retryable, classification === "temporary");
+      return true;
+    });
+    assert.equal(calls.length, 1);
+  }
+});
+
+it("keeps unstructured retryable Catalog mutation responses unknown", async () => {
+  for (const status of [408, 429]) {
+    const { fn, calls } = makeFetchStub([
+      jsonResponse(status, { message: "gateway timeout" }),
+    ]);
+    const resource = new Client("https://example.com", { fetch: fn })
+      .table("events").catalog();
+    await assert.rejects(
+      resource.apply({ name: "events" }),
+      (error: unknown) =>
+        error instanceof ScopeDBError &&
+        error.code === "catalog_commit_outcome_unknown" &&
+        error.isPersistent() && !error.retryable,
+    );
+    assert.equal(calls.length, 1);
+  }
+});
+
+it("rejects null Catalog fields that native ScopeDB does not accept", async () => {
+  const definitions: unknown[] = [
+    { name: "events", storage: null },
+    {
+      name: "events",
+      columns: [{
+        name: "message",
+        data_type: "string",
+        indexes: [{ type: "search", analyzer: null }],
+      }],
+    },
+  ];
+  for (const definition of definitions) {
+    const { fn } = makeFetchStub([
+      jsonResponse(200, definition, { ETag: '"v1"' }),
+    ]);
+    const resource = new Client("https://example.com", { fetch: fn })
+      .table("events").catalog();
+    await assert.rejects(resource.get(), ScopeDBError);
+  }
+});

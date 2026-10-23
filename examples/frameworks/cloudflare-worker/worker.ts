@@ -95,10 +95,8 @@ async function readEvent(request: Request): Promise<EventInput | Response> {
     return Response.json({ error: "request body is too large" }, { status: 413 });
   }
 
-  const body = await request.text();
-  if (new TextEncoder().encode(body).byteLength > MAX_EVENT_BYTES) {
-    return Response.json({ error: "request body is too large" }, { status: 413 });
-  }
+  const body = await readBody(request);
+  if (body instanceof Response) return body;
 
   let value: unknown;
   try {
@@ -112,7 +110,36 @@ async function readEvent(request: Request): Promise<EventInput | Response> {
       { status: 400 },
     );
   }
+  if (!hasOnlySafeJsonNumbers(value.attributes)) {
+    return Response.json(
+      { error: "attributes contain a number that cannot be represented safely" },
+      { status: 400 },
+    );
+  }
   return value;
+}
+
+async function readBody(request: Request): Promise<string | Response> {
+  if (request.body === null) return "";
+  const reader = request.body.getReader();
+  const decoder = new TextDecoder();
+  let body = "";
+  let bytes = 0;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      bytes += value.byteLength;
+      if (bytes > MAX_EVENT_BYTES) {
+        await reader.cancel().catch(() => {});
+        return Response.json({ error: "request body is too large" }, { status: 413 });
+      }
+      body += decoder.decode(value, { stream: true });
+    }
+    return body + decoder.decode();
+  } finally {
+    reader.releaseLock();
+  }
 }
 
 function isEventInput(value: unknown): value is EventInput {
@@ -125,6 +152,22 @@ function isEventInput(value: unknown): value is EventInput {
   }
   const attributes = value["attributes"];
   return attributes === undefined || isJsonObject(attributes);
+}
+
+function hasOnlySafeJsonNumbers(root: unknown): boolean {
+  const pending = [root];
+  while (pending.length > 0) {
+    const value = pending.pop()!;
+    if (typeof value === "number") {
+      if (!Number.isFinite(value) ||
+          (Number.isInteger(value) && !Number.isSafeInteger(value))) {
+        return false;
+      }
+    } else if (typeof value === "object" && value !== null) {
+      for (const child of Object.values(value)) pending.push(child);
+    }
+  }
+  return true;
 }
 
 function isJsonObject(value: unknown): value is Record<string, unknown> {

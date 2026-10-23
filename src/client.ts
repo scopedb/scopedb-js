@@ -200,7 +200,13 @@ export class Client {
           if (!response.ok) {
             failure = await responseToError(response);
             if (writing) {
-              if (failure.code === undefined && response.status >= 500) {
+              if (failure.code === "catalog_commit_outcome_unknown") {
+                failure.setPersistent();
+              } else if (
+                failure.code === undefined &&
+                (response.status === 408 || response.status === 429 ||
+                  response.status >= 500)
+              ) {
                 failure = new ScopeDBError(
                   "CatalogFailed",
                   "catalog commit outcome is unknown",
@@ -209,9 +215,8 @@ export class Client {
                     code: "catalog_commit_outcome_unknown",
                     ...responseMetadata(response),
                   },
-                );
+                ).setPersistent();
               }
-              failure.setPersistent();
             }
             throw failure;
           }
@@ -335,15 +340,40 @@ export class Client {
     request: StatementRequest,
     options: RequestOptions = {},
   ): Promise<StatementSnapshot> {
-    return expectResponse(
-      await this.requestJson("v1/statements", {
-        method: "POST",
-        body: JSON.stringify(request),
-        signal: options.signal,
-      }),
-      isStatementSnapshot,
-      "statement response",
-    );
+    try {
+      return expectResponse(
+        await this.requestJson("v1/statements", {
+          method: "POST",
+          body: JSON.stringify(request),
+          signal: options.signal,
+        }),
+        isStatementSnapshot,
+        "statement response",
+      );
+    } catch (cause) {
+      if (options.signal?.aborted) throw cause;
+      // A transport failure or an unstructured gateway response cannot prove
+      // that submission was rejected. Replaying a mutating statement may run it twice.
+      if (
+        cause instanceof ScopeDBError &&
+        ((cause.httpStatus === undefined && cause.isTemporary()) ||
+          (cause.code === undefined && cause.httpStatus !== undefined &&
+            (cause.httpStatus === 408 || cause.httpStatus === 429 ||
+              cause.httpStatus >= 500)))
+      ) {
+        throw new ScopeDBError("Unexpected", "statement submission outcome is unknown", {
+          cause,
+          code: "statement_submission_outcome_unknown",
+          status: "persistent",
+          httpStatus: cause.httpStatus,
+          requestId: cause.requestId,
+          retryAfterMs: cause.retryAfterMs,
+          serverRetryable: cause.serverRetryable,
+          details: cause.details,
+        });
+      }
+      throw cause;
+    }
   }
 
   /** @internal Transport used by StatementHandle.refresh(). */
@@ -384,14 +414,15 @@ export class Client {
     path: string | URL,
     init: RequestInit,
   ): Promise<T> {
-    const response = await this.request(
-      path,
-      await this.prepareJsonRequest(init),
-    );
-    if (!response.ok) {
-      throw await responseToError(response);
-    }
-    return parseJsonResponse<T>(response);
+    return withCallerAbort(async () => {
+      const prepared = await this.prepareJsonRequest(init);
+      init.signal?.throwIfAborted();
+      const response = await this.request(path, prepared);
+      if (!response.ok) {
+        throw await responseToError(response);
+      }
+      return parseJsonResponse<T>(response);
+    }, init.signal);
   }
 
   private async prepareJsonRequest(init: RequestInit): Promise<RequestInit> {
@@ -596,6 +627,27 @@ export class Client {
       );
     }
     return this.makeUrl(["v1", ...segments].map(encodeURIComponent).join("/"));
+  }
+}
+
+async function withCallerAbort<T>(
+  operation: () => Promise<T>,
+  signal: AbortSignal | null | undefined,
+): Promise<T> {
+  if (signal == null) return operation();
+  signal.throwIfAborted();
+  let onAbort!: () => void;
+  const aborted = new Promise<never>((_resolve, reject) => {
+    onAbort = () => reject(signal.reason);
+    signal.addEventListener("abort", onAbort, { once: true });
+  });
+  try {
+    return await Promise.race([operation(), aborted]);
+  } catch (cause) {
+    if (signal.aborted) throw signal.reason;
+    throw cause;
+  } finally {
+    signal.removeEventListener("abort", onAbort);
   }
 }
 

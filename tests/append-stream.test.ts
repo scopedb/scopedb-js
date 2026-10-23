@@ -1294,6 +1294,121 @@ describe("AppendStream best-effort delivery", () => {
   });
 });
 
+describe("AppendStream cancellation and runtime compatibility", () => {
+  it("dispatches on runtimes without AbortSignal.any", async () => {
+    const original = Object.getOwnPropertyDescriptor(AbortSignal, "any");
+    Object.defineProperty(AbortSignal, "any", {
+      configurable: true,
+      value: undefined,
+    });
+    try {
+      const { table, calls } = makeTable([appendOk(1)]);
+      const stream = table.appendStream().maxElapsedTimeMs(2_000).build();
+      await stream.send({ id: 1 });
+      assert.equal((await stream.shutdown())?.num_rows_inserted, 1);
+      assert.equal(calls.length, 1);
+    } finally {
+      if (original === undefined) {
+        Reflect.deleteProperty(AbortSignal, "any");
+      } else {
+        Object.defineProperty(AbortSignal, "any", original);
+      }
+    }
+  });
+
+  for (const policy of ["continue", "stop"] as const) {
+    it(`carries an aborted ${policy}-mode flush into the next report without double counting`, async () => {
+      const started = new TestDeferred<void>();
+      const gate = new TestDeferred<void>();
+      let calls = 0;
+      const client = new Client("http://localhost:8080", {
+        fetch: async () => {
+          if (++calls === 1) {
+            started.resolve();
+            await gate.promise;
+            return policy === "continue" ? appendUnknown() : appendOk(1);
+          }
+          return appendOk(1);
+        },
+      });
+      const stream = client.table("events").appendStream({ failurePolicy: policy })
+        .targetBatchBytes(1).maxRetries(0).build();
+      await stream.send({ id: 1 });
+      await started.promise;
+      assert.equal(stream.trySend(undefined), false);
+
+      const controller = new AbortController();
+      const flushing = stream.flush({ signal: controller.signal });
+      await Promise.resolve();
+      controller.abort();
+      await assert.rejects(flushing);
+      gate.resolve();
+      await stream.send({ id: 2 });
+      assert.equal(stream.trySend(undefined), false);
+
+      const report = await stream.flush();
+      const final = await stream.shutdown();
+      if (policy === "continue") {
+        assert.ok(report !== null && "outcome" in report);
+        assert.equal(report.outcome, "partial");
+        assert.equal(report.acceptedRows, 2);
+        assert.equal(report.committedRows, 1);
+        assert.equal(report.unknownRows, 1);
+        assert.equal(report.droppedRows, 2);
+        assert.ok(final !== null && "outcome" in final);
+        assert.equal(final.acceptedRows, 0);
+        assert.equal(final.droppedRows, 0);
+        assert.equal(final.unknownRows, 0);
+        assert.deepEqual(stream.stats().lastReport, final);
+      } else {
+        assert.deepEqual(report, { status: "committed", num_rows_inserted: 2 });
+        assert.equal(final, null);
+      }
+      assert.equal(calls, 2);
+    });
+  }
+
+  it("retains the oldest barrier start across consecutive aborted flushes", async () => {
+    const gates = [new TestDeferred<void>(), new TestDeferred<void>()];
+    const started = [new TestDeferred<void>(), new TestDeferred<void>()];
+    let requests = 0;
+    const fetch: typeof globalThis.fetch = async () => {
+      const index = requests++;
+      started[index]!.resolve();
+      await gates[index]!.promise;
+      return appendOk(1);
+    };
+    const client = new Client("http://localhost:8080", { fetch });
+    const stream = client.table("events")
+      .appendStream({ failurePolicy: "continue" })
+      .targetBatchBytes(1)
+      .build();
+    const originalNow = Date.now;
+    let now = 1_000;
+    Date.now = () => now;
+    try {
+      for (let index = 0; index < 2; index++) {
+        await stream.send({ id: index + 1 });
+        await started[index]!.promise;
+        now = 1_000 * (index + 1);
+        const controller = new AbortController();
+        const flushing = stream.flush({ signal: controller.signal });
+        await Promise.resolve();
+        controller.abort();
+        await assert.rejects(flushing);
+        gates[index]!.resolve();
+      }
+
+      now = 3_000;
+      const report = await stream.shutdown();
+      assert.equal(report.committedRows, 2);
+      assert.equal(report.durationMs, 2_000);
+    } finally {
+      Date.now = originalNow;
+    }
+  });
+});
+
 class TestDeferred<T> {
   readonly promise: Promise<T>;
   resolve!: (value: T) => void;

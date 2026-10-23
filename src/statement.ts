@@ -58,16 +58,17 @@ export class Statement {
   }
 
   async submit(options: RequestOptions = {}): Promise<StatementHandle> {
+    const statementId = this.statementIdValue;
     const snapshot = await this.client.submitStatement({
       statement: this.statementText,
-      statement_id: this.statementIdValue,
+      statement_id: statementId,
       max_elapsed_seconds: this.maxElapsedSeconds,
       max_estimated_seconds: this.maxEstimatedSeconds,
       format: "json",
     }, options);
     return new StatementHandle(
       this.client,
-      this.statementIdValue ?? snapshot.statement_id,
+      statementId ?? snapshot.statement_id,
       snapshot,
     );
   }
@@ -79,13 +80,17 @@ export class Statement {
 
 export class StatementHandle {
   private currentSnapshot?: StatementSnapshot;
+  private nextObservation = 0;
+  private appliedObservation = 0;
+  readonly statementId: string;
 
   constructor(
     private readonly client: Client,
-    readonly statementId: string,
+    statementId: string,
     snapshot?: StatementSnapshot,
   ) {
-    if (snapshot !== undefined) this.remember(snapshot);
+    this.statementId = canonicalStatementId(statementId);
+    if (snapshot !== undefined) this.remember(snapshot, 0);
   }
 
   /** Returns a caller-owned copy of the latest observation without a request. */
@@ -103,8 +108,10 @@ export class StatementHandle {
     ) {
       return structuredClone(this.currentSnapshot);
     }
+    const observation = ++this.nextObservation;
     return this.remember(
       await this.client.fetchStatement(this.statementId, options),
+      observation,
     );
   }
 
@@ -154,13 +161,18 @@ export class StatementHandle {
     ) {
       return structuredClone(this.currentSnapshot);
     }
+    const observation = ++this.nextObservation;
     return this.remember(
       await this.client.cancelStatement(this.statementId, options),
+      observation,
     );
   }
 
-  private remember(snapshot: StatementSnapshot): StatementSnapshot {
-    if (snapshot.statement_id !== this.statementId) {
+  private remember(
+    snapshot: StatementSnapshot,
+    observation: number,
+  ): StatementSnapshot {
+    if (canonicalStatementId(snapshot.statement_id) !== this.statementId) {
       throw new ScopeDBError(
         "Unexpected",
         "statement response ID does not match the handle",
@@ -169,17 +181,43 @@ export class StatementHandle {
     const previous = this.currentSnapshot;
     // Concurrent refresh/cancel responses may arrive out of order. Terminal
     // results stay cached even after the server expires its saved result.
-    if (
-      previous === undefined || !(statementIsTerminated(previous) ||
-        (previous.status === "running" && snapshot.status === "pending") ||
-        (previous.status === snapshot.status &&
-          previous.progress.nanos_from_submitted >
-            snapshot.progress.nanos_from_submitted))
-    ) {
-      this.currentSnapshot = structuredClone(snapshot);
+    if (previous !== undefined) {
+      const previousTime = previous.progress.nanos_from_submitted;
+      const observedTime = snapshot.progress.nanos_from_submitted;
+      const olderProgress = previous.status === snapshot.status &&
+        (observedTime < previousTime ||
+          (observedTime === previousTime &&
+            observation < this.appliedObservation));
+      const regressesToPending = previous.status === "running" &&
+        snapshot.status === "pending";
+      if (
+        statementIsTerminated(previous) ||
+        (!statementIsTerminated(snapshot) &&
+          (regressesToPending || olderProgress))
+      ) {
+        return this.snapshot()!;
+      }
     }
+    this.currentSnapshot = structuredClone(snapshot);
+    this.appliedObservation = observation;
     return this.snapshot()!;
   }
+}
+
+const UUID_PATTERN =
+  /^(?:[0-9a-f]{32}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i;
+
+function canonicalStatementId(value: string): string {
+  let normalized = value;
+  if (normalized.toLowerCase().startsWith("urn:uuid:")) {
+    normalized = normalized.slice("urn:uuid:".length);
+  }
+  if (normalized.startsWith("{") && normalized.endsWith("}")) {
+    normalized = normalized.slice(1, -1);
+  }
+  if (!UUID_PATTERN.test(normalized)) return value;
+  const hex = normalized.replaceAll("-", "").toLowerCase();
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
 }
 
 function durationLimit(seconds: number): number {

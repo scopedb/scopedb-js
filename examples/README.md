@@ -102,7 +102,7 @@ These templates keep credentials on the server and use the same public SDK surfa
 | Cloudflare Workers | [`frameworks/cloudflare-worker/worker.ts`](frameworks/cloudflare-worker/worker.ts)     | Uses Web APIs without `nodejs_compat`; configure both the ScopeDB key and the separate application write token as secrets    |
 | Bun                | Use any runnable ESM example                                                           | Install with `bun add scopedb`; no Bun-specific SDK surface is required                                                      |
 
-The framework POST templates require `APP_WRITE_TOKEN` for incoming requests, in addition to the ScopeDB credential used by the server.
+The framework POST templates require `APP_WRITE_TOKEN` for incoming requests, in addition to the ScopeDB credential used by the server. They stop reading oversized bodies after the 64 KiB limit even without `Content-Length`, and reject non-finite or unsafe integer-valued numbers in `attributes` instead of appending silently changed values.
 
 ## Developing the examples
 

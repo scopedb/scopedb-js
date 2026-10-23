@@ -22,9 +22,15 @@ All significant changes to the ScopeDB JavaScript SDK are documented in this fil
 
 ### Bug Fixes
 
-* Prevent concurrent Statement responses from overwriting cached terminal results or allowing caller mutation to change the handle. Reject mismatched response identities.
+* Preserve the caller's cancellation reason and settle Statement waits even when a custom fetch ignores aborts. Keep unacknowledged submissions non-retryable while preserving confirmed temporary admission rejections.
 
-* Honor server retry refusal, retain unknown Catalog gateway outcomes, and preserve full HTTP and timeout diagnostics in Append delivery reports. Classify records that cannot fit the configured stream buffer separately from temporary backpressure.
+* Keep Statement snapshots monotonic and isolated from caller mutation. Prefer newer server progress when concurrent responses arrive out of order and retain terminal results. Reject mismatched response identities while accepting equivalent UUID spellings.
+
+* Preserve definite Catalog temporary/permanent failure classifications, retain unknown gateway outcomes, and reject null storage or search-analyzer fields that native ScopeDB does not accept.
+
+* Honor server retry refusal and preserve full HTTP and timeout diagnostics in Append delivery reports. Carry aborted flush outcomes into the next report and distinguish records that cannot fit the stream buffer from temporary backpressure.
+
+* Stop reading oversized framework request bodies at the 64 KiB limit, including chunked requests, and reject unsafe JSON numbers before appending.
 
 * Preserve signed/unsigned integer boundaries, raw JSON text, and special float values. Reject numeric overflow with row/column context and preserve result columns named `__proto__`.
 

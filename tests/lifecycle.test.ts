@@ -314,25 +314,55 @@ it("rejects an oversized direct row count before making a request", async () => 
   assert.equal(calls, 0);
 });
 
-it("does not regress active progress when concurrent observations arrive out of order", async () => {
-  const first = new Deferred<Response>();
-  const started = new Deferred<void>();
-  let requests = 0;
-  const client = new Client("https://example.com", {
-    fetch: async () => {
-      if (++requests === 1) {
-        started.resolve();
-        return first.promise;
-      }
-      const running = runningStatus();
-      running.progress.nanos_from_submitted = 100;
-      return jsonResponse(200, running);
-    },
+for (const [name, delayed, expected] of [
+  [
+    "keeps newer progress when an older response arrives late",
+    runningWithProgress(0, 1), runningWithProgress(100, 2),
+  ],
+  [
+    "uses request order to break equal progress timestamps",
+    runningWithProgress(100, 1), runningWithProgress(100, 2),
+  ],
+  [
+    "uses newer server progress even when its request was sent first",
+    runningWithProgress(200, 3), runningWithProgress(200, 3),
+  ],
+  [
+    "accepts a terminal result from an older request",
+    finishedStatus(emptyResultSet()), finishedStatus(emptyResultSet()),
+  ],
+] as const) {
+  it(name, async () => {
+    const first = new Deferred<Response>();
+    const started = new Deferred<void>();
+    let requests = 0;
+    const client = new Client("https://example.com", {
+      fetch: async () => {
+        if (++requests === 1) {
+          started.resolve();
+          return first.promise;
+        }
+        return jsonResponse(200, runningWithProgress(100, 2));
+      },
+    });
+    const handle = client.statementHandle("stmt-1");
+    const earlierRequest = handle.refresh();
+    await started.promise;
+    await handle.refresh();
+    first.resolve(jsonResponse(200, delayed));
+
+    assert.deepEqual(await earlierRequest, expected);
+    assert.deepEqual(handle.snapshot(), expected);
+    if (expected.status === "finished") {
+      assert.equal((await handle.wait()).numRows(), 0);
+    }
+    assert.equal(requests, 2);
   });
-  const handle = client.statementHandle("stmt-1");
-  const stale = handle.refresh();
-  await started.promise;
-  await handle.refresh();
-  first.resolve(jsonResponse(200, runningStatus()));
-  assert.equal((await stale).progress.nanos_from_submitted, 100);
-});
+}
+
+function runningWithProgress(nanos: number, rows: number) {
+  const snapshot = runningStatus();
+  snapshot.progress.nanos_from_submitted = nanos;
+  snapshot.progress.scanned_rows = rows;
+  return snapshot;
+}
