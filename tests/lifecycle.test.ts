@@ -390,3 +390,30 @@ it("accepts a terminal result from an older request after newer active progress"
   assert.equal((await handle.wait()).numRows(), 0);
   assert.equal(requests, 2);
 });
+
+it("uses newer server progress even when its request was sent first", async () => {
+  const first = new Deferred<Response>();
+  const started = new Deferred<void>();
+  let requests = 0;
+  const client = new Client("https://example.com", {
+    fetch: async () => {
+      if (++requests === 1) {
+        started.resolve();
+        return first.promise;
+      }
+      const snapshot = runningStatus();
+      snapshot.progress.nanos_from_submitted = 100;
+      return jsonResponse(200, snapshot);
+    },
+  });
+  const handle = client.statementHandle("stmt-1");
+  const earlierRequest = handle.refresh();
+  await started.promise;
+  await handle.refresh();
+  const laterObservation = runningStatus();
+  laterObservation.progress.nanos_from_submitted = 200;
+  first.resolve(jsonResponse(200, laterObservation));
+
+  assert.equal((await earlierRequest).progress.nanos_from_submitted, 200);
+  assert.equal(handle.snapshot()?.progress.nanos_from_submitted, 200);
+});

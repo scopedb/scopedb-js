@@ -181,17 +181,22 @@ export class StatementHandle {
     const previous = this.currentSnapshot;
     // Concurrent refresh/cancel responses may arrive out of order. Terminal
     // results stay cached even after the server expires its saved result.
-    if (
-      previous !== undefined &&
-      (statementIsTerminated(previous) ||
+    if (previous !== undefined) {
+      const previousTime = previous.progress.nanos_from_submitted;
+      const observedTime = snapshot.progress.nanos_from_submitted;
+      const olderProgress = previous.status === snapshot.status &&
+        (observedTime < previousTime ||
+          (observedTime === previousTime &&
+            observation < this.appliedObservation));
+      const regressesToPending = previous.status === "running" &&
+        snapshot.status === "pending";
+      if (
+        statementIsTerminated(previous) ||
         (!statementIsTerminated(snapshot) &&
-          (observation < this.appliedObservation ||
-            (previous.status === "running" && snapshot.status === "pending") ||
-            (previous.status === snapshot.status &&
-              previous.progress.nanos_from_submitted >
-                snapshot.progress.nanos_from_submitted))))
-    ) {
-      return this.snapshot()!;
+          (regressesToPending || olderProgress))
+      ) {
+        return this.snapshot()!;
+      }
     }
     this.currentSnapshot = structuredClone(snapshot);
     this.appliedObservation = observation;

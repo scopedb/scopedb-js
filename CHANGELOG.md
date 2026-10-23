@@ -22,6 +22,8 @@ All significant changes to the ScopeDB JavaScript SDK are documented in this fil
 
 ### Bug Fixes
 
+* Keep unacknowledged Statement submissions non-retryable while preserving confirmed temporary admission rejections. Prefer server progress timestamps over request order when concurrent active responses arrive out of order.
+
 * Prevent concurrent Statement responses from overwriting cached terminal results or allowing caller mutation to change the handle. Reject mismatched response identities.
 
 * Settle Statement waits with the original caller abort reason, prevent older equal-timestamp responses from regressing active snapshots, and accept equivalent UUID spellings for statement handles.

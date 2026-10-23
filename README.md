@@ -328,7 +328,7 @@ try {
 }
 ```
 
-`retryable` only classifies a temporary error; it does not prove that replay is safe. If a statement submission may have side effects and its response is lost, do not blindly submit again. Supply a caller-known UUID with `withStatementId()` before submission so you can reconcile through `statementHandle(id)`; Append and Catalog additionally expose the outcome rules above.
+`retryable` only classifies a temporary error; it does not prove that replay is safe. A lost transport acknowledgement or an unstructured 408/429/5xx response during Statement submission has code `statement_submission_outcome_unknown` and is not marked retryable. If a statement submission may have side effects and its response is lost, do not blindly submit again. Supply a caller-known UUID with `withStatementId()` before submission so you can reconcile through `statementHandle(id)`; Append and Catalog additionally expose the outcome rules above.
 
 `stats().lastFailure.error` retains the full batch error, including timeout diagnostics. When a statement reaches the `failed` state, `statementDetails` preserves the server-provided `code`, `message`, and optional code-specific `details` object.
 

@@ -454,6 +454,40 @@ it("settles statement waits with the caller reason when fetch ignores abort", as
   assert.equal(outcome, reason);
 });
 
+for (const status of [undefined, 408, 429, 502]) {
+  it(`does not mark an unacknowledged submission as retryable (${status ?? "transport"})`, async () => {
+    let calls = 0;
+    const client = new Client("https://example.com", {
+      fetch: async () => {
+        calls++;
+        if (status === undefined) throw new TypeError("connection lost after acceptance");
+        return new Response("gateway failure", { status });
+      },
+    });
+    await assert.rejects(client.statement("FROM incoming_events SELECT id INSERT INTO events").submit(), (error) => {
+      assert.ok(error instanceof ScopeDBError);
+      assert.equal(error.retryable, false);
+      assert.equal(error.code, "statement_submission_outcome_unknown");
+      assert.equal(error.httpStatus, status);
+      assert.ok(error.cause instanceof ScopeDBError);
+      return true;
+    });
+    assert.equal(calls, 1);
+  });
+}
+
+it("preserves a confirmed temporary statement admission rejection", async () => {
+  const client = new Client("https://example.com", {
+    fetch: async () => jsonResponse(503, { code: "unavailable", message: "draining" }),
+  });
+  await assert.rejects(client.statement("SELECT 1").submit(), (error) => {
+    assert.ok(error instanceof ScopeDBError);
+    assert.equal(error.code, "unavailable");
+    assert.equal(error.retryable, true);
+    return true;
+  });
+});
+
 for (const status of [200, 503]) {
   it(`preserves the caller abort reason while reading a ${status} statement response`, async () => {
     const controller = new AbortController();

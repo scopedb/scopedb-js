@@ -340,15 +340,40 @@ export class Client {
     request: StatementRequest,
     options: RequestOptions = {},
   ): Promise<StatementSnapshot> {
-    return expectResponse(
-      await this.requestJson("v1/statements", {
-        method: "POST",
-        body: JSON.stringify(request),
-        signal: options.signal,
-      }),
-      isStatementSnapshot,
-      "statement response",
-    );
+    try {
+      return expectResponse(
+        await this.requestJson("v1/statements", {
+          method: "POST",
+          body: JSON.stringify(request),
+          signal: options.signal,
+        }),
+        isStatementSnapshot,
+        "statement response",
+      );
+    } catch (cause) {
+      if (options.signal?.aborted) throw cause;
+      // A transport failure or an unstructured gateway response cannot prove
+      // that submission was rejected. Replaying a mutating statement may run it twice.
+      if (
+        cause instanceof ScopeDBError &&
+        ((cause.httpStatus === undefined && cause.isTemporary()) ||
+          (cause.code === undefined && cause.httpStatus !== undefined &&
+            (cause.httpStatus === 408 || cause.httpStatus === 429 ||
+              cause.httpStatus >= 500)))
+      ) {
+        throw new ScopeDBError("Unexpected", "statement submission outcome is unknown", {
+          cause,
+          code: "statement_submission_outcome_unknown",
+          status: "persistent",
+          httpStatus: cause.httpStatus,
+          requestId: cause.requestId,
+          retryAfterMs: cause.retryAfterMs,
+          serverRetryable: cause.serverRetryable,
+          details: cause.details,
+        });
+      }
+      throw cause;
+    }
   }
 
   /** @internal Transport used by StatementHandle.refresh(). */
