@@ -1101,7 +1101,7 @@ export class AppendStream<Policy extends AppendFailurePolicy = "stop"> {
     if (this.config.failurePolicy === "continue") {
       const report = mergeDeliveryReports(
         barriers.map((barrier) => barrier.output as AppendDeliveryReport),
-        Math.min(...barriers.map((barrier) => barrier.startedAt)),
+        startedAt,
       );
       this.lastReport = report;
       return report;
@@ -1539,37 +1539,14 @@ function newIntervalCounters(): IntervalCounters {
   };
 }
 
-const DELIVERY_REPORT_COUNTERS = [
-  "acceptedRows",
-  "committedRows",
-  "failedRows",
-  "unknownRows",
-  "droppedRows",
-  "committedBatches",
-  "failedBatches",
-  "unknownBatches",
-  "retries",
-] as const;
-
-type DeliveryReportCounter = typeof DELIVERY_REPORT_COUNTERS[number];
-
 function mergeDeliveryReports(
   reports: readonly AppendDeliveryReport[],
   startedAt: number,
 ): AppendDeliveryReport {
-  const totals: Record<DeliveryReportCounter, number> = {
-    acceptedRows: 0,
-    committedRows: 0,
-    failedRows: 0,
-    unknownRows: 0,
-    droppedRows: 0,
-    committedBatches: 0,
-    failedBatches: 0,
-    unknownBatches: 0,
-    retries: 0,
-  };
+  const totals = { ...newIntervalCounters(), droppedRows: 0 };
+  const counters = Object.keys(totals) as Array<keyof typeof totals>;
   for (const report of reports) {
-    for (const field of DELIVERY_REPORT_COUNTERS) {
+    for (const field of counters) {
       totals[field] += report[field];
     }
   }

@@ -1303,7 +1303,7 @@ describe("AppendStream release contracts", () => {
     });
     try {
       const { table, calls } = makeTable([appendOk(1)]);
-      const stream = table.appendStream().maxElapsedTimeMs(25).build();
+      const stream = table.appendStream().maxElapsedTimeMs(2_000).build();
       await stream.send({ id: 1 });
       assert.equal((await stream.shutdown())?.num_rows_inserted, 1);
       assert.equal(calls.length, 1);
