@@ -96,7 +96,7 @@ export class ScopeDBError extends Error {
     this.errorContext = new Map();
   }
 
-  /** Whether retrying is appropriate for this error classification. */
+  /** Whether this error is temporary; this alone does not make replaying a statement or write safe. */
   get retryable(): boolean {
     return this.errorStatus === "temporary";
   }

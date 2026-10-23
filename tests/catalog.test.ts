@@ -150,3 +150,83 @@ it("rejects resource names that URL normalization could turn into a parent delet
   }
   assert.equal(calls.length, 0);
 });
+
+it("preserves definite Catalog failure classifications", async () => {
+  const scenarios = [
+    {
+      status: 503,
+      code: "unavailable",
+      classify: (error: ScopeDBError) =>
+        error.isTemporary() && error.retryable && !error.isPersistent(),
+    },
+    {
+      status: 412,
+      code: "catalog_version_mismatch",
+      classify: (error: ScopeDBError) =>
+        error.isPermanent() && !error.retryable && !error.isPersistent(),
+    },
+    {
+      status: 500,
+      code: "catalog_commit_outcome_unknown",
+      classify: (error: ScopeDBError) =>
+        error.isPersistent() && !error.retryable,
+    },
+  ];
+  for (const scenario of scenarios) {
+    const { fn, calls } = makeFetchStub([
+      jsonResponse(scenario.status, {
+        code: scenario.code,
+        message: "catalog mutation failed",
+      }),
+    ]);
+    const resource = new Client("https://example.com", { fetch: fn })
+      .table("events").catalog();
+    await assert.rejects(
+      resource.apply({ name: "events" }),
+      (error: unknown) =>
+        error instanceof ScopeDBError && error.code === scenario.code &&
+        scenario.classify(error),
+    );
+    assert.equal(calls.length, 1);
+  }
+});
+
+it("keeps unstructured retryable Catalog mutation responses unknown", async () => {
+  for (const status of [408, 429]) {
+    const { fn, calls } = makeFetchStub([
+      jsonResponse(status, { message: "gateway timeout" }),
+    ]);
+    const resource = new Client("https://example.com", { fetch: fn })
+      .table("events").catalog();
+    await assert.rejects(
+      resource.apply({ name: "events" }),
+      (error: unknown) =>
+        error instanceof ScopeDBError &&
+        error.code === "catalog_commit_outcome_unknown" &&
+        error.isPersistent() && !error.retryable,
+    );
+    assert.equal(calls.length, 1);
+  }
+});
+
+it("rejects null Catalog fields that native ScopeDB does not accept", async () => {
+  const definitions: unknown[] = [
+    { name: "events", storage: null },
+    {
+      name: "events",
+      columns: [{
+        name: "message",
+        data_type: "string",
+        indexes: [{ type: "search", analyzer: null }],
+      }],
+    },
+  ];
+  for (const definition of definitions) {
+    const { fn } = makeFetchStub([
+      jsonResponse(200, definition, { ETag: '"v1"' }),
+    ]);
+    const resource = new Client("https://example.com", { fetch: fn })
+      .table("events").catalog();
+    await assert.rejects(resource.get(), ScopeDBError);
+  }
+});

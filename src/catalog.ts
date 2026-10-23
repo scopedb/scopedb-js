@@ -49,7 +49,7 @@ export interface CatalogColumn {
   data_type: DataType;
   expression?: string | null;
   comment?: string | null;
-  indexes?: Array<{ type: "search"; analyzer?: "log" | null }>;
+  indexes?: Array<{ type: "search"; analyzer?: "log" }>;
 }
 export interface CatalogTable {
   [extension: string]: unknown;
@@ -60,7 +60,7 @@ export interface CatalogTable {
   cluster_by?: string[];
   distinct?: { on?: string[]; by?: string[] };
   retention_days?: number | null;
-  storage?: Record<string, unknown> | null;
+  storage?: Record<string, unknown>;
 }
 export interface CatalogView {
   [extension: string]: unknown;
@@ -256,7 +256,7 @@ function definition(value: unknown, kind: string, name?: string): void {
           (Number.isSafeInteger(value) && (value as number) >= 0),
       );
       optional("storage", (value) => {
-        if (value !== null) record(value, "storage");
+        record(value, "storage");
         return true;
       });
       optional("distinct", (value) => {
@@ -277,7 +277,8 @@ function definition(value: unknown, kind: string, name?: string): void {
           Array.isArray(value) && value.every((index) => {
             const fields = record(index, "index");
             return fields["type"] === "search" &&
-              (fields["analyzer"] == null || fields["analyzer"] === "log");
+              (fields["analyzer"] === undefined ||
+                fields["analyzer"] === "log");
           }),
       );
       break;

@@ -336,3 +336,57 @@ it("does not regress active progress when concurrent observations arrive out of 
   first.resolve(jsonResponse(200, runningStatus()));
   assert.equal((await stale).progress.nanos_from_submitted, 100);
 });
+
+it("does not let an older equal-timestamp response replace newer progress", async () => {
+  const first = new Deferred<Response>();
+  const started = new Deferred<void>();
+  let requests = 0;
+  const client = new Client("https://example.com", {
+    fetch: async () => {
+      if (++requests === 1) {
+        started.resolve();
+        return first.promise;
+      }
+      const running = runningStatus();
+      running.progress.nanos_from_submitted = 100;
+      running.progress.scanned_rows = 2;
+      return jsonResponse(200, running);
+    },
+  });
+  const handle = client.statementHandle("stmt-1");
+  const stale = handle.refresh();
+  await started.promise;
+  await handle.refresh();
+  const older = runningStatus();
+  older.progress.nanos_from_submitted = 100;
+  older.progress.scanned_rows = 1;
+  first.resolve(jsonResponse(200, older));
+
+  assert.equal((await stale).progress.scanned_rows, 2);
+  assert.equal(handle.snapshot()?.progress.scanned_rows, 2);
+});
+
+it("accepts a terminal result from an older request after newer active progress", async () => {
+  const first = new Deferred<Response>();
+  const started = new Deferred<void>();
+  let requests = 0;
+  const client = new Client("https://example.com", {
+    fetch: async () => {
+      if (++requests === 1) {
+        started.resolve();
+        return first.promise;
+      }
+      return jsonResponse(200, runningStatus());
+    },
+  });
+  const handle = client.statementHandle("stmt-1");
+  const completing = handle.refresh();
+  await started.promise;
+  await handle.refresh();
+  first.resolve(jsonResponse(200, finishedStatus(emptyResultSet())));
+
+  assert.equal((await completing).status, "finished");
+  assert.equal(handle.snapshot()?.status, "finished");
+  assert.equal((await handle.wait()).numRows(), 0);
+  assert.equal(requests, 2);
+});

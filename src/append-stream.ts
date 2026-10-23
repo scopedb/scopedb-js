@@ -90,7 +90,7 @@ export interface AppendDeliveryReport {
   failedBatches: number;
   unknownBatches: number;
   retries: number;
-  /** Wall time from requesting this barrier until every covered batch settled. */
+  /** Wall time from the oldest included barrier until every covered batch settled. */
   durationMs: number;
 }
 
@@ -473,6 +473,11 @@ export class AppendStream<Policy extends AppendFailurePolicy = "stop"> {
   private pendingRowCount = 0;
   private lastFailure: AppendStreamStats["lastFailure"];
   private lastReport: AppendDeliveryReport | undefined;
+  // A cancelled flush still settles; carry its unobserved output into the next barrier.
+  private readonly unobservedBarriers: Array<{
+    output: BarrierOutput;
+    startedAt: number;
+  }> = [];
   private circuitState: AppendCircuitState = "closed";
   private circuitOpenedUntil = 0;
   private consecutiveFailures = 0;
@@ -494,7 +499,8 @@ export class AppendStream<Policy extends AppendFailurePolicy = "stop"> {
 
   /**
    * Attempts synchronous local admission. It never waits or throws; false means
-   * the record was invalid, the bounded buffer was full, or the stream closed.
+   * the record was invalid, the bounded buffer was full, the circuit was open,
+   * or the stream closed.
    */
   trySend(record: unknown): boolean {
     if (!this.accepting || this.fatal !== null) {
@@ -687,14 +693,17 @@ export class AppendStream<Policy extends AppendFailurePolicy = "stop"> {
     }
 
     const ack = new Deferred<BarrierOutput>();
+    const command: FlushCommand = {
+      type: "flush",
+      ack,
+      droppedRowsAtBarrier: this.lifetime.droppedRows,
+      startedAt: Date.now(),
+    };
     try {
-      await this.queue.send({
-        type: "flush",
-        ack,
-        droppedRowsAtBarrier: this.lifetime.droppedRows,
-        startedAt: Date.now(),
-      }, options.signal);
-      return await waitWithSignal(ack.promise, options.signal);
+      await this.queue.send(command, options.signal);
+      return await waitWithSignal(ack.promise, options.signal, (output) => {
+        this.unobservedBarriers.push({ output, startedAt: command.startedAt });
+      });
     } catch (cause) {
       if (options.signal?.aborted === true) {
         throw abortReason(options.signal);
@@ -892,16 +901,23 @@ export class AppendStream<Policy extends AppendFailurePolicy = "stop"> {
     let ambiguous = false;
     const deadline = performance.now() + this.config.retry.maxElapsedTimeMs;
     const elapsed = new AbortController();
-    const timer = setTimeout(() =>
-      elapsed.abort(
-        new DOMException("append time budget expired", "TimeoutError"),
-      ), this.config.retry.maxElapsedTimeMs);
-    const waitSignal = AbortSignal.any([
-      elapsed.signal,
-      this.fatalController.signal,
-    ]);
+    const waitController = new AbortController();
+    const waitSources = [elapsed.signal, this.fatalController.signal];
+    const abortWait = () => {
+      const source = waitSources.find((signal) => signal.aborted);
+      if (source !== undefined) waitController.abort(source.reason);
+    };
+    let timer: ReturnType<typeof setTimeout> | undefined;
     let lastError: AppendRowsError | undefined;
     try {
+      timer = setTimeout(() =>
+        elapsed.abort(
+          new DOMException("append time budget expired", "TimeoutError"),
+        ), this.config.retry.maxElapsedTimeMs);
+      for (const signal of waitSources) {
+        signal.addEventListener("abort", abortWait, { once: true });
+      }
+      abortWait();
       for (;;) {
         this.checkFatal();
         if (elapsed.signal.aborted || performance.now() >= deadline) {
@@ -953,8 +969,11 @@ export class AppendStream<Policy extends AppendFailurePolicy = "stop"> {
         const jitter = backoffMs / 2 + Math.random() * backoffMs / 2;
         const delay = Math.max(jitter, lastError.retryAfterMs ?? 0);
         const wakeAt = Math.min(performance.now() + delay, deadline);
-        while (!waitSignal.aborted && performance.now() < wakeAt) {
-          await sleep(Math.ceil(wakeAt - performance.now()), waitSignal);
+        while (!waitController.signal.aborted && performance.now() < wakeAt) {
+          await sleep(
+            Math.ceil(wakeAt - performance.now()),
+            waitController.signal,
+          );
         }
         if (elapsed.signal.aborted || performance.now() >= deadline) {
           throw retryExhaustedError(retries, lastError);
@@ -976,6 +995,9 @@ export class AppendStream<Policy extends AppendFailurePolicy = "stop"> {
         : error;
     } finally {
       clearTimeout(timer);
+      for (const signal of waitSources) {
+        signal.removeEventListener("abort", abortWait);
+      }
     }
   }
 
@@ -1050,6 +1072,9 @@ export class AppendStream<Policy extends AppendFailurePolicy = "stop"> {
       await this.dispatchBuffered();
       await this.waitForInFlight();
       this.checkFatal();
+      for (const barrier of this.unobservedBarriers) {
+        command.startedAt = Math.min(command.startedAt, barrier.startedAt);
+      }
       command.ack.resolve(this.takeBarrierOutput(
         command.droppedRowsAtBarrier,
         command.startedAt,
@@ -1066,9 +1091,36 @@ export class AppendStream<Policy extends AppendFailurePolicy = "stop"> {
     droppedRowsAtBarrier: number,
     startedAt: number,
   ): BarrierOutput {
+    const output = this.config.failurePolicy === "continue"
+      ? this.takeDeliveryReport(droppedRowsAtBarrier, startedAt)
+      : this.takeStrictResult();
+    const previous = this.unobservedBarriers.splice(0);
+    if (previous.length === 0) return output;
+
+    const barriers = [...previous, { output, startedAt }];
     if (this.config.failurePolicy === "continue") {
-      return this.takeDeliveryReport(droppedRowsAtBarrier, startedAt);
+      const report = mergeDeliveryReports(
+        barriers.map((barrier) => barrier.output as AppendDeliveryReport),
+        Math.min(...barriers.map((barrier) => barrier.startedAt)),
+      );
+      this.lastReport = report;
+      return report;
     }
+
+    let hasResult = false;
+    let insertedRows = 0;
+    for (const barrier of barriers) {
+      if (barrier.output === null) continue;
+      const committed = barrier.output as AppendRowsResult;
+      hasResult = true;
+      insertedRows += committed.num_rows_inserted;
+    }
+    return hasResult
+      ? { status: "committed", num_rows_inserted: insertedRows }
+      : null;
+  }
+
+  private takeStrictResult(): AppendRowsResult | null {
     const result = this.interval.committedBatches === 0 ? null : {
       status: "committed" as const,
       num_rows_inserted: this.interval.committedRows,
@@ -1487,6 +1539,55 @@ function newIntervalCounters(): IntervalCounters {
   };
 }
 
+const DELIVERY_REPORT_COUNTERS = [
+  "acceptedRows",
+  "committedRows",
+  "failedRows",
+  "unknownRows",
+  "droppedRows",
+  "committedBatches",
+  "failedBatches",
+  "unknownBatches",
+  "retries",
+] as const;
+
+type DeliveryReportCounter = typeof DELIVERY_REPORT_COUNTERS[number];
+
+function mergeDeliveryReports(
+  reports: readonly AppendDeliveryReport[],
+  startedAt: number,
+): AppendDeliveryReport {
+  const totals: Record<DeliveryReportCounter, number> = {
+    acceptedRows: 0,
+    committedRows: 0,
+    failedRows: 0,
+    unknownRows: 0,
+    droppedRows: 0,
+    committedBatches: 0,
+    failedBatches: 0,
+    unknownBatches: 0,
+    retries: 0,
+  };
+  for (const report of reports) {
+    for (const field of DELIVERY_REPORT_COUNTERS) {
+      totals[field] += report[field];
+    }
+  }
+  const lostRows = totals.failedRows + totals.unknownRows + totals.droppedRows;
+  const outcome: AppendDeliveryReport["outcome"] = lostRows === 0
+    ? "ok"
+    : totals.committedRows > 0
+    ? "partial"
+    : totals.unknownRows > 0
+    ? "unknown"
+    : "failed";
+  return {
+    outcome,
+    ...totals,
+    durationMs: Math.max(0, Date.now() - startedAt),
+  };
+}
+
 function configError(message: string): ScopeDBError {
   return new ScopeDBError("ConfigInvalid", message).setPermanent();
 }
@@ -1498,6 +1599,7 @@ function asStreamError(cause: unknown): ScopeDBError {
 function waitWithSignal<T>(
   promise: Promise<T>,
   signal?: AbortSignal,
+  onAbandoned?: (value: T) => void,
 ): Promise<T> {
   if (signal === undefined) {
     return promise;
@@ -1507,12 +1609,13 @@ function waitWithSignal<T>(
   } catch (cause) {
     // The operation may already own an enqueued barrier. Keep observing its
     // completion even though this caller no longer waits for the result.
-    void promise.catch(() => {});
+    void promise.then((value) => onAbandoned?.(value), () => {});
     return Promise.reject(cause);
   }
 
   return new Promise<T>((resolve, reject) => {
     let settled = false;
+    let abandoned = false;
     const finish = (complete: () => void): void => {
       if (settled) {
         return;
@@ -1522,11 +1625,19 @@ function waitWithSignal<T>(
       complete();
     };
     const onAbort = (): void => {
+      if (settled) return;
+      abandoned = true;
       finish(() => reject(abortReason(signal)));
     };
     signal.addEventListener("abort", onAbort, { once: true });
     void promise.then(
-      (value) => finish(() => resolve(value)),
+      (value) => {
+        if (abandoned) {
+          onAbandoned?.(value);
+          return;
+        }
+        finish(() => resolve(value));
+      },
       (cause) => finish(() => reject(cause)),
     );
     if (signal.aborted) {

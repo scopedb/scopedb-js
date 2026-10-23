@@ -105,7 +105,7 @@ JSON.stringify(rowsNumber); // ok
 const rowsString = result.toObjects({ integerMode: "string" });
 ```
 
-The option only affects `int` / `uint` columns; other types are unchanged.
+The option only affects `int` / `uint` columns; other types are unchanged. Typed conversions return `timestamp` cells as JavaScript `Date` values and therefore retain only millisecond precision, even when the server returns nanoseconds. Use `rawRows()` when exact timestamp text matters; `integerMode` does not change timestamp conversion.
 
 ## Table helper
 
@@ -227,7 +227,7 @@ telemetry.trySend({ id: 1, name: "request.completed" });
 // On graceful shutdown: stop producers, then await telemetry.shutdown().
 ```
 
-`trySend()` returns false for local admission failures and records the reason in `stats()`. Continue mode does not retain failed payloads for later replay. Its circuit breaker opens after consecutive availability failures, rejects new admission during cooldown, and allows a probe afterwards; a permanent schema error does not open the breaker. The default breaker settings are five failures and a 30-second cooldown. Use a durable outbox when losing telemetry is unacceptable. See the runnable [telemetry example](examples/patterns/telemetry.ts).
+`trySend()` returns false for local admission failures and records the reason in `stats()`. Continue mode does not retain failed payloads for later replay. Its circuit breaker opens after consecutive availability failures, rejects `trySend()` admission during cooldown, and allows one `trySend()` probe afterwards; `send()` and `sendAll()` can still fill the bounded local queue while dispatch is paused. A permanent schema error does not open the breaker. The default breaker settings are five failures and a 30-second cooldown. Use a durable outbox when losing telemetry is unacceptable. See the runnable [telemetry example](examples/patterns/telemetry.ts).
 
 | Metric                   | `stats()` field                                                  | Interpretation                                                                                                                                                                                                                                                                               |
 | ------------------------ | ---------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -238,7 +238,7 @@ telemetry.trySend({ id: 1, name: "request.completed" });
 | Retry pressure           | `retries`, `lastFailure.error`                                   | Extra attempts and complete final failure diagnostics, including HTTP status and `retryAfterMs`.                                                                                                                                                                                             |
 | Current backlog          | `pendingRows`, `pendingBytes`, `inFlightBatches`, `circuitState` | Gauges for backpressure, requests in flight, and circuit state.                                                                                                                                                                                                                              |
 
-Row/retry counters are cumulative for the stream's lifetime and are not reset by `flush()`. Export their deltas or maintain a baseline per stream. `flush()`/`shutdown()` delivery reports cover their reporting interval; do not add them to the lifetime counters again.
+Row/retry counters are cumulative for the stream's lifetime and are not reset by `flush()`. Export their deltas or maintain a baseline per stream. `flush()`/`shutdown()` delivery reports cover activity since the previous returned report; do not add them to the lifetime counters again. Aborting `flush()` stops only local waiting, not delivery; its outcome is merged into the next `flush()` or `shutdown()` report so unresolved rows are not hidden.
 
 The SDK default remains four concurrent batches **per stream**, with no process-wide or fleet-wide coordinator. Twelve processes with one default stream each can issue up to 48 concurrent append requests; the recipe above reduces that bound to 12. Multiple streams per process multiply it again. Start at one batch per stream for a fleet that is already seeing 429s, then increase only after observing throughput, 429s, retries, and backlog. Concurrency limits requests in flight, not requests per second or total ingestion volume; reduce producer rate or coordinate admission across processes if the shared limit is still exceeded. Confirmed transient rejections use jittered backoff and honor `Retry-After`; a retry that cannot fit the delivery budget is not sent early. A 429 without a trustworthy rejected outcome remains unknown and is not replayed by default.
 
@@ -327,6 +327,8 @@ try {
   throw error;
 }
 ```
+
+`retryable` only classifies a temporary error; it does not prove that replay is safe. If a statement submission may have side effects and its response is lost, do not blindly submit again. Supply a caller-known UUID with `withStatementId()` before submission so you can reconcile through `statementHandle(id)`; Append and Catalog additionally expose the outcome rules above.
 
 `stats().lastFailure.error` retains the full batch error, including timeout diagnostics. When a statement reaches the `failed` state, `statementDetails` preserves the server-provided `code`, `message`, and optional code-specific `details` object.
 

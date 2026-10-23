@@ -384,3 +384,103 @@ it("retains the full result when completion races with cancellation", async () =
   assert.equal((await handle.wait()).toObjects()[0]?.["id"], 7n);
   assert.equal(calls.length, 1);
 });
+
+it("keeps the statement ID captured for each submission", async () => {
+  let started!: () => void;
+  const fetching = new Promise<void>((resolve) => {
+    started = resolve;
+  });
+  let respond!: (response: Response) => void;
+  const response = new Promise<Response>((resolve) => {
+    respond = resolve;
+  });
+  const client = new Client("https://example.com", {
+    fetch: async () => {
+      started();
+      return response;
+    },
+  });
+  const statement = client.statement("SELECT 1").withStatementId("stmt-a");
+  const submitting = statement.submit();
+  await fetching;
+  statement.withStatementId("stmt-b");
+  respond(jsonResponse(200, pendingStatus("stmt-a")));
+
+  const handle = await submitting;
+  assert.equal(handle.statementId, "stmt-a");
+  assert.equal(handle.snapshot()?.statement_id, "stmt-a");
+});
+
+it("accepts equivalent UUID spellings for statement handles", async () => {
+  const canonical = "01890a5d-4ac8-7c3f-b8a2-2f50f2dca7c4";
+  for (const supplied of [canonical.toUpperCase(), canonical.replaceAll("-", "")]) {
+    const { fn } = makeFetchStub([
+      jsonResponse(200, pendingStatus(canonical)),
+      jsonResponse(200, runningStatus(canonical)),
+    ]);
+    const client = new Client("https://example.com", { fetch: fn });
+    const handle = await client.statement("SELECT 1")
+      .withStatementId(supplied)
+      .submit();
+
+    assert.equal(handle.statementId, canonical);
+    assert.equal((await handle.refresh()).statement_id, canonical);
+  }
+});
+
+it("settles statement waits with the caller reason when fetch ignores abort", async () => {
+  let started!: () => void;
+  const fetching = new Promise<void>((resolve) => {
+    started = resolve;
+  });
+  const client = new Client("https://example.com", {
+    fetch: async () => {
+      started();
+      return new Promise<Response>(() => {});
+    },
+  });
+  const controller = new AbortController();
+  const reason = new Error("caller stopped waiting");
+  const waiting = client.statementHandle("stmt-1").refresh({
+    signal: controller.signal,
+  });
+  await fetching;
+  controller.abort(reason);
+
+  const outcome = await Promise.race([
+    waiting.then(() => "resolved", (error: unknown) => error),
+    new Promise<string>((resolve) => setTimeout(() => resolve("timed out"), 25)),
+  ]);
+  assert.equal(outcome, reason);
+});
+
+for (const status of [200, 503]) {
+  it(`preserves the caller abort reason while reading a ${status} statement response`, async () => {
+    const controller = new AbortController();
+    const reason = new Error("caller stopped reading");
+    let started!: () => void;
+    const fetching = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    const client = new Client("https://example.com", {
+      fetch: async () => {
+        const body = new ReadableStream<Uint8Array>({
+          start(stream) {
+            controller.signal.addEventListener("abort", () => {
+              stream.error(reason);
+            }, { once: true });
+          },
+        });
+        started();
+        return new Response(body, { status });
+      },
+    });
+    const waiting = client.statementHandle("stmt-1").refresh({
+      signal: controller.signal,
+    });
+    await fetching;
+    controller.abort(reason);
+
+    await assert.rejects(waiting, (error: unknown) => error === reason);
+  });
+}

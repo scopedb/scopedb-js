@@ -24,7 +24,13 @@ All significant changes to the ScopeDB JavaScript SDK are documented in this fil
 
 * Prevent concurrent Statement responses from overwriting cached terminal results or allowing caller mutation to change the handle. Reject mismatched response identities.
 
+* Settle Statement waits with the original caller abort reason, prevent older equal-timestamp responses from regressing active snapshots, and accept equivalent UUID spellings for statement handles.
+
+* Preserve definite Catalog temporary/permanent failure classifications and reject null storage or search-analyzer fields that native ScopeDB does not accept.
+
 * Honor server retry refusal, retain unknown Catalog gateway outcomes, and preserve full HTTP and timeout diagnostics in Append delivery reports. Classify records that cannot fit the configured stream buffer separately from temporary backpressure.
+
+* Support the declared Node.js 20 floor without `AbortSignal.any`, carry aborted flush outcomes into the next barrier report, and harden framework templates against oversized streamed bodies and unsafe JSON numbers.
 
 * Preserve signed/unsigned integer boundaries, raw JSON text, and special float values. Reject numeric overflow with row/column context and preserve result columns named `__proto__`.
 
