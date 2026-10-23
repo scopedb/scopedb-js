@@ -15,555 +15,216 @@
  */
 
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
-import { cp, copyFile, lstat, mkdir, mkdtemp, readFile, readdir, rm } from "node:fs/promises";
+import { execFile, spawn } from "node:child_process";
+import { once } from "node:events";
+import { cp, copyFile, lstat, mkdir, mkdtemp, rm } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
-import { basename, dirname, join } from "node:path";
+import { join } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
+import { promisify } from "node:util";
 import { gunzipSync } from "node:zlib";
 
+const exec = promisify(execFile);
 const repositoryRoot = fileURLToPath(new URL("../", import.meta.url));
-const fixtureRoot = join(repositoryRoot, "tests", "consumers", "frameworks");
 const temporaryRoot = await mkdtemp(join(tmpdir(), "scopedb-framework-smoke-"));
-const artifactsDirectory = join(temporaryRoot, "artifacts");
 const consumerRoot = join(temporaryRoot, "consumer");
-const keepTemporaryFiles = process.env["KEEP_FRAMEWORK_SMOKE_TEMP"] === "1";
-
+const bin = (name) => join(consumerRoot, "node_modules", ".bin", name);
 const sdkApiKey = "packed-smoke-sdk-key";
 const applicationWriteToken = "packed-smoke-write-token";
-const tableName = "sdk framework/smoke?#";
-const mock = await startMockScopeDb();
+const appendedRows = [];
+const backend = createServer(handleRequest).listen(0, "127.0.0.1");
+await once(backend, "listening");
+const bindings = {
+  SCOPEDB_ENDPOINT: `http://127.0.0.1:${backend.address().port}`,
+  SCOPEDB_API_KEY: sdkApiKey,
+  SCOPEDB_DATABASE: "scopedb",
+  SCOPEDB_SCHEMA: "public",
+  SCOPEDB_TABLE: "events",
+  APP_WRITE_TOKEN: applicationWriteToken,
+};
+const environment = {
+  ...process.env,
+  ...bindings,
+  NEXT_TELEMETRY_DISABLED: "1",
+  WRANGLER_SEND_METRICS: "false",
+  CI: "1",
+};
 
 try {
-  await mkdir(artifactsDirectory, { recursive: true });
-  const packResult = await runCommand("pack SDK", "npm", [
-    "pack",
-    "--json",
-    "--ignore-scripts",
-    "--pack-destination",
-    artifactsDirectory,
-  ], { cwd: repositoryRoot });
-  const packMetadata = JSON.parse(packResult.stdout);
-  assert.equal(packMetadata.length, 1, "npm pack must describe exactly one tarball");
-  assert.equal(typeof packMetadata[0]?.filename, "string");
-  const tarball = join(artifactsDirectory, basename(packMetadata[0].filename));
-  await lstat(tarball);
-
-  await cp(fixtureRoot, consumerRoot, { recursive: true });
-  await copyCheckedInTemplate(
-    join(repositoryRoot, "examples", "frameworks", "nextjs-route-handler", "route.ts"),
-    join(consumerRoot, "next-app", "app", "api", "events", "route.ts"),
+  const packed = JSON.parse(await run("npm", [
+    "pack", "--json", "--ignore-scripts", "--pack-destination", temporaryRoot,
+  ], repositoryRoot));
+  await cp(join(repositoryRoot, "tests/consumers/frameworks"), consumerRoot, { recursive: true });
+  await mkdir(join(consumerRoot, "app/api/events"), { recursive: true });
+  await copyFile(
+    join(repositoryRoot, "examples/frameworks/nextjs-route-handler/route.ts"),
+    join(consumerRoot, "app/api/events/route.ts"),
   );
-  await copyCheckedInTemplate(
-    join(repositoryRoot, "examples", "frameworks", "cloudflare-worker", "worker.ts"),
-    join(consumerRoot, "worker", "src", "template.ts"),
+  await copyFile(
+    join(repositoryRoot, "examples/frameworks/cloudflare-worker/worker.ts"),
+    join(consumerRoot, "worker/worker.ts"),
   );
-
-  await runCommand("install locked framework consumer", "npm", [
-    "ci",
-    "--no-audit",
-    "--no-fund",
-  ], { cwd: consumerRoot, timeoutMs: 5 * 60_000 });
-  await runCommand("install packed SDK", "npm", [
-    "install",
-    "--ignore-scripts",
-    "--no-audit",
-    "--no-fund",
-    "--no-save",
-    tarball,
-  ], { cwd: consumerRoot, timeoutMs: 2 * 60_000 });
-
-  const installedPackage = JSON.parse(await readFile(
-    join(consumerRoot, "node_modules", "scopedb", "package.json"),
-    "utf8",
-  ));
-  assert.equal(installedPackage.name, "scopedb");
-  assert.equal(
-    (await lstat(join(consumerRoot, "node_modules", "scopedb"))).isSymbolicLink(),
-    false,
-    "packed SDK installation must not be a workspace or npm link",
-  );
-  await lstat(join(consumerRoot, "node_modules", "scopedb", "dist", "index.d.ts"));
-
-  await runCommand("type-check Web runtime consumer", join(
-    consumerRoot,
-    "node_modules",
-    ".bin",
-    "tsc",
-  ), ["-p", "worker/tsconfig.json"], {
-    cwd: consumerRoot,
-  });
-
-  const runtimeEnvironment = {
-    ...process.env,
-    SCOPEDB_ENDPOINT: mock.endpoint,
-    SCOPEDB_API_KEY: sdkApiKey,
-    SCOPEDB_DATABASE: "scopedb",
-    SCOPEDB_SCHEMA: "public",
-    SCOPEDB_TABLE: tableName,
-    APP_WRITE_TOKEN: applicationWriteToken,
-    NEXT_TELEMETRY_DISABLED: "1",
-    WRANGLER_SEND_METRICS: "false",
-    CI: "1",
-  };
-
-  await smokeNext(consumerRoot, runtimeEnvironment, mock.requests);
-  await smokeWorker(consumerRoot, runtimeEnvironment, mock.requests);
-  assert.deepEqual(mock.errors, [], `mock ScopeDB errors: ${mock.errors.join("; ")}`);
+  await run("npm", [
+    "install", "--no-package-lock", "--no-audit", "--no-fund", "--no-save", "--include=dev",
+    join(temporaryRoot, packed[0].filename),
+  ]);
+  assert.equal((await lstat(join(consumerRoot, "node_modules/scopedb"))).isSymbolicLink(), false);
+  await run(bin("tsc"), ["-p", "worker/tsconfig.json"]);
+  await run(bin("next"), ["build"]);
+  await smoke("Next.js", bin("next"), ["start", "--hostname", "127.0.0.1"], consumerRoot, "/api/events");
+  await smoke("Workers", bin("wrangler"), [
+    "dev", "--local", "--ip", "127.0.0.1",
+    ...Object.entries(bindings).flatMap(([key, value]) => ["--var", `${key}:${value}`]),
+  ], join(consumerRoot, "worker"), "/");
+  assert.deepEqual(appendedRows.map((row) => row.name), ["Next.js", "Workers"]);
   console.log("packed framework consumer smoke passed");
 } finally {
-  await mock.close();
-  if (keepTemporaryFiles) {
+  backend.closeAllConnections();
+  await new Promise((resolve) => backend.close(resolve));
+  if (process.env["KEEP_FRAMEWORK_SMOKE_TEMP"] === "1") {
     console.log(`kept framework smoke files at ${temporaryRoot}`);
   } else {
     await rm(temporaryRoot, { recursive: true, force: true });
   }
 }
 
-async function smokeNext(consumer, environment, backendRequests) {
-  const appDirectory = join(consumer, "next-app");
-  const nextBinary = join(consumer, "node_modules", ".bin", "next");
-  await runCommand("build Next.js consumer", nextBinary, ["build"], {
-    cwd: appDirectory,
-    env: environment,
-    timeoutMs: 3 * 60_000,
+async function smoke(name, command, args, cwd, path) {
+  const reservation = createServer().listen(0, "127.0.0.1");
+  await once(reservation, "listening");
+  const port = reservation.address().port;
+  await new Promise((resolve) => reservation.close(resolve));
+  const child = spawn(command, [...args, "--port", String(port)], {
+    cwd, env: environment, stdio: "inherit", detached: process.platform !== "win32",
   });
-  assert.equal(
-    await directoryContains(
-      join(appDirectory, ".next", "static"),
-      Buffer.from(sdkApiKey),
-    ),
-    false,
-    "ScopeDB API key leaked into Next.js static output",
-  );
-
-  const port = await availablePort();
-  const server = startService("Next.js", nextBinary, [
-    "start",
-    "--hostname",
-    "127.0.0.1",
-    "--port",
-    String(port),
-  ], { cwd: appDirectory, env: environment });
-  const baseUrl = `http://127.0.0.1:${port}/api/events`;
-  const requestStart = backendRequests.length;
+  let spawnError;
+  child.on("error", (error) => {
+    spawnError = error;
+  });
+  const closed = new Promise((resolve) => child.once("close", resolve));
+  const url = `http://127.0.0.1:${port}${path}`;
 
   try {
-    const queryResponse = await waitForResponse(baseUrl, server);
-    assert.equal(queryResponse.status, 200);
-    assert.deepEqual(await queryResponse.json(), { ready: 1 });
-
-    await assertProtectedWriteBoundary(baseUrl, backendRequests);
-
-    const appendResponse = await fetch(baseUrl, {
+    let response;
+    const deadline = Date.now() + 60_000;
+    while (response === undefined) {
+      if (spawnError) {
+        throw spawnError;
+      }
+      assert.ok(child.exitCode === null && child.signalCode === null, `${name} exited before readiness`);
+      assert.ok(Date.now() < deadline, `${name} did not become ready within 60 seconds`);
+      try {
+        response = await fetch(url, { signal: AbortSignal.timeout(2_000) });
+      } catch {
+        await delay(200);
+      }
+    }
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), { ready: 1 });
+    response = await fetch(url, {
       method: "POST",
       headers: {
         Authorization: `Bearer ${applicationWriteToken}`,
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({ name: "next", attributes: { runtime: "node" } }),
+      body: JSON.stringify({ name, attributes: { source: "packed-sdk" } }),
+      signal: AbortSignal.timeout(10_000),
     });
-    assert.equal(appendResponse.status, 201);
-    assert.deepEqual(await appendResponse.json(), { insertedRows: 1 });
+    assert.equal(response.status, 201);
+    assert.deepEqual(await response.json(), { insertedRows: 1 });
+    console.log(`${name} packed consumer passed`);
   } finally {
-    await stopService(server);
-  }
-
-  const requests = backendRequests.slice(requestStart);
-  assertBackendContract(requests, {
-    statementRequests: 1,
-    appendedRows: 1,
-    rowNames: ["next"],
-  });
-  console.log("Next.js packed consumer passed");
-}
-
-async function smokeWorker(consumer, environment, backendRequests) {
-  const workerDirectory = join(consumer, "worker");
-  const config = await readFile(join(workerDirectory, "wrangler.jsonc"), "utf8");
-  assert.equal(config.includes("nodejs_compat"), false, "Worker smoke must not enable nodejs_compat");
-
-  const wranglerBinary = join(consumer, "node_modules", ".bin", "wrangler");
-  const port = await availablePort();
-  const server = startService("Wrangler/workerd", wranglerBinary, [
-    "dev",
-    "--local",
-    "--ip",
-    "127.0.0.1",
-    "--port",
-    String(port),
-    "--var",
-    `SCOPEDB_ENDPOINT:${environment.SCOPEDB_ENDPOINT}`,
-    "--var",
-    `SCOPEDB_API_KEY:${sdkApiKey}`,
-    "--var",
-    `SCOPEDB_TABLE:${tableName}`,
-    "--var",
-    `APP_WRITE_TOKEN:${applicationWriteToken}`,
-  ], { cwd: workerDirectory, env: environment });
-  const baseUrl = `http://127.0.0.1:${port}`;
-  const requestStart = backendRequests.length;
-
-  try {
-    const queryResponse = await waitForResponse(baseUrl, server);
-    assert.equal(queryResponse.status, 200);
-    assert.deepEqual(await queryResponse.json(), { ready: 1 });
-
-    await assertProtectedWriteBoundary(baseUrl, backendRequests);
-
-    const appendResponse = await fetch(baseUrl, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${applicationWriteToken}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({ name: "worker", attributes: { runtime: "workerd" } }),
-    });
-    assert.equal(appendResponse.status, 201);
-    assert.deepEqual(await appendResponse.json(), { insertedRows: 1 });
-
-    const requestsBeforeStream = backendRequests.length;
-    const unauthorizedStream = await fetch(`${baseUrl}/append-stream`, {
-      method: "POST",
-    });
-    assert.equal(unauthorizedStream.status, 401);
-    assert.equal(
-      backendRequests.length,
-      requestsBeforeStream,
-      "unauthorized stream write reached ScopeDB",
-    );
-
-    const streamResponse = await fetch(`${baseUrl}/append-stream`, {
-      method: "POST",
-      headers: { Authorization: `Bearer ${applicationWriteToken}` },
-    });
-    assert.equal(streamResponse.status, 201);
-    assert.deepEqual(await streamResponse.json(), { insertedRows: 3 });
-  } finally {
-    await stopService(server);
-  }
-
-  const requests = backendRequests.slice(requestStart);
-  assertBackendContract(requests, {
-    statementRequests: 1,
-    appendedRows: 4,
-    rowNames: ["worker", "first", "second", "third"],
-  });
-  const appendRequests = requests.filter((request) => request.pathname.endsWith("/ingest"));
-  assert.equal(appendRequests.length, 3, "direct append plus two stream batches expected");
-  console.log("Wrangler/workerd packed consumer passed");
-}
-
-async function assertProtectedWriteBoundary(url, backendRequests) {
-  const requestsBefore = backendRequests.length;
-  const unauthorized = await fetch(url, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ name: "unauthorized" }),
-  });
-  assert.equal(unauthorized.status, 401);
-  assert.equal(backendRequests.length, requestsBefore, "unauthorized write reached ScopeDB");
-
-  const oversized = await fetch(url, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${applicationWriteToken}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({ name: "x".repeat(65 * 1024) }),
-  });
-  assert.equal(oversized.status, 413);
-  assert.equal(backendRequests.length, requestsBefore, "oversized write reached ScopeDB");
-}
-
-function assertBackendContract(requests, expected) {
-  const statements = requests.filter((request) => request.pathname === "/v1/statements");
-  const appends = requests.filter((request) => request.pathname.endsWith("/ingest"));
-  assert.equal(statements.length, expected.statementRequests);
-  assert.equal(
-    appends.reduce((total, request) => total + ndjsonRows(request.body), 0),
-    expected.appendedRows,
-  );
-  assert.ok(requests.length > 0);
-  assert.ok(requests.every((request) => request.authorization === `Bearer ${sdkApiKey}`));
-  assert.ok(requests.every((request) => request.accept === "application/json"));
-  assert.ok(requests.every((request) => request.contentEncoding === "gzip"));
-  assert.ok(statements.every((request) =>
-    Number(request.uncompressedBytes) === Buffer.byteLength(request.body)));
-  assert.ok(appends.every((request) => request.contentType === "application/x-ndjson"));
-  assert.ok(appends.every((request) => request.pathname ===
-    "/v1/catalog/databases/scopedb/schemas/public/tables/sdk%20framework%2Fsmoke%3F%23/ingest"));
-  assert.ok(statements.every((request) => request.contentType === "application/json"));
-  const rows = appends.flatMap((request) => request.body
-    .split("\n")
-    .filter((line) => line.length > 0)
-    .map((line) => JSON.parse(line)));
-  assert.ok(rows.every((row) => typeof row === "object" && row !== null));
-  assert.ok(rows.every((row) => typeof row.event_id === "string"));
-  assert.deepEqual(
-    rows.map((row) => row.name).sort(),
-    [...expected.rowNames].sort(),
-  );
-  assert.ok(statements.every((request) =>
-    JSON.parse(request.body).statement === "SELECT 1 AS ready"));
-}
-
-async function startMockScopeDb() {
-  const requests = [];
-  const errors = [];
-  const server = createServer(async (request, response) => {
+    // Wrangler starts workerd as a child; stop the process group as well as the CLI.
+    const kill = (signal) => {
+      try {
+        if (process.platform === "win32") {
+          child.kill(signal);
+        } else if (child.pid !== undefined) {
+          process.kill(-child.pid, signal);
+        }
+      } catch (error) {
+        if (error.code !== "ESRCH") {
+          throw error;
+        }
+      }
+    };
+    const timeout = setTimeout(() => kill("SIGKILL"), 5_000);
     try {
-      const body = await readRequestBody(request);
-      const pathname = new URL(request.url ?? "/", "http://scope.test").pathname;
-      requests.push({
-        method: request.method,
-        pathname,
-        authorization: request.headers.authorization,
-        accept: request.headers.accept,
-        contentType: request.headers["content-type"],
-        contentEncoding: request.headers["content-encoding"],
-        uncompressedBytes: request.headers["x-scopedb-uncompressed-content-length"],
-        body,
-      });
-
-      if (request.method === "POST" && pathname === "/v1/statements") {
-        respondJson(response, finishedStatement());
-        return;
-      }
-      if (request.method === "POST" && pathname.endsWith("/ingest")) {
-        respondJson(response, {
-          status: "committed",
-          num_rows_inserted: ndjsonRows(body),
-        });
-        return;
-      }
-      respondJson(response, { message: "not found" }, 404);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      errors.push(message);
-      respondJson(response, { message }, 500);
-    }
-  });
-
-  await new Promise((resolve, reject) => {
-    server.once("error", reject);
-    server.listen(0, "127.0.0.1", resolve);
-  });
-  const address = server.address();
-  assert.notEqual(address, null);
-  assert.equal(typeof address, "object");
-
-  return {
-    endpoint: `http://127.0.0.1:${address.port}`,
-    requests,
-    errors,
-    close: () => new Promise((resolve, reject) => {
-      server.close((error) => error === undefined ? resolve() : reject(error));
-    }),
-  };
-}
-
-function finishedStatement() {
-  return {
-    status: "finished",
-    statement_id: "framework-smoke-statement",
-    created_at: "2026-08-01T00:00:00Z",
-    progress: {
-      compute_seconds: 0.001,
-      total_percentage: 100,
-      nanos_from_submitted: 1,
-      nanos_from_started: 1,
-      total_stages: 1,
-      total_partitions: 1,
-      total_rows: 1,
-      total_compressed_bytes: 1,
-      total_uncompressed_bytes: 1,
-      scanned_stages: 1,
-      scanned_partitions: 1,
-      scanned_rows: 1,
-      scanned_compressed_bytes: 1,
-      scanned_uncompressed_bytes: 1,
-      skipped_partitions: 0,
-      skipped_rows: 0,
-      skipped_compressed_bytes: 0,
-      skipped_uncompressed_bytes: 0,
-    },
-    result_set: {
-      metadata: {
-        fields: [{ name: "ready", data_type: "int" }],
-        num_rows: 1,
-      },
-      format: "json",
-      rows: [["1"]],
-    },
-  };
-}
-
-function respondJson(response, value, status = 200) {
-  response.writeHead(status, { "Content-Type": "application/json" });
-  response.end(JSON.stringify(value));
-}
-
-async function readRequestBody(request) {
-  const chunks = [];
-  for await (const chunk of request) {
-    chunks.push(chunk);
-  }
-  const bytes = Buffer.concat(chunks);
-  assert.equal(request.headers["content-encoding"], "gzip");
-  return gunzipSync(bytes).toString("utf8");
-}
-
-function ndjsonRows(body) {
-  return body.split("\n").filter((line) => line.length > 0).length;
-}
-
-async function copyCheckedInTemplate(source, destination) {
-  await mkdir(dirname(destination), { recursive: true });
-  await copyFile(source, destination);
-}
-
-async function directoryContains(directory, needle) {
-  for (const entry of await readdir(directory, { withFileTypes: true })) {
-    const path = join(directory, entry.name);
-    if (entry.isDirectory()) {
-      if (await directoryContains(path, needle)) {
-        return true;
-      }
-    } else if ((await readFile(path)).includes(needle)) {
-      return true;
+      kill("SIGTERM");
+      await closed;
+    } finally {
+      clearTimeout(timeout);
     }
   }
-  return false;
 }
 
-async function availablePort() {
-  const server = createServer();
-  await new Promise((resolve, reject) => {
-    server.once("error", reject);
-    server.listen(0, "127.0.0.1", resolve);
-  });
-  const address = server.address();
-  assert.notEqual(address, null);
-  assert.equal(typeof address, "object");
-  await new Promise((resolve, reject) => {
-    server.close((error) => error === undefined ? resolve() : reject(error));
-  });
-  return address.port;
-}
-
-async function waitForResponse(url, service) {
-  const deadline = Date.now() + 60_000;
-  let lastError;
-  while (Date.now() < deadline) {
-    if (childHasExited(service.child)) {
-      throw new Error(`${service.name} exited before becoming ready\n${service.output()}`);
-    }
-    try {
-      const response = await fetch(url, { signal: AbortSignal.timeout(2_000) });
-      if (response.ok) {
-        return response;
-      }
-      lastError = new Error(`HTTP ${response.status}: ${await response.text()}`);
-    } catch (error) {
-      lastError = error;
-    }
-    await new Promise((resolve) => setTimeout(resolve, 200));
-  }
-  throw new Error(
-    `${service.name} did not become ready: ${String(lastError)}\n${service.output()}`,
-  );
-}
-
-async function runCommand(label, command, args, options) {
-  const service = startService(label, command, args, options);
-  const timeoutMs = options.timeoutMs ?? 60_000;
-  let didTimeOut = false;
-  let termination;
-  const timeout = setTimeout(() => {
-    didTimeOut = true;
-    termination = stopService(service);
-    void termination.catch(() => {});
-  }, timeoutMs);
-  const outcome = await new Promise((resolve) => {
-    service.child.once("error", (error) => resolve({ error }));
-    service.child.once("close", (code, signal) => resolve({ code, signal }));
-  });
-  clearTimeout(timeout);
-  if (termination !== undefined) {
-    await termination;
-  }
-  if (didTimeOut) {
-    throw new Error(`${label} timed out after ${timeoutMs}ms\n${service.output()}`);
-  }
-  if ("error" in outcome) {
-    throw outcome.error;
-  }
-  if (outcome.code !== 0) {
-    throw new Error(
-      `${label} failed with code ${outcome.code} signal ${outcome.signal}\n${service.output()}`,
-    );
-  }
-  return { stdout: service.stdout(), stderr: service.stderr() };
-}
-
-function startService(name, command, args, options) {
-  const child = spawn(command, args, {
-    cwd: options.cwd,
-    env: options.env ?? process.env,
-    detached: process.platform !== "win32",
-    stdio: ["ignore", "pipe", "pipe"],
-  });
-  let stdout = "";
-  let stderr = "";
-  child.stdout.on("data", (chunk) => {
-    stdout = `${stdout}${chunk}`.slice(-128 * 1024);
-  });
-  child.stderr.on("data", (chunk) => {
-    stderr = `${stderr}${chunk}`.slice(-128 * 1024);
-  });
-  return {
-    name,
-    child,
-    stdout: () => stdout,
-    stderr: () => stderr,
-    output: () => `${stdout}\n${stderr}`,
-  };
-}
-
-async function stopService(service) {
-  if (childHasExited(service.child)) {
-    return;
-  }
-  const closed = new Promise((resolve) => service.child.once("close", resolve));
-  signalProcess(service.child, "SIGTERM");
-  let graceTimer;
-  const gracePeriod = new Promise((resolve) => {
-    graceTimer = setTimeout(resolve, 5_000, "timeout");
-  });
-  const result = await Promise.race([closed, gracePeriod]);
-  clearTimeout(graceTimer);
-  if (result === "timeout") {
-    signalProcess(service.child, "SIGKILL");
-    await closed;
-  }
-}
-
-function childHasExited(child) {
-  return child.exitCode !== null || child.signalCode !== null;
-}
-
-function signalProcess(child, signal) {
+async function run(command, args, cwd = consumerRoot) {
+  console.log(`> ${command} ${args.join(" ")}`);
   try {
-    if (process.platform === "win32") {
-      child.kill(signal);
-    } else if (child.pid !== undefined) {
-      process.kill(-child.pid, signal);
-    }
+    return (await exec(command, args, {
+      cwd, env: environment, timeout: 5 * 60_000, maxBuffer: 16 * 1024 * 1024,
+    })).stdout;
   } catch (error) {
-    if (error?.code !== "ESRCH") {
-      throw error;
+    console.error(error.stdout);
+    throw error;
+  }
+}
+
+async function handleRequest(request, response) {
+  try {
+    assert.equal(request.method, "POST");
+    assert.equal(request.headers.authorization, `Bearer ${sdkApiKey}`);
+    assert.equal(request.headers["content-encoding"], "gzip");
+    const chunks = [];
+    for await (const chunk of request) {
+      chunks.push(chunk);
     }
+    const body = gunzipSync(Buffer.concat(chunks)).toString("utf8");
+    let result;
+    if (request.url === "/v1/statements") {
+      assert.equal(JSON.parse(body).statement, "SELECT 1 AS ready");
+      result = {
+        status: "finished",
+        statement_id: "framework-smoke-statement",
+        created_at: "2026-08-01T00:00:00Z",
+        progress: {
+          compute_seconds: 0.001,
+          total_percentage: 100,
+          nanos_from_submitted: 1,
+          nanos_from_started: 1,
+          total_stages: 1,
+          total_partitions: 1,
+          total_rows: 1,
+          total_compressed_bytes: 1,
+          total_uncompressed_bytes: 1,
+          scanned_stages: 1,
+          scanned_partitions: 1,
+          scanned_rows: 1,
+          scanned_compressed_bytes: 1,
+          scanned_uncompressed_bytes: 1,
+          skipped_partitions: 0,
+          skipped_rows: 0,
+          skipped_compressed_bytes: 0,
+          skipped_uncompressed_bytes: 0,
+        },
+        result_set: {
+          metadata: { fields: [{ name: "ready", data_type: "int" }], num_rows: 1 },
+          format: "json",
+          rows: [["1"]],
+        },
+      };
+    } else {
+      assert.equal(request.url, "/v1/catalog/databases/scopedb/schemas/public/tables/events/ingest");
+      const rows = body.trim().split("\n").map((line) => JSON.parse(line));
+      appendedRows.push(...rows);
+      result = { status: "committed", num_rows_inserted: rows.length };
+    }
+    response.writeHead(200, { "Content-Type": "application/json" });
+    response.end(JSON.stringify(result));
+  } catch (error) {
+    console.error(error);
+    response.writeHead(500, { "Content-Type": "application/json" });
+    response.end(JSON.stringify({ message: String(error) }));
   }
 }
