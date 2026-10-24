@@ -59,22 +59,39 @@ export class Statement {
 
   async submit(options: RequestOptions = {}): Promise<StatementHandle> {
     const statementId = this.statementIdValue;
-    const snapshot = await this.client.submitStatement({
-      statement: this.statementText,
-      statement_id: statementId,
-      max_elapsed_seconds: this.maxElapsedSeconds,
-      max_estimated_seconds: this.maxEstimatedSeconds,
-      format: "json",
-    }, options);
-    return new StatementHandle(
-      this.client,
-      statementId ?? snapshot.statement_id,
-      snapshot,
-    );
+    try {
+      const snapshot = await this.client.submitStatement({
+        statement: this.statementText,
+        statement_id: statementId,
+        max_elapsed_seconds: this.maxElapsedSeconds,
+        max_estimated_seconds: this.maxEstimatedSeconds,
+        format: "json",
+      }, options);
+      return new StatementHandle(
+        this.client,
+        statementId ?? snapshot.statement_id,
+        snapshot,
+      );
+    } catch (cause) {
+      throw attachStatementId(cause, statementId, options.signal);
+    }
   }
 
   async execute(options: WaitOptions = {}): Promise<ResultSet> {
-    return (await this.submit(options)).wait(options);
+    const handle = await this.submit(options);
+    try {
+      return await handle.wait(options);
+    } catch (cause) {
+      // Retrying this convenience method would submit a second execution.
+      // Temporary read failures remain retryable when using a retained handle.
+      if (
+        cause instanceof ScopeDBError && cause !== options.signal?.reason &&
+        cause.isTemporary()
+      ) {
+        cause.setPersistent();
+      }
+      throw cause;
+    }
   }
 }
 
@@ -109,47 +126,55 @@ export class StatementHandle {
       return structuredClone(this.currentSnapshot);
     }
     const observation = ++this.nextObservation;
-    return this.remember(
-      await this.client.fetchStatement(this.statementId, options),
-      observation,
-    );
+    try {
+      return this.remember(
+        await this.client.fetchStatement(this.statementId, options),
+        observation,
+      );
+    } catch (cause) {
+      throw attachStatementId(cause, this.statementId, options.signal);
+    }
   }
 
   /** Waits for a terminal result. Aborting stops local waiting; use cancel() to request server cancellation. */
   async wait(options: WaitOptions = {}): Promise<ResultSet> {
-    let delayMs = nonnegativeIntegerConfig(
-      "initialDelayMs",
-      options.initialDelayMs ?? 5,
-      MAX_TIMER_MS,
-    );
-    const maxDelayMs = nonnegativeIntegerConfig(
-      "maxDelayMs",
-      options.maxDelayMs ?? 1_000,
-      MAX_TIMER_MS,
-    );
-    delayMs = Math.min(delayMs, maxDelayMs);
-    for (;;) {
-      options.signal?.throwIfAborted();
-      const snapshot = await this.refresh(options);
-      switch (snapshot.status) {
-        case "finished":
-          return ResultSet.fromStatementResultSet(snapshot.result_set);
-        case "failed":
-          throw new ScopeDBError("StatementFailed", snapshot.error.message, {
-            code: snapshot.error.code,
-            details: snapshot.error.details,
-            statementDetails: snapshot.error,
-          });
-        case "cancelled":
-          throw new ScopeDBError(
-            "StatementCancelled",
-            `statement ${this.statementId} is cancelled`,
-          );
-        case "pending":
-        case "running":
-          await sleep(delayMs, options.signal);
-          delayMs = Math.min(delayMs * 2, maxDelayMs);
+    try {
+      let delayMs = nonnegativeIntegerConfig(
+        "initialDelayMs",
+        options.initialDelayMs ?? 5,
+        MAX_TIMER_MS,
+      );
+      const maxDelayMs = nonnegativeIntegerConfig(
+        "maxDelayMs",
+        options.maxDelayMs ?? 1_000,
+        MAX_TIMER_MS,
+      );
+      delayMs = Math.min(delayMs, maxDelayMs);
+      for (;;) {
+        options.signal?.throwIfAborted();
+        const snapshot = await this.refresh(options);
+        switch (snapshot.status) {
+          case "finished":
+            return ResultSet.fromStatementResultSet(snapshot.result_set);
+          case "failed":
+            throw new ScopeDBError("StatementFailed", snapshot.error.message, {
+              code: snapshot.error.code,
+              details: snapshot.error.details,
+              statementDetails: snapshot.error,
+            });
+          case "cancelled":
+            throw new ScopeDBError(
+              "StatementCancelled",
+              `statement ${this.statementId} is cancelled`,
+            );
+          case "pending":
+          case "running":
+            await sleep(delayMs, options.signal);
+            delayMs = Math.min(delayMs * 2, maxDelayMs);
+        }
       }
+    } catch (cause) {
+      throw attachStatementId(cause, this.statementId, options.signal);
     }
   }
 
@@ -162,10 +187,14 @@ export class StatementHandle {
       return structuredClone(this.currentSnapshot);
     }
     const observation = ++this.nextObservation;
-    return this.remember(
-      await this.client.cancelStatement(this.statementId, options),
-      observation,
-    );
+    try {
+      return this.remember(
+        await this.client.cancelStatement(this.statementId, options),
+        observation,
+      );
+    } catch (cause) {
+      throw attachStatementId(cause, this.statementId, options.signal);
+    }
   }
 
   private remember(
@@ -202,6 +231,22 @@ export class StatementHandle {
     this.appliedObservation = observation;
     return this.snapshot()!;
   }
+}
+
+function attachStatementId(
+  cause: unknown,
+  statementId: string | undefined,
+  signal?: AbortSignal,
+): unknown {
+  // Caller-owned abort reasons retain their identity and metadata, even if
+  // the caller supplied a ScopeDBError from another operation.
+  if (
+    cause instanceof ScopeDBError && cause !== signal?.reason &&
+    statementId !== undefined
+  ) {
+    cause.withContext("statement_id", canonicalStatementId(statementId));
+  }
+  return cause;
 }
 
 const UUID_PATTERN =

@@ -252,6 +252,7 @@ try {
       message: error.message,
       httpStatus: error.httpStatus,
       requestId: error.requestId,
+      statementId: error.statementId,
       retryable: error.retryable,
       retryAfterMs: error.retryAfterMs,
       statementDetails: error.statementDetails,
@@ -261,7 +262,11 @@ try {
 }
 ```
 
-`retryable` only classifies a temporary error; it does not prove that replay is safe. A lost transport acknowledgement or an unstructured 408/429/5xx response during Statement submission has code `statement_submission_outcome_unknown` and is not marked retryable. If a statement submission may have side effects and its response is lost, do not blindly submit again. Supply a caller-known UUID with `withStatementId()` before submission so you can reconcile through `statementHandle(id)`; Append and Catalog additionally expose the outcome rules above.
+`retryable` does not prove that replay is safe. After a successful submission, errors from `query()` and `execute()` are not marked retryable: repeating those methods would submit a second execution. Their SDK errors retain `statementId`, along with the original cause and server diagnostics. After deciding a polling failure is recoverable, use `client.statementHandle(error.statementId).wait({ signal })` with an active signal to resume the same execution. If you already retained a handle, retry waiting on that handle; its `refresh()` and `wait()` errors keep their temporary classification. The SDK does not retry failed polling requests automatically.
+
+A lost transport acknowledgement or an unstructured 408/429/5xx response during Statement submission has code `statement_submission_outcome_unknown` and is not marked retryable. Supply a caller-known UUID with `withStatementId()` before submission to retain that ID on SDK errors even if the response is lost. An error's `statementId` identifies the attempted statement; it does not prove acceptance or guarantee that the server still retains its result. Confirmed temporary submission rejections keep their retryable classification. Append and Catalog follow the outcome rules above.
+
+Caller abort reasons are rethrown unchanged, without adding a statement ID or changing their retryability. Retain the handle or choose an ID before submission when cancellation recovery is needed.
 
 `stats().lastFailure.error` retains the full batch error, including timeout diagnostics. When a statement reaches the `failed` state, `statementDetails` preserves the server-provided `code`, `message`, and optional code-specific `details` object.
 

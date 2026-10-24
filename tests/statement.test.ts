@@ -199,6 +199,7 @@ describe("StatementHandle.wait", () => {
       (err: unknown) => {
         assert.ok(err instanceof ScopeDBError);
         assert.equal(err.kind, "StatementFailed");
+        assert.equal(err.statementId, handle.statementId);
         assert.ok(
           err.message.includes("query returned too many rows"),
           `message was: ${err.message}`,
@@ -220,6 +221,7 @@ describe("StatementHandle.wait", () => {
       (error: unknown) => {
         assert.ok(error instanceof ScopeDBError);
         assert.match(error.message, /statement response has an invalid body/);
+        assert.equal(error.statementId, handle.statementId);
         return true;
       },
     );
@@ -238,6 +240,7 @@ describe("StatementHandle.wait", () => {
       (err: unknown) => {
         assert.ok(err instanceof ScopeDBError);
         assert.equal(err.kind, "StatementCancelled");
+        assert.equal(err.statementId, handle.statementId);
         assert.ok(
           err.message.includes("is cancelled"),
           `message was: ${err.message}`,
@@ -456,6 +459,7 @@ for (const status of [undefined, 408, 429, 502]) {
       assert.ok(error instanceof ScopeDBError);
       assert.equal(error.retryable, false);
       assert.equal(error.code, "statement_submission_outcome_unknown");
+      assert.equal(error.statementId, undefined);
       assert.equal(error.httpStatus, status);
       assert.ok(error.cause instanceof ScopeDBError);
       return true;
@@ -475,6 +479,151 @@ it("preserves a confirmed temporary statement admission rejection", async () => 
     return true;
   });
 });
+
+for (const failure of ["HTTP 503", "transport"] as const) {
+  it(`resumes a query after a polling ${failure} without submitting it again`, async () => {
+    const methods: Array<string | undefined> = [];
+    const cause = new TypeError("poll connection lost");
+    const client = new Client("https://example.com", {
+      fetch: async (url, init) => {
+        methods.push(init?.method);
+        if (methods.length === 1) return jsonResponse(200, runningStatus());
+        assert.ok(String(url).endsWith("/statements/stmt-1?format=json"));
+        if (methods.length === 2) {
+          if (failure === "transport") throw cause;
+          return jsonResponse(503, {
+            code: "unavailable",
+            message: "temporarily unavailable",
+            retryable: true,
+            details: { phase: "read" },
+          }, { "X-Request-Id": "poll-request", "Retry-After": "2" });
+        }
+        return jsonResponse(200, finishedStatus(emptyResultSet()));
+      },
+    });
+    let statementId: string | undefined;
+    await assert.rejects(client.query("SELECT 1", noDelay), (error) => {
+      assert.ok(error instanceof ScopeDBError);
+      assert.equal(error.statementId, "stmt-1");
+      assert.equal(error.retryable, false);
+      assert.equal(error.isPersistent(), true);
+      if (failure === "transport") {
+        assert.equal(error.cause, cause);
+      } else {
+        assert.equal(error.code, "unavailable");
+        assert.equal(error.message, "temporarily unavailable");
+        assert.equal(error.httpStatus, 503);
+        assert.equal(error.requestId, "poll-request");
+        assert.equal(error.retryAfterMs, 2_000);
+        assert.equal(error.serverRetryable, true);
+        assert.deepEqual(error.details, { phase: "read" });
+      }
+      statementId = error.statementId;
+      return true;
+    });
+    assert.deepEqual(methods, ["POST", "GET"]);
+    assert.ok(statementId);
+    const result = await client.statementHandle(statementId).wait(noDelay);
+    assert.equal(result.numRows(), 0);
+    assert.deepEqual(methods, ["POST", "GET", "GET"]);
+  });
+}
+
+for (const method of ["refresh", "wait", "cancel"] as const) {
+  it(`retains a handle's identity and temporary classification after ${method} fails`, async () => {
+    const snapshot = runningStatus();
+    const { fn, calls } = makeFetchStub([
+      jsonResponse(503, { code: "unavailable", message: "try again" }),
+      jsonResponse(200, finishedStatus(emptyResultSet())),
+    ]);
+    const client = new Client("https://example.com", { fetch: fn });
+    const handle = new StatementHandle(client, "stmt-1", snapshot);
+    await assert.rejects(handle[method](), (error) => {
+      assert.ok(error instanceof ScopeDBError);
+      assert.equal(error.statementId, handle.statementId);
+      assert.equal(error.retryable, true);
+      return true;
+    });
+    assert.equal(calls.length, 1);
+    assert.deepEqual(handle.snapshot(), snapshot);
+    assert.equal((await handle.wait()).numRows(), 0);
+    assert.deepEqual(calls.map(({ init }) => init?.method), [
+      method === "cancel" ? "POST" : "GET",
+      "GET",
+    ]);
+  });
+}
+
+it("retains the caller's statement ID after a lost submission acknowledgement", async () => {
+  const id = "aabbccdd-1111-2222-3333-444455556666";
+  const methods: Array<string | undefined> = [];
+  const client = new Client("https://example.com", {
+    fetch: async (url, init) => {
+      methods.push(init?.method);
+      if (init?.method === "POST") throw new TypeError("acknowledgement lost");
+      assert.ok(String(url).endsWith(`/statements/${id}?format=json`));
+      return jsonResponse(200, finishedStatus(emptyResultSet(), id));
+    },
+  });
+  let statementId: string | undefined;
+  await assert.rejects(
+    client.statement("SELECT 1").withStatementId(`{${id.toUpperCase()}}`).submit(),
+    (error) => {
+      assert.ok(error instanceof ScopeDBError);
+      assert.equal(error.code, "statement_submission_outcome_unknown");
+      assert.equal(error.retryable, false);
+      assert.equal(error.statementId, id);
+      statementId = error.statementId;
+      return true;
+    },
+  );
+  assert.ok(statementId);
+  assert.equal((await client.statementHandle(statementId).wait()).numRows(), 0);
+  assert.deepEqual(methods, ["POST", "GET"]);
+});
+
+it("keeps a confirmed temporary submission rejection retryable through query", async () => {
+  const { fn, calls } = makeFetchStub([
+    jsonResponse(503, { code: "unavailable", message: "draining" }),
+  ]);
+  const client = new Client("https://example.com", { fetch: fn });
+  await assert.rejects(client.query("SELECT 1"), (error) => {
+    assert.ok(error instanceof ScopeDBError);
+    assert.equal(error.retryable, true);
+    assert.equal(error.statementId, undefined);
+    return true;
+  });
+  assert.equal(calls.length, 1);
+});
+
+for (const operation of ["query", "submit", "cancel"] as const) {
+  it(`preserves a caller-owned SDK error when ${operation} is aborted`, async () => {
+    const controller = new AbortController();
+    const started = new Deferred<void>();
+    const reason = new ScopeDBError("Unexpected", "caller stopped")
+      .setTemporary().withContext("statement_id", "earlier-statement");
+    const client = new Client("https://example.com", {
+      fetch: async (_url, init) => {
+        if (operation === "query" && init?.method === "POST") {
+          return jsonResponse(200, runningStatus());
+        }
+        started.resolve();
+        return new Promise<Response>(() => {});
+      },
+    });
+    const options = { signal: controller.signal };
+    const pending = operation === "query"
+      ? client.query("SELECT 1", options)
+      : operation === "submit"
+      ? client.statement("SELECT 1").withStatementId("stmt-1").submit(options)
+      : client.statementHandle("stmt-1").cancel(options);
+    await started.promise;
+    controller.abort(reason);
+    await assert.rejects(pending, (error: unknown) => error === reason);
+    assert.equal(reason.retryable, true);
+    assert.deepEqual([...reason.context()], [["statement_id", "earlier-statement"]]);
+  });
+}
 
 for (const status of [200, 503]) {
   it(`preserves the caller abort reason while reading a ${status} statement response`, async () => {
