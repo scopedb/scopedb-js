@@ -71,7 +71,7 @@ describe("Statement.submit", () => {
   });
 });
 
-describe("StatementHandle.status", () => {
+describe("StatementHandle.refresh", () => {
   it("fetches status from server and updates the local snapshot", async () => {
     const status = runningStatus("stmt-1");
     const { fn, calls } = makeFetchStub([jsonResponse(200, status)]);
@@ -122,7 +122,7 @@ describe("StatementHandle.status", () => {
   });
 
   it("skips the request when already cancelled", async () => {
-    const cancelled = cancelledStatus("user cancelled");
+    const cancelled = cancelledStatus();
     const { fn, calls } = makeFetchStub([]);
     const client = new Client("http://localhost:8080", { fetch: fn });
     const handle = new StatementHandle(client, "stmt-1", cancelled);
@@ -228,7 +228,7 @@ describe("StatementHandle.wait", () => {
 
   it("throws ScopeDBError when statement is cancelled with in-band status", async () => {
     const { fn } = makeFetchStub([
-      jsonResponse(200, cancelledStatus("cancelled by user")),
+      jsonResponse(200, cancelledStatus()),
     ]);
     const client = new Client("http://localhost:8080", { fetch: fn });
     const handle = new StatementHandle(client, "stmt-1");
@@ -284,7 +284,7 @@ describe("StatementHandle.wait", () => {
 
 describe("StatementHandle.cancel", () => {
   it("sends POST cancel when statement is still pending", async () => {
-    const cancelResult = cancelledStatus("cancelled");
+    const cancelResult = cancelledStatus();
     const pending = pendingStatus();
     const { fn, calls } = makeFetchStub([jsonResponse(200, cancelResult)]);
     const client = new Client("http://localhost:8080", { fetch: fn });
@@ -301,7 +301,7 @@ describe("StatementHandle.cancel", () => {
   });
 
   it("sends POST cancel when statement is running", async () => {
-    const cancelResult = cancelledStatus("cancelled");
+    const cancelResult = cancelledStatus();
     const { fn, calls } = makeFetchStub([jsonResponse(200, cancelResult)]);
     const client = new Client("http://localhost:8080", { fetch: fn });
     const handle = new StatementHandle(client, "stmt-1", runningStatus());
@@ -336,7 +336,7 @@ describe("StatementHandle.cancel", () => {
   });
 
   it("returns cached status without HTTP call when already cancelled", async () => {
-    const cancelled = cancelledStatus("already cancelled");
+    const cancelled = cancelledStatus();
     const { fn, calls } = makeFetchStub([]);
     const client = new Client("http://localhost:8080", { fetch: fn });
     const handle = new StatementHandle(client, "stmt-1", cancelled);
@@ -359,7 +359,7 @@ describe("StatementHandle.cancel", () => {
   });
 
   it("updates internal status after cancel returns cancelled", async () => {
-    const cancelResult = cancelledStatus("cancelled");
+    const cancelResult = cancelledStatus();
     const { fn } = makeFetchStub([jsonResponse(200, cancelResult)]);
     const client = new Client("http://localhost:8080", { fetch: fn });
     const handle = new StatementHandle(client, "stmt-1", runningStatus());

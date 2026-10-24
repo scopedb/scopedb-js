@@ -164,7 +164,6 @@ export function failedStatus(
 }
 
 export function cancelledStatus(
-  _message: string,
   statementId = "stmt-1",
 ): StatementSnapshot {
   return {

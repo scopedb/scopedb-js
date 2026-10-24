@@ -68,7 +68,6 @@ class QueueClosedError extends Error {}
 
 export const QUEUE_TIMEOUT = Symbol("QUEUE_TIMEOUT");
 export const QUEUE_CLOSED = Symbol("QUEUE_CLOSED");
-export const QUEUE_HEAD_UNAVAILABLE = Symbol("QUEUE_HEAD_UNAVAILABLE");
 
 type QueueReceiveResult<T> = T | typeof QUEUE_TIMEOUT | typeof QUEUE_CLOSED;
 
@@ -193,33 +192,6 @@ export class AsyncBoundedQueue<T> {
     }
     this.recvWaiters.push(waiter);
     return deferred.promise;
-  }
-
-  tryReceiveHeadIf(
-    predicate: (item: T) => boolean,
-  ): T | typeof QUEUE_HEAD_UNAVAILABLE {
-    if (this.items.length > 0) {
-      const item = this.items[0]!;
-      if (!predicate(item)) {
-        return QUEUE_HEAD_UNAVAILABLE;
-      }
-      this.items.shift();
-      this.drainSenders();
-      return item;
-    }
-
-    if (this.sendWaiters.length > 0) {
-      const waiter = this.sendWaiters[0]!;
-      if (!predicate(waiter.item)) {
-        return QUEUE_HEAD_UNAVAILABLE;
-      }
-      this.sendWaiters.shift();
-      this.removeSenderAbortListener(waiter);
-      waiter.ack.resolve();
-      return waiter.item;
-    }
-
-    return QUEUE_HEAD_UNAVAILABLE;
   }
 
   drain(): T[] {
@@ -481,20 +453,6 @@ export async function sleep(ms: number, signal?: AbortSignal): Promise<void> {
       finish();
     }
   });
-}
-
-export async function waitForAck<T>(
-  deferred: Deferred<T>,
-  makeClosedError: () => ScopeDBError,
-): Promise<T> {
-  try {
-    return await deferred.promise;
-  } catch (cause) {
-    if (cause instanceof ScopeDBError) {
-      throw cause;
-    }
-    throw makeClosedError();
-  }
 }
 
 export function writeTimeoutConfig(
