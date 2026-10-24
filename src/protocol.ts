@@ -142,18 +142,6 @@ export interface AppendRowsErrorPayload {
   row_errors_truncated: boolean;
 }
 
-export interface ErrorPayload {
-  code: string;
-  message: string;
-  details?: unknown;
-}
-
-export function statementIsFinished(
-  status: StatementSnapshot,
-): status is StatementSnapshotFinished {
-  return status.status === "finished";
-}
-
 export function statementIsTerminated(status: StatementSnapshot): boolean {
   return (
     status.status === "finished" ||

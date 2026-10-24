@@ -24,7 +24,6 @@ import type {
   AppendRowError,
   AppendRowsErrorPayload,
   AppendRowsResult,
-  DataType,
   StatementErrorDetails,
   StatementRequest,
   StatementResultSet,

@@ -140,7 +140,7 @@ describe("Client.fetchStatement", () => {
 
 describe("Client.cancelStatement", () => {
   it("sends POST /v1/statements/{id}/cancel", async () => {
-    const cancelResult = cancelledStatus("cancelled");
+    const cancelResult = cancelledStatus();
     const { fn, calls } = makeFetchStub([jsonResponse(200, cancelResult)]);
     const client = new Client("http://localhost:8080", { fetch: fn });
 

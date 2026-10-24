@@ -37,7 +37,7 @@ for (
   const terminal of [
     finishedStatus(emptyResultSet()),
     failedStatus("original failure"),
-    cancelledStatus("cancelled"),
+    cancelledStatus(),
   ]
 ) {
   it(`keeps ${terminal.status} after an older running response and isolates caller mutations`, async () => {

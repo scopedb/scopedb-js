@@ -42,9 +42,8 @@ export class Table {
   }
 
   identifier(): string {
-    return [this.databaseName, this.schemaName, this.tableName].map((name) =>
-      quoteIdent(name, "`")
-    ).join(".");
+    return [this.databaseName, this.schemaName, this.tableName]
+      .map(quoteIdent).join(".");
   }
 
   /** Appends at most 8 MiB of uncompressed newline-delimited JSON. */
@@ -96,11 +95,8 @@ export class Table {
   }
 }
 
-function quoteIdent(input: string, quote: string): string {
-  return quoteScopeQL(input, quote);
-}
-
-function quoteScopeQL(input: string, quote: string): string {
+function quoteIdent(input: string): string {
+  const quote = "`";
   let out = quote;
   for (const ch of input) {
     switch (ch) {
