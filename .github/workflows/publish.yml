@@ -22,9 +22,6 @@ jobs:
         with:
           node-version: 24
           cache: pnpm
-          # Writes an .npmrc reading NODE_AUTH_TOKEN; with no NPM_TOKEN secret
-          # set, the npm CLI authenticates through the OIDC token instead.
-          registry-url: https://registry.npmjs.org
       - name: Verify the tag matches the package version
         run: |
           tag_version="${GITHUB_REF_NAME#v}"
@@ -43,9 +40,7 @@ jobs:
       - name: Update npm CLI for trusted publishing
         run: npm install --global npm@latest
       - name: Publish to npm
-        run: npm publish --provenance --access public
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: npm publish --provenance --access public --registry=https://registry.npmjs.org
       - name: Extract release notes
         run: |
           version="$(node -p "require('./package.json').version")"
