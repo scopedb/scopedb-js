@@ -77,7 +77,7 @@ pnpm test
 pnpm run check
 ```
 
-See the [maintainer notes](https://github.com/scopedb/scopedb-js/blob/main/DELIVERY.md) for live integration tests, package validation, and release steps. Report problems through [GitHub issues](https://github.com/scopedb/scopedb-js/issues).
+Report problems through [GitHub issues](https://github.com/scopedb/scopedb-js/issues).
 
 ## License
 
