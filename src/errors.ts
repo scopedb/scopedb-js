@@ -101,6 +101,11 @@ export class ScopeDBError extends Error {
     return this.errorStatus === "temporary";
   }
 
+  /** Known statement ID for inspection or resuming a wait; it does not prove submission succeeded. */
+  get statementId(): string | undefined {
+    return this.errorContext.get("statement_id");
+  }
+
   withContext(key: string, value: string | number | boolean): this {
     this.errorContext.set(key, String(value));
     return this;
