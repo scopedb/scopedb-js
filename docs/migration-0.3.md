@@ -38,7 +38,7 @@ Streams retry confirmed temporary rejections by default. As in 0.2, unknown outc
 
 ## Update Catalog reads and mutations
 
-Replace paginated `list*`, `fetch*`, and `iterate*` calls with a resource selector followed by `get()`. Each read returns a complete `definition` and an opaque `etag`. In the table below, `catalog` is `client.catalog()`.
+Replace paginated `list*`, `fetch*`, and `iterate*` calls with a resource selector followed by `get()`. Each read returns a complete `definition` and an opaque version token. In the table below, `catalog` is `client.catalog()`.
 
 | In 0.2                                           | In 0.3                                     |
 | ------------------------------------------------ | ------------------------------------------ |
@@ -62,7 +62,7 @@ for (const table of snapshot.definition.tables ?? []) {
 }
 ```
 
-Definitions now use snake_case fields and preserve extension fields. An `apply()` replaces the entire selected resource, including children; omitted fields are cleared. For updates, read the definition, change it, and carry its ETag through a dry-run and the mutation. Potentially destructive changes require `allowDestructive: true`. See the [Catalog example](usage.md#read-or-change-table-schemas).
+Definitions now use snake_case fields and preserve extension fields. An `apply()` replaces the entire selected resource, including children; omitted fields are cleared. For updates, read the definition, change it, and carry its version through a dry-run and the mutation. Potentially destructive changes require `allowDestructive: true`. See the [Catalog example](usage.md#read-or-change-table-schemas).
 
 ## Update statements and query limits
 

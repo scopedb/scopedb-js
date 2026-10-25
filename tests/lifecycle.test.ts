@@ -182,7 +182,7 @@ it("honors server retry refusal even when unknown replay is enabled", async () =
   assert.equal(calls, 1);
 });
 
-it("round-trips nested catalog extensions with the original ETag", async () => {
+it("round-trips nested catalog extensions with the original version", async () => {
   const definition = {
     name: "events",
     future_table_option: { mode: "new" },
@@ -209,7 +209,7 @@ it("round-trips nested catalog extensions with the original ETag", async () => {
   const snapshot = await resource.get();
   snapshot.definition.comment = "updated";
   const applied = await resource.apply(snapshot.definition, {
-    ifMatch: snapshot.etag,
+    expectedVersion: snapshot.version,
   });
   assert.deepEqual(applied.after?.columns?.[0]?.["future_column_option"], [
     1,

@@ -23,7 +23,8 @@ export interface CatalogOptions extends RequestOptions {
   timeoutMs?: number | null;
   dryRun?: boolean;
   allowDestructive?: boolean;
-  ifMatch?: string;
+  /** Requires the opaque version returned by a prior read or dry run. Pass it unchanged. */
+  expectedVersion?: string;
 }
 
 export interface CatalogDocument {
@@ -70,13 +71,15 @@ export interface CatalogView {
 }
 export interface CatalogSnapshot<T> {
   definition: T;
-  etag: string;
+  /** Opaque catalog version. Pass it unchanged as expectedVersion for conditional changes. */
+  version: string;
 }
 export interface CatalogResult<T> {
   before: T | null;
   after: T | null;
   destructive: boolean;
-  etag: string;
+  /** Base version for a dry run, or resulting version after a mutation. */
+  version: string;
 }
 
 type Transport = (
@@ -84,7 +87,7 @@ type Transport = (
   path: string[],
   definition: unknown,
   options: CatalogOptions,
-) => Promise<{ body: Record<string, unknown>; etag: string }>;
+) => Promise<{ body: Record<string, unknown>; version: string }>;
 
 /** A complete declarative resource. Writes are single attempts and never automatically retried. */
 export class CatalogResource<T> {
@@ -95,7 +98,7 @@ export class CatalogResource<T> {
 
   async get(options: RequestOptions = {}): Promise<CatalogSnapshot<T>> {
     const result = await this.transport("GET", this.path, undefined, options);
-    return { definition: result.body as T, etag: result.etag };
+    return { definition: result.body as T, version: result.version };
   }
 
   /** Replaces the entire resource. Omitted fields and children are cleared; use dryRun to preview. */
@@ -104,7 +107,7 @@ export class CatalogResource<T> {
     options: CatalogOptions = {},
   ): Promise<CatalogResult<T>> {
     const result = await this.transport("PUT", this.path, definition, options);
-    return { ...result.body, etag: result.etag } as unknown as CatalogResult<T>;
+    return { ...result.body, version: result.version } as unknown as CatalogResult<T>;
   }
 
   /** Removes a resource; potentially destructive changes require allowDestructive. */
@@ -115,7 +118,7 @@ export class CatalogResource<T> {
       undefined,
       options,
     );
-    return { ...result.body, etag: result.etag } as unknown as CatalogResult<T>;
+    return { ...result.body, version: result.version } as unknown as CatalogResult<T>;
   }
 }
 

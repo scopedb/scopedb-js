@@ -41,23 +41,23 @@ test(
     const preview = await resource.apply(definition, { dryRun: true });
     assert.equal(preview.before, null);
     assert.ok(preview.after);
-    assert.ok(preview.etag);
+    assert.ok(preview.version);
     await assert.rejects(
       resource.get(),
       (e) => e instanceof ScopeDBError && e.httpStatus === 404,
     );
     try {
       const applied = await resource.apply(definition, {
-        ifMatch: preview.etag,
+        expectedVersion: preview.version,
       });
-      assert.equal((await resource.get()).etag, applied.etag);
+      assert.equal((await resource.get()).version, applied.version);
       await assert.rejects(
-        resource.apply(definition, { ifMatch: preview.etag }),
+        resource.apply(definition, { expectedVersion: preview.version }),
         (e: unknown) => {
           assert.ok(e instanceof ScopeDBError);
           assert.equal(e.httpStatus, 412);
           assert.equal(e.code, "catalog_version_mismatch");
-          console.log(`STALE_ETAG code=${e.code}`);
+          console.log(`STALE_VERSION code=${e.code}`);
           return true;
         },
       );
@@ -147,7 +147,7 @@ test(
       await special.catalog().apply({
         ...specialSnapshot.definition,
         comment: "preserve indexes and expressions",
-      }, { ifMatch: specialSnapshot.etag });
+      }, { expectedVersion: specialSnapshot.version });
       await assert.rejects(
         special.catalog().delete({ dryRun: true }),
         (error) =>
@@ -173,10 +173,10 @@ test(
         ...snapshot.definition,
         comment: "conditional round trip",
       };
-      await table.catalog().apply(replacement, { ifMatch: snapshot.etag });
+      await table.catalog().apply(replacement, { expectedVersion: snapshot.version });
       await assert.rejects(
         table.catalog().delete({
-          ifMatch: snapshot.etag,
+          expectedVersion: snapshot.version,
           allowDestructive: true,
         }),
         (error) =>
