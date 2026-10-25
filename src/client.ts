@@ -147,14 +147,16 @@ export class Client {
     path: string[],
     definition: unknown,
     options: CatalogOptions,
-  ): Promise<{ body: Record<string, unknown>; etag: string }> {
+  ): Promise<{ body: Record<string, unknown>; version: string }> {
     const url = this.resourceUrl(["catalog", ...path]);
     if (options.dryRun) url.searchParams.set("dry_run", "true");
     if (options.allowDestructive) {
       url.searchParams.set("allow_destructive", "true");
     }
     const headers = new Headers();
-    if (options.ifMatch !== undefined) headers.set("If-Match", options.ifMatch);
+    if (options.expectedVersion !== undefined) {
+      headers.set("If-Match", options.expectedVersion);
+    }
     const body = definition === undefined
       ? undefined
       : JSON.stringify(definition);
@@ -220,12 +222,12 @@ export class Client {
             throw failure;
           }
           const value: unknown = await response.json();
-          const etag = response.headers.get("etag");
-          if (!isRecord(value) || !etag) {
-            throw new Error("invalid catalog response or missing ETag");
+          const version = response.headers.get("etag");
+          if (!isRecord(value) || !version) {
+            throw new Error("invalid catalog response or missing version");
           }
           validateCatalogResponse(value, path, method);
-          return { body: value, etag };
+          return { body: value, version };
         })(),
         aborted,
       ]);

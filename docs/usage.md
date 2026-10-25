@@ -54,7 +54,7 @@ The option only affects `int` / `uint` columns; other types are unchanged. Typed
 
 ## Read or change table schemas
 
-Catalog reads return complete declarative definitions and opaque ETags. Select the smallest subtree you need. Apply replaces that whole subtree, including its children; omitted fields are cleared. Use a dry run and an ETag precondition to review changes and reject concurrent updates.
+Catalog reads return complete declarative definitions and opaque versions. Select the smallest subtree you need. Apply replaces that whole subtree, including its children; omitted fields are cleared. Use a dry run and a version precondition to review changes and reject concurrent updates.
 
 ```ts
 const resource = client.table("events").catalog();
@@ -62,13 +62,13 @@ const snapshot = await resource.get();
 const definition = { ...snapshot.definition, comment: "Application events" };
 const preview = await resource.apply(definition, {
   dryRun: true,
-  ifMatch: snapshot.etag,
+  expectedVersion: snapshot.version,
 });
 console.log(preview.before, preview.after, preview.destructive);
-await resource.apply(definition, { ifMatch: preview.etag });
+await resource.apply(definition, { expectedVersion: preview.version });
 ```
 
-Potentially destructive changes require `allowDestructive: true`. Mutations never retry automatically and use the client's `writeTimeoutMs` by default; `CatalogOptions.timeoutMs` overrides it. An interrupted or malformed mutation response has code `catalog_commit_outcome_unknown`; read the current definition before deciding whether to replay. Keep the ETag unchanged, including its quotes. Definitions use the server's snake_case field names and retain unknown fields when read and reapplied.
+Potentially destructive changes require `allowDestructive: true`. Mutations never retry automatically and use the client's `writeTimeoutMs` by default; `CatalogOptions.timeoutMs` overrides it. An interrupted or malformed mutation response has code `catalog_commit_outcome_unknown`; read the current definition before deciding whether to replay. Pass version tokens back unchanged. Definitions use the server's snake_case field names and retain unknown fields when read and reapplied.
 
 ## Append rows
 

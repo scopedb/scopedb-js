@@ -297,7 +297,7 @@ describe("Client fetch transport", () => {
 
     assert.deepEqual(await client.catalog().get(), {
       definition: { databases: [] },
-      etag: '"v1"',
+      version: '"v1"',
     });
   });
 });

@@ -4,6 +4,10 @@ All significant changes to the ScopeDB JavaScript SDK are documented in this fil
 
 ## Unreleased
 
+### Breaking Changes
+
+* Rename Catalog snapshot/result `etag` to `version` and `CatalogOptions.ifMatch` to `expectedVersion`. Pass the opaque version from a read or dry run unchanged to reject concurrent catalog changes.
+
 ### Bug Fixes
 
 * Preserve known statement IDs on SDK errors so callers can resume waiting with `statementHandle(id)`. After successful submission, `query()` and `execute()` no longer mark waiting failures as retryable; handle polling keeps its temporary error classification, and caller abort reasons remain unchanged.

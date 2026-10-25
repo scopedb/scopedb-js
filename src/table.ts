@@ -85,7 +85,7 @@ export class Table {
     );
   }
 
-  /** Selects the complete definition and ETag used for conditional mutations. */
+  /** Selects the complete definition and opaque version used for conditional mutations. */
   catalog(): CatalogResource<CatalogTable> {
     return this.client.catalog().table(
       this.databaseName,

@@ -20,7 +20,7 @@ import { Client } from "../src/client.js";
 import { ScopeDBError } from "../src/errors.js";
 import { jsonResponse, makeFetchStub } from "./helpers.js";
 
-it("previews a replacement and applies it with the opaque ETag and escaped identity", async () => {
+it("previews a replacement and applies it with the opaque version and escaped identity", async () => {
   const before = { name: "events/2026", tables: [] };
   const after = {
     ...before,
@@ -55,14 +55,14 @@ it("previews a replacement and applies it with the opaque ETag and escaped ident
   const snapshot = await resource.get();
   const preview = await resource.apply(after, {
     dryRun: true,
-    ifMatch: snapshot.etag,
+    expectedVersion: snapshot.version,
   });
   assert.deepEqual(preview.after, after);
-  assert.equal(preview.etag, snapshot.etag);
-  const applied = await resource.apply(after, { ifMatch: preview.etag });
-  assert.equal(applied.etag, '"v2"');
+  assert.equal(preview.version, snapshot.version);
+  const applied = await resource.apply(after, { expectedVersion: preview.version });
+  assert.equal(applied.version, '"v2"');
   await assert.rejects(
-    resource.apply(after, { ifMatch: preview.etag }),
+    resource.apply(after, { expectedVersion: preview.version }),
     (error: unknown) => {
       assert.ok(error instanceof ScopeDBError);
       assert.equal(error.code, "catalog_version_mismatch");
@@ -79,7 +79,7 @@ it("previews a replacement and applies it with the opaque ETag and escaped ident
   );
   assert.equal(
     new Headers(calls[2]!.init?.headers).get("If-Match"),
-    snapshot.etag,
+    snapshot.version,
   );
   // Match the native Catalog handler's JSON decoder; it does not decompress requests.
   assert.deepEqual(await new Response(calls[2]!.init?.body).json(), after);

@@ -334,7 +334,7 @@ describe("Table.catalog", () => {
     }).catalog().get();
 
     assert.deepEqual(description.definition, resource);
-    assert.equal(description.etag, '"v1"');
+    assert.equal(description.version, '"v1"');
   });
 
   it("does not let request options override the table handle identity", async () => {
