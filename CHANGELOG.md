@@ -4,6 +4,10 @@ All significant changes to the ScopeDB JavaScript SDK are documented in this fil
 
 ## Unreleased
 
+### New Features
+
+* Add `encodeAppendRecord()` and opt-in stream `.strictEncoding(true)` to write signed 64-bit bigints without precision loss and reject non-finite numbers, unsafe integer-valued numbers, and unsupported values locally with field paths. Default stream JSON serialization is unchanged.
+
 ### Bug Fixes
 
 * Preserve known statement IDs on SDK errors so callers can resume waiting with `statementHandle(id)`. After successful submission, `query()` and `execute()` no longer mark waiting failures as retryable; handle polling keeps its temporary error classification, and caller abort reasons remain unchanged.

@@ -74,11 +74,14 @@ Choose between sending an NDJSON string and letting the SDK batch objects:
 
 These examples show common ways to write data:
 
-| Example                                              | Use it for                                          | Run                                 |
-| ---------------------------------------------------- | --------------------------------------------------- | ----------------------------------- |
-| [`patterns/bulk-import.ts`](patterns/bulk-import.ts) | Writing many records with `sendAll()`               | `pnpm run example:append-bulk`      |
-| [`patterns/telemetry.ts`](patterns/telemetry.ts)     | Writing logs and events with a continue-mode stream | `pnpm run example:append-telemetry` |
-| [`import-ndjson.ts`](import-ndjson.ts)               | Importing an NDJSON file without rounding integers  | `pnpm run example:import-ndjson`    |
+| Example                                                            | Use it for                                                               | Run                                   |
+| ------------------------------------------------------------------ | ------------------------------------------------------------------------ | ------------------------------------- |
+| [`patterns/bulk-import.ts`](patterns/bulk-import.ts)               | Writing many records with `sendAll()`                                    | `pnpm run example:append-bulk`        |
+| [`patterns/telemetry.ts`](patterns/telemetry.ts)                   | Writing logs and events with a continue-mode stream                      | `pnpm run example:append-telemetry`   |
+| [`import-ndjson.ts`](import-ndjson.ts)                             | Importing an NDJSON file without rounding integers                       | `pnpm run example:import-ndjson`      |
+| [`patterns/admission-recovery.ts`](patterns/admission-recovery.ts) | Correcting a local encoding error without replaying the committed prefix | `pnpm run example -- append-recovery` |
+
+The admission recovery example enables [strict object encoding](../docs/usage.md#strict-object-encoding), deliberately supplies an invalid number in the second of three rows, confirms the first row, then corrects and submits only the remaining two. It uses the same disposable table shape as the quickstarts. It does not replay source rows after a delivery failure or unknown commit outcome, and does not implement durable recovery after a process crash.
 
 Set `SCOPEDB_INPUT_FILE` to an NDJSON file before running `example:import-ndjson`. The target table must match its rows. The importer keeps bounded input and request buffers, preserves original numeric text, accepts a missing final newline, and settles valid buffered rows before reporting a malformed later line. It makes single-attempt writes and prints the confirmed row count; an interrupted write can still have committed and requires reconciliation before replay.
 

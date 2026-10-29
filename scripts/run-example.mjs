@@ -20,6 +20,7 @@ const entries = new Map([
   ["append", "append.js"],
   ["append-stream", "append-stream.js"],
   ["append-bulk", "patterns/bulk-import.js"],
+  ["append-recovery", "patterns/admission-recovery.js"],
   ["append-telemetry", "patterns/telemetry.js"],
   ["import-ndjson", "import-ndjson.js"],
 ]);

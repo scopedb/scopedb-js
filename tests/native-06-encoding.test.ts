@@ -16,7 +16,7 @@
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { AppendRowsError, Client, ScopeDBError } from "../src/index.js";
+import { AppendRowsError, Client, encodeAppendRecord, ScopeDBError } from "../src/index.js";
 
 test("native 0.6 Append JSON encodings and atomic rejection", {
   skip: !process.env["SCOPEDB_ENDPOINT"],
@@ -123,6 +123,35 @@ test("native 0.6 Append JSON encodings and atomic rejection", {
       (await client.query(`FROM ${table.identifier()} AGGREGATE count() AS n`))
         .first()?.["n"],
       BigInt(valid.length),
+    );
+    const stream = table.appendStream().strictEncoding(true).build();
+    try {
+      await assert.rejects(stream.send({ id: 40n, score: NaN }), /finite/);
+      await stream.send({
+        id: 41n,
+        unsigned: 9223372036854775807n,
+        ts: new Date("2026-10-29T00:00:00.123Z"),
+        attrs: { min: -9223372036854775808n },
+        items: [9007199254740993n],
+      });
+    } finally {
+      await stream.shutdown();
+    }
+    const strictResult = await client.query(`FROM ${table.identifier()} WHERE id = 41 SELECT id, unsigned, ts`);
+    const typed = strictResult.first()!;
+    assert.equal(typed["unsigned"], 9223372036854775807n);
+    assert.equal((typed["ts"] as Date).toISOString(), "2026-10-29T00:00:00.123Z");
+    const nested = (await client.query(`FROM ${table.identifier()} WHERE id = 41 SELECT attrs["min"]::int AS min, items[0]::int AS item`)).first()!;
+    assert.equal(nested["min"], -9223372036854775808n);
+    assert.equal(nested["item"], 9007199254740993n);
+    await table.append(encodeAppendRecord({ ...typed, id: 42n }));
+    assert.equal(
+      (await client.query(`FROM ${table.identifier()} WHERE id = 42 SELECT unsigned`)).first()?.["unsigned"],
+      9223372036854775807n,
+    );
+    assert.equal(
+      (await client.query(`FROM ${table.identifier()} AGGREGATE count() AS n`)).first()?.["n"],
+      BigInt(valid.length + 2),
     );
     console.log(
       "ENCODINGS native types, missing/null columns, computed fields, and atomic rejection passed",

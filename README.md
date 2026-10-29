@@ -50,6 +50,8 @@ console.log("Written rows:", result?.num_rows_inserted ?? 0);
 
 `send()` queues a row; `shutdown()` waits for pending writes and closes the stream. Use `flush()` to wait while keeping it open. If you already have NDJSON, use [`table.append()`](docs/usage.md#append-an-ndjson-string).
 
+For exact `bigint` input and local rejection of non-finite or unsafe numbers, use [strict object encoding](docs/usage.md#strict-object-encoding).
+
 ## Find what you need
 
 | Task                         | Documentation                                                           |
