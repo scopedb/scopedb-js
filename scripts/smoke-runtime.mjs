@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-const { Client } = await import("scopedb");
+const { Client, encodeAppendRecord } = await import("scopedb");
 const calls = [];
 const fetch = async (input, init) => {
   const url = new URL(input instanceof Request ? input.url : input);
@@ -38,6 +38,7 @@ const { definition } = await client.catalog().get();
 check(definition.databases?.[0]?.name === "scopedb", "declarative catalog");
 
 const stream = client.table("events").appendStream()
+  .strictEncoding(true)
   .maxBatchRows(10)
   .flushIntervalMs(60_000)
   .maxConcurrentBatches(1)
@@ -47,7 +48,8 @@ if (process.argv.includes("--without-buffer")) {
   Reflect.deleteProperty(globalThis, "Buffer");
 }
 try {
-  await stream.sendAll([{ id: 1 }, { id: 2 }, { id: 3 }]);
+  check(encodeAppendRecord({ id: 9007199254740993n }) === '{"id":9007199254740993}', "exact direct encoding");
+  await stream.sendAll([{ id: 9223372036854775807n }, { id: 2n }, { id: 3n }]);
 } finally {
   if (originalBuffer !== undefined) {
     Reflect.set(globalThis, "Buffer", originalBuffer);
@@ -56,6 +58,10 @@ try {
 const result = await stream.shutdown();
 check(result?.num_rows_inserted === 3, "append stream result");
 check(calls.length === 2, "catalog plus one append request");
+check(
+  await requestText(calls[1]?.init) === '{"id":9223372036854775807}\n{"id":2}\n{"id":3}',
+  "exact stream encoding",
+);
 check(
   new Headers(calls[1]?.init?.headers).get("Content-Encoding") === "gzip",
   "append stream compression",

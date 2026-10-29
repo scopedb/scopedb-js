@@ -96,6 +96,8 @@ await stream.shutdown();
 
 `send()` and `sendAll()` add records to the SDK's pending writes. Call `shutdown()` when you are done sending to wait for writing to finish. `sendAll()` accepts an iterable or async iterable. Use `flush()` when you need to wait for the current writes and then continue using the stream.
 
+`sendAll()` is not a transaction over its input: if encoding, iteration, or admission fails midway, earlier rows can already be buffered or committed. Settle the accepted prefix even after an exception; do not replay the entire input just because `sendAll()` threw. The [admission recovery example](../examples/patterns/admission-recovery.ts) keeps a finite source, confirms the prefix, corrects a local encoding error, and submits only the unadmitted suffix. It stops on delivery errors rather than guessing which rows reached the server.
+
 Streams target 4 MiB batches by default, with limits of 8 MiB of uncompressed NDJSON and 200,000 rows per request. Use `targetBatchBytes()` and `maxBatchRows()` to reduce a batch's size. The default failure policy stops the stream after a failed batch; use [continue mode](#continue-after-a-failed-batch) for best-effort sinks.
 
 In stop mode, `flush()` and `shutdown()` return `AppendRowsResult | null`, with `num_rows_inserted` for committed rows and `null` for an empty barrier. In continue mode, they return an `AppendDeliveryReport`; inspect `outcome`, `committedRows`, `failedRows`, and `unknownRows`. Each report covers activity since the previous returned report.
@@ -122,9 +124,30 @@ Each nonblank NDJSON line must be a JSON object keyed by destination column name
 
 Missing ordinary columns and explicit `null` become SQL NULL for every column type. Nested nulls inside objects/arrays remain JSON nulls. Computed columns are evaluated by the table and must be omitted from input. Unknown fields, duplicate object keys (including nested keys), and type mismatches reject the entire append request; other requests in a stream may already have committed. Inspect `AppendRowsError.outcome`, `code`, and `rowErrors`; row diagnostics may be truncated.
 
-The signed 64-bit integer-token limit also applies inside `object`, `array`, and `any`. `appendStream()` uses JavaScript's `JSON.stringify`: unsafe integers may already be rounded before the SDK sees them, `bigint` throws, NaN/Infinity become `null`, and `undefined` object properties are omitted. Validate numbers with `Number.isFinite` and use `Number.isSafeInteger` when supplying integer-valued JavaScript numbers. For larger exact integers, preserve validated NDJSON text and call `append()`, as shown in [import-ndjson.ts](../examples/import-ndjson.ts). Do not turn them into quoted numeric strings for an integer column.
+The signed 64-bit integer-token limit also applies inside `object`, `array`, and `any`. By default, `appendStream()` uses JavaScript's `JSON.stringify`: unsafe integers may already be rounded before the SDK sees them, `bigint` throws, NaN/Infinity become `null`, and `undefined` object properties are omitted. Opt into [strict encoding](#strict-object-encoding) to preserve int64 `bigint` values and reject lossy numbers before admission. If retaining the default encoder, validate numbers with `Number.isFinite` and use `Number.isSafeInteger` for integer-valued JavaScript numbers. Preserve original NDJSON text when importing data that must not pass through JavaScript number conversion, as shown in [import-ndjson.ts](../examples/import-ndjson.ts). Do not turn integers into quoted numeric strings for an integer column.
 
 For a JavaScript `Date` within the timestamp range above, `toISOString()` produces an accepted UTC timestamp. It has millisecond precision; retain an already valid RFC 3339 source string when sub-millisecond precision matters. Parse and validate any source text that contains serialized objects before passing the resulting object to Append.
+
+### Strict object encoding
+
+Enable `.strictEncoding(true)` before building a stream, or call `encodeAppendRecord()` to prepare one JSON object for direct Append. Both use the same encoder; the default stream encoder remains unchanged.
+
+```ts
+import { encodeAppendRecord } from "scopedb";
+
+const stream = table.appendStream().strictEncoding(true).build();
+await stream.send({ id: 9007199254740993n, name: "exact integer" });
+await stream.shutdown();
+
+// No trailing newline is added; join multiple encoded records with "\n".
+await table.append(encodeAppendRecord({ id: 9007199254740995n, name: "direct" }));
+```
+
+Strict encoding accepts plain objects (including null-prototype objects), arrays, strings, booleans, null, valid Dates, finite numbers, and signed 64-bit bigints. Bigints become exact unquoted decimal tokens, including inside objects and arrays. Integer-valued numbers must satisfy `Number.isSafeInteger`; this conservative rule also applies when the intended column is a float. An already rounded Number cannot be repaired: construct a bigint from the original decimal text or retain validated NDJSON instead. The server's signed 64-bit input ceiling still applies to uint columns; this encoder does not extend it.
+
+Undefined values, functions, symbols, sparse array entries, invalid Dates, cycles, accessor properties, and custom objects such as Map or class instances fail locally instead of being omitted or substituted. Plain objects use own enumerable string data properties; enumerable symbol keys are rejected. Convert custom objects explicitly, omit absent fields intentionally, or supply null. Custom `toJSON()` hooks are not called. A nested Date is encoded using its ISO timestamp with millisecond precision; preserve a valid timestamp string when nanoseconds matter. Query results with JSON-encoded object/array cells still require explicit parsing before writing to those column types.
+
+Value validation errors are permanent `ScopeDBError` values with `kind: "AppendRowsFailed"` and a field path in the message and `error.context().get("record_path")`, for example `$["attrs"][0]["score"]`. `send()`/`sendAll()` reject before admitting that record; previously admitted records remain pending. `trySend()` returns false and increments `droppedByReason.invalidRecord`. The helper validates values, not table schemas or request limits: quoted numeric strings remain strings, and destination type errors can still reject an entire append request.
 
 ### Continue after a failed batch
 
