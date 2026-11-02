@@ -16,18 +16,17 @@
 
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import type { DataType } from "../src/protocol.js";
-import { FieldSchema, ResultSet, Schema, ScopeDBError } from "../src/index.js";
+import { type DataType, FieldSchema, ResultSet, Schema, ScopeDBError } from "../src/index.js";
 
 function makeResultSet(
   fields: Array<{ name: string; data_type: DataType }>,
   rows: Array<Array<string | null>>,
 ): ResultSet {
-  return ResultSet.fromStatementResultSet({
-    metadata: { fields, num_rows: rows.length },
-    format: "json",
+  return new ResultSet(
+    new Schema(fields.map((field) => new FieldSchema(field.name, field.data_type))),
+    rows.length,
     rows,
-  });
+  );
 }
 
 describe("ResultSet schema and tabular accessors", () => {
@@ -84,16 +83,6 @@ describe("ResultSet schema and tabular accessors", () => {
     assert.equal(empty.first(), null);
   });
 
-  it("constructs Schema and FieldSchema directly", () => {
-    const schema = new Schema([
-      new FieldSchema("a", "int"),
-      new FieldSchema("b", "string"),
-    ]);
-    assert.equal(schema.fields().length, 2);
-    assert.equal(schema.fields()[1]!.name(), "b");
-    assert.equal(schema.fields()[1]!.dataType(), "string");
-  });
-
   it("retains exact 64-bit integer boundaries, special floats, and prototype-like column names", () => {
     const result = makeResultSet(
       [
@@ -122,6 +111,28 @@ describe("ResultSet schema and tabular accessors", () => {
     assert.throws(() => rs.toObjects(), /column name .* is duplicated/);
     assert.throws(() => rs.first(), /column name .* is duplicated/);
     assert.deepEqual(rs.toValues(), [[1n, 2n]]);
+  });
+
+  it("preserves structured cells as text and raw timestamp precision", () => {
+    const timestamp = "2026-10-29T00:00:00.123456789Z";
+    const object = '{"id":9007199254740993}';
+    const result = makeResultSet(
+      [
+        { name: "attrs", data_type: "object" },
+        { name: "items", data_type: "array" },
+        { name: "value", data_type: "any" },
+        { name: "time", data_type: "timestamp" },
+      ],
+      [[object, "[1,null]", "true", timestamp]],
+    );
+
+    assert.deepEqual(result.first({ integerMode: "string" }), {
+      attrs: object,
+      items: "[1,null]",
+      value: "true",
+      time: new Date("2026-10-29T00:00:00.123Z"),
+    });
+    assert.equal(result.rawRows()[0]![3], timestamp);
   });
 
   it("rejects malformed cells and mismatched row lengths with contextual ScopeDBError", () => {
@@ -177,6 +188,11 @@ describe("ResultSet integerMode option", () => {
       JSON.stringify(intRow(i64Max).toObjects({ integerMode: "string" })),
       `[{"n":"${i64Max}"}]`,
     );
+
+    const unsafe = intRow("9007199254740993");
+    assert.equal(unsafe.first()!["n"], 9007199254740993n);
+    assert.equal(unsafe.first({ integerMode: "string" })!["n"], "9007199254740993");
+    assert.equal(unsafe.first({ integerMode: "number" })!["n"], 9007199254740992);
   });
 
   it("rejects non-integer strings and unknown integerMode values", () => {

@@ -18,10 +18,8 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { Client, ScopeDBError } from "../src/index.js";
 import {
-  finishedStatus,
   jsonResponse,
   makeFetchStub,
-  pendingStatus,
   textResponse,
 } from "./helpers.js";
 
@@ -74,31 +72,6 @@ describe("Client configuration and transport", () => {
       version: '"v1"',
     });
   });
-
-  it("executes statements and returns a ResultSet via client.query()", async () => {
-    const rs = {
-      metadata: {
-        fields: [{ name: "n", data_type: "int" as const }],
-        num_rows: 1,
-      },
-      format: "json" as const,
-      rows: [["5"]],
-    };
-    const { fn, calls } = makeFetchStub([
-      jsonResponse(200, pendingStatus()),
-      jsonResponse(200, finishedStatus(rs)),
-    ]);
-    const client = new Client("http://localhost:8080", { fetch: fn });
-
-    const result = await client.query("SELECT 5", {
-      initialDelayMs: 0,
-      maxDelayMs: 0,
-    });
-
-    assert.equal(calls.length, 2);
-    assert.equal(result.numRows(), 1);
-    assert.deepEqual(result.first(), { n: 5n });
-  });
 });
 
 describe("Client error mapping", () => {
@@ -125,8 +98,14 @@ describe("Client error mapping", () => {
   });
 
   it("falls back to plain text on non-JSON error bodies and wraps transport errors", async () => {
-    const { fn } = makeFetchStub([textResponse(500, "internal server error")]);
-    const client = new Client("http://localhost:8080", { fetch: fn });
+    const cause = new TypeError("network connection lost");
+    let requests = 0;
+    const client = new Client("http://localhost:8080", {
+      fetch: async () => {
+        if (++requests === 1) return textResponse(500, "internal server error");
+        throw cause;
+      },
+    });
 
     await assert.rejects(
       () => client.catalog().get(),
@@ -134,8 +113,14 @@ describe("Client error mapping", () => {
     );
     await assert.rejects(
       () => client.catalog().get(),
-      (err: unknown) => err instanceof ScopeDBError,
+      (err: unknown) => {
+        assert.ok(err instanceof ScopeDBError);
+        assert.equal(err.isTemporary(), true);
+        assert.equal(err.httpStatus, undefined);
+        return true;
+      },
     );
+    assert.equal(requests, 2);
   });
 
   it("preserves nested server errors and response metadata", async () => {

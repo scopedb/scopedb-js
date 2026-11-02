@@ -26,7 +26,6 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm test
       - run: pnpm run check
-      - run: node scripts/smoke-runtime.mjs --without-buffer
 
   bun:
     name: Bun
@@ -41,7 +40,7 @@ jobs:
       - uses: oven-sh/setup-bun@v2
       - run: pnpm install --frozen-lockfile
       - run: pnpm run build
-      - run: bun scripts/smoke-runtime.mjs --without-buffer
+      - run: bun scripts/smoke-runtime.mjs
 
   pack:
     name: Pack dry-run

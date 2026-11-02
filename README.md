@@ -1,8 +1,10 @@
-# ScopeDB SDK for JavaScript
+# ScopeDB SDK for JavaScript and TypeScript
 
 [![Version](https://img.shields.io/npm/v/scopedb)](https://www.npmjs.com/package/scopedb) [![Docs](https://img.shields.io/badge/docs-scopedb.io-blue)](https://www.scopedb.io/docs/developer/nodejs) [![CI](https://img.shields.io/github/actions/workflow/status/scopedb/scopedb-js/ci.yml?branch=main&label=CI)](https://github.com/scopedb/scopedb-js/actions/workflows/ci.yml) [![License](https://img.shields.io/badge/license-Apache--2.0-blue)](https://www.apache.org/licenses/LICENSE-2.0)
 
-Query [ScopeDB](https://www.scopedb.io) and write rows from server-side JavaScript and TypeScript applications.
+The official JavaScript and TypeScript SDK for [ScopeDB](https://www.scopedb.io). Query event data, ingest records in batches, and manage table definitions from your server application.
+
+Start with one `Client`: `query()` returns JavaScript values, `table()` selects a write destination, and `catalog()` manages database resources. Streams handle batching, backpressure, and safe retries; statement handles let you follow long-running queries.
 
 ## Install
 
@@ -46,12 +48,13 @@ const result = await stream.shutdown();
 console.log("Written rows:", result?.num_rows_inserted ?? 0);
 ```
 
-`send()` queues a row; `shutdown()` waits for pending writes and closes the stream. Use `flush()` to wait while keeping it open. If you already have NDJSON, use [`table.append()`](docs/usage.md#append-an-ndjson-string).
+`send()` queues a row in memory; `shutdown()` waits for pending writes and closes the stream. Use `flush()` to wait while keeping it open. If you already have NDJSON, use [`table.append()`](docs/usage.md#append-an-ndjson-string).
 
 ## Find what you need
 
 | Task                         | Documentation                                                           |
 | ---------------------------- | ----------------------------------------------------------------------- |
+| Configure a connection       | [Connection options](docs/usage.md#connect-to-scopedb)                  |
 | Read query results           | [Result conversion](docs/usage.md#read-query-results)                   |
 | Track or cancel a query      | [Statement handles](docs/usage.md#track-or-cancel-a-query)              |
 | Read or change table schemas | [Catalog](docs/usage.md#read-or-change-table-schemas)                   |
@@ -67,17 +70,7 @@ For complete programs, see the [examples](examples/README.md). For ScopeQL synta
 
 For version upgrades, see the [release notes and migration guides](CHANGELOG.md).
 
-## Development
-
-Use the pnpm version declared in `package.json`:
-
-```sh
-pnpm install --frozen-lockfile
-pnpm test
-pnpm run check
-```
-
-Report problems through [GitHub issues](https://github.com/scopedb/scopedb-js/issues).
+Report problems through [GitHub issues](https://github.com/scopedb/scopedb-js/issues). To work on the SDK itself, see [Contributing](CONTRIBUTING.md).
 
 ## License
 

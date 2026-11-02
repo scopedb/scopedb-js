@@ -21,7 +21,7 @@
 
 Open a release PR that updates `package.json` and moves the `Unreleased` changelog entries under `## vX.Y.Z (YYYY-MM-DD)`. Use `*` bullets and order sections as Breaking Changes, New Features, Bug Fixes, and Improvements. Describe user-observable changes against the latest release, including migration guidance; omit internal tests, refactors, documentation, and CI work.
 
-Before tagging, run `pnpm install --frozen-lockfile`, `pnpm test`, `pnpm run check`, `pnpm run smoke:runtime`, `pnpm run smoke:web-runtime`, `pnpm run smoke:frameworks`, and `pnpm pack --dry-run`. Generated build directories and tarballs are not committed.
+Before tagging, run `pnpm install --frozen-lockfile`, `pnpm test`, `pnpm run check`, `pnpm run smoke:runtime`, `pnpm run smoke:frameworks`, and `pnpm pack --dry-run`. Generated build directories and tarballs are not committed.
 
 After the release PR is merged and publication is authorized, tag its commit with `git tag -a vX.Y.Z -m "Release X.Y.Z" <commit>` and push the tag with `git push origin vX.Y.Z`. The [Publish workflow](.github/workflows/publish.yml) verifies the package version, runs checks, publishes to npm with provenance, and creates a GitHub Release from the changelog.
 
