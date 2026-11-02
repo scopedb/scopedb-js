@@ -4,6 +4,8 @@ All significant changes to the ScopeDB JavaScript SDK are documented in this fil
 
 ## Unreleased
 
+## v0.4.0 (2026-11-02)
+
 ### Breaking Changes
 
 * Rename Catalog `etag` / `ifMatch` to `version` / `expectedVersion` and expose mutation certainty through `ScopeDBError.catalogOutcome` (`"rejected"` or `"unknown"`) while preserving server error codes. See [Upgrade from 0.3 to 0.4](docs/migration-0.4.md).

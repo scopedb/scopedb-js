@@ -11,7 +11,7 @@ Follow the [quickstart](../README.md#run-a-query) for your first query. This gui
 - [Read or change table schemas](#read-or-change-table-schemas): inspect, preview, and apply definitions.
 - [Timeouts and HTTP options](#timeouts-and-http-options) and [Errors](#errors): bound work and choose a recovery action.
 
-This guide describes the current source, including changes planned for 0.4. For upgrades from the published 0.3 API, see [the migration guide](migration-0.4.md); use the documentation included with your installed package for that release.
+This guide describes the 0.4 API. For upgrades from 0.3, see [the migration guide](migration-0.4.md); use the documentation included with your installed package for that release.
 
 ## Connect to ScopeDB
 
