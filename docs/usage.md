@@ -61,15 +61,16 @@ The `"number"` mode permits rounding outside the safe integer range; it does not
 
 Other column types have these representations:
 
-| ScopeDB value                | JavaScript value              | Application choice                                                                                  |
-| ---------------------------- | ----------------------------- | --------------------------------------------------------------------------------------------------- |
-| SQL `NULL`                   | `null`                        | Preserved in every conversion mode.                                                                 |
-| `float`, `boolean`, `string` | `number`, `boolean`, `string` | Special floats remain `NaN` / `Infinity`; JSON serialization turns them into `null`.                |
-| `timestamp`                  | `Date`                        | Millisecond precision; use `rawRows()` to retain the original nanosecond timestamp text.            |
-| `object`, `array`, `any`     | `string`                      | JSON text is preserved. Parse explicitly if needed; `JSON.parse()` can round large nested integers. |
-| `interval`, `binary`         | `string`                      | Preserved as returned by ScopeDB.                                                                   |
+| ScopeDB value                | JavaScript value              | Application choice                                                                                    |
+| ---------------------------- | ----------------------------- | ----------------------------------------------------------------------------------------------------- |
+| SQL `NULL`                   | `null`                        | Preserved in every conversion mode.                                                                   |
+| `float`, `boolean`, `string` | `number`, `boolean`, `string` | Special floats remain `NaN` / `Infinity`; JSON serialization turns them into `null`.                  |
+| `timestamp`                  | `Date`                        | Millisecond precision; use `rawRows()` to retain the original nanosecond timestamp text.              |
+| `object`, `array`            | `string`                      | JSON text is preserved. Parse explicitly if needed; `JSON.parse()` can round large nested integers.   |
+| `any`                        | `string`                      | The cell text is preserved without inferring its runtime type; it is not necessarily a JSON document. |
+| `interval`, `binary`         | `string`                      | Preserved as returned by ScopeDB.                                                                     |
 
-`integerMode` applies only to `int` and `uint` columns, not to numbers inside structured cells. Query values are therefore not a general-purpose Append record format: decode structured cells and choose any precision conversions deliberately before writing them back.
+`integerMode` applies only to `int` and `uint` columns, not to values stored in `object`, `array`, or `any` columns. Query values are therefore not a general-purpose Append record format: decode structured cells and choose any precision conversions deliberately before writing them back.
 
 `toObjects()` returns objects keyed by column name; `first()` returns one such object or `null` for an empty result. Both reject duplicate column names. Use unique aliases or `toValues()` for positional cells. `schema().fields()` provides their names and ScopeDB types; `rawRows()` provides the original string-or-null cells.
 
