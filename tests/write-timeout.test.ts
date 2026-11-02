@@ -633,7 +633,9 @@ it("disables the Catalog mutation deadline without ignoring caller cancellation"
     }),
     (error) =>
       error instanceof ScopeDBError &&
-      error.catalogOutcome === "unknown",
+      error.catalogOutcome === "unknown" &&
+      error.writeDetails?.reason === "cancelled" &&
+      error.writeDetails.outcome === "ambiguous",
   );
   await transport.ready;
   t.mock.timers.tick(60_000);

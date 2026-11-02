@@ -11,6 +11,8 @@ All significant changes to the ScopeDB JavaScript SDK are documented in this fil
 
 ### Bug Fixes
 
+* Preserve timeout and cancellation reasons in Catalog mutation `writeDetails`, independently of `catalogOutcome`.
+
 * Accept Append HTTP 200 acknowledgements containing only `num_rows_inserted`. Derive certainty from valid error envelopes and HTTP status, preserve unknown codes, and automatically retry only valid HTTP 429 rejections. Malformed responses and HTTP 5xx remain ambiguous.
 
 * Preserve known statement IDs on SDK errors so callers can resume waiting with `statementHandle(id)`. After successful submission, `query()` and `execute()` no longer mark waiting failures as retryable; handle polling keeps its temporary error classification, and caller abort reasons remain unchanged.

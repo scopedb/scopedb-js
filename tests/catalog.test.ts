@@ -130,6 +130,7 @@ it("bounds a mutation even when a custom transport ignores cancellation", async 
       assert.ok(error instanceof ScopeDBError);
       assert.equal(error.catalogOutcome, "unknown");
       assert.equal(error.code, undefined);
+      assert.deepEqual(error.writeDetails, { reason: "timeout", outcome: "ambiguous" });
       assert.equal(error.retryable, false);
       return true;
     },

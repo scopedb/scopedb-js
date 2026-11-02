@@ -230,6 +230,11 @@ export class Client {
         {
           cause,
           catalogOutcome: writing ? "unknown" : undefined,
+          writeDetails: writing
+            ? writeErrorDetailsFromCause(cause) ?? (options.signal?.aborted
+              ? { reason: "cancelled", outcome: "ambiguous" }
+              : undefined)
+            : undefined,
           status: writing
             ? "persistent"
             : cause instanceof ScopeDBError
