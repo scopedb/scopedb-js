@@ -14,7 +14,7 @@
 ## Package and verification
 
 - Keep the package ESM-only and free of Node-only runtime APIs. Source compiles without Node ambient types; tests and examples opt into them separately. Keep wire-level request payloads out of the root exports unless applications must construct them directly.
-- Default tests use a local mock backend. `pnpm test:integration` runs the two opt-in live suites with `SCOPEDB_ENDPOINT` and `SCOPEDB_API_KEY`; each creates and removes a unique temporary schema. Use bounded workloads in shared environments, and omit endpoints, credentials, and infrastructure identifiers from public validation notes.
+- Default tests use a local mock backend. `pnpm test:integration` runs the opt-in live suite (`tests/live.test.ts`) with `SCOPEDB_ENDPOINT` and `SCOPEDB_API_KEY`; each test creates and removes a unique temporary schema. Use bounded workloads in shared environments, and omit endpoints, credentials, and infrastructure identifiers from public validation notes.
 - `pnpm run smoke:frameworks` installs the SDK tarball into temporary Next.js and Workers consumers and checks query and append against a local mock backend. Keep detailed protocol cases in regular tests. Framework dependencies are pinned in the consumer manifest without a second lockfile; transitive versions resolve at installation.
 
 ## Releases

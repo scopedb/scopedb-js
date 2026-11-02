@@ -67,8 +67,8 @@
     "example:import-ndjson": "pnpm run example -- import-ndjson",
     "example:statement": "pnpm run example -- statement",
     "prepack": "pnpm run test && pnpm run check",
-    "test": "tsc -p tsconfig.test.json && node --test dist-test/tests/*.test.js",
-    "test:integration": "tsc -p tsconfig.test.json && node --test --test-concurrency=1 dist-test/tests/native-06.test.js dist-test/tests/native-06-encoding.test.js"
+    "test": "node -e \"require('node:fs').rmSync('dist-test', { recursive: true, force: true })\" && tsc -p tsconfig.test.json && node --test dist-test/tests/*.test.js",
+    "test:integration": "node -e \"require('node:fs').rmSync('dist-test', { recursive: true, force: true })\" && tsc -p tsconfig.test.json && node --test --test-concurrency=1 dist-test/tests/live.test.js"
   },
   "devDependencies": {
     "@types/node": "^25.5.0",

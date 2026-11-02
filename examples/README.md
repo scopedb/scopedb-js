@@ -1,33 +1,31 @@
 # ScopeDB JavaScript SDK examples
 
-The runnable examples import the public `scopedb` package entry. Start with the [quickstart](../README.md#run-a-query), then choose an example for your application. See the [usage guide](../docs/usage.md) for API contracts or [Upgrade from 0.2 to 0.3](../docs/migration-0.3.md) for existing applications.
+The runnable examples import the public `scopedb` package entry. Start with the [quickstart](../README.md#run-a-query), then choose an example for your workload. See the [usage guide](../docs/usage.md) for API contracts and [Upgrade from 0.3 to 0.4](../docs/migration-0.4.md) for migration steps.
 
-The SDK is for trusted server-side code. Never expose `SCOPEDB_API_KEY` from a browser bundle or a Next.js Client Component.
-
-The commands below are for a source checkout of this repository. The published npm package includes the TypeScript examples as reference source.
-
-## ScopeQL documentation
-
-These examples show how to use the SDK. For the ScopeQL language itself, use the canonical documentation:
-
-- [Quickstart](https://www.scopedb.io/docs/guides/quickstart)
-- [Query guide](https://www.scopedb.io/docs/guides/query-events)
-- [Language reference](https://www.scopedb.io/docs/reference)
+The SDK is designed for trusted server-side runtimes. Never expose `SCOPEDB_API_KEY` in browser bundles or Next.js Client Components.
 
 ## Read-only quickstarts
 
-These can run against a reachable ScopeDB server without modifying data.
+These examples run against a reachable ScopeDB server without modifying data:
 
-| Example                        | Shows                                                   | Run                          |
+| Example                        | Shows                                                   | Command                      |
 | ------------------------------ | ------------------------------------------------------- | ---------------------------- |
 | [`statement.ts`](statement.ts) | Async statement lifecycle and JSON-safe integer results | `pnpm run example:statement` |
 | [`catalog.ts`](catalog.ts)     | Declarative catalog snapshots and table definitions     | `pnpm run example:catalog`   |
 
-## Before running a write example
+## Write examples
 
-Write examples require `SCOPEDB_TABLE`. Create a table for the example and select it with this environment variable.
+Write examples read connection settings from environment variables and require `SCOPEDB_TABLE`:
 
-The append, stream, telemetry, and Serverless examples can share this superset schema:
+| Variable           | Default                 | Purpose                                  |
+| ------------------ | ----------------------- | ---------------------------------------- |
+| `SCOPEDB_ENDPOINT` | `http://127.0.0.1:6543` | ScopeDB server endpoint                  |
+| `SCOPEDB_API_KEY`  | None                    | Bearer API key for server authentication |
+| `SCOPEDB_DATABASE` | `scopedb`               | Target database name                     |
+| `SCOPEDB_SCHEMA`   | `public`                | Target schema name                       |
+| `SCOPEDB_TABLE`    | Required for writes     | Target table name                        |
+
+Create a disposable table before running the write examples:
 
 ```sql
 CREATE TABLE public.sdk_example_events (
@@ -41,84 +39,40 @@ CREATE TABLE public.sdk_example_events (
 );
 ```
 
-Configuration is read from:
-
-- `SCOPEDB_ENDPOINT` (defaults to `http://127.0.0.1:6543`)
-- `SCOPEDB_API_KEY`
-- `SCOPEDB_DATABASE` (defaults to `scopedb`)
-- `SCOPEDB_SCHEMA` (defaults to `public`)
-- `SCOPEDB_TABLE` (required for writes)
-
-Set the disposable target once in the current shell before using the write commands below:
-
 ```sh
 export SCOPEDB_TABLE=sdk_example_events
 ```
 
-```powershell
-$env:SCOPEDB_TABLE = "sdk_example_events"
-```
-
-## Append quickstarts
-
-Choose between sending an NDJSON string and letting the SDK batch objects:
-
-| Example                                | Choose it when                       | Run                              |
-| -------------------------------------- | ------------------------------------ | -------------------------------- |
-| [`append.ts`](append.ts)               | You already have an NDJSON string    | `pnpm run example:append`        |
-| [`append-stream.ts`](append-stream.ts) | You want to write JavaScript objects | `pnpm run example:append-stream` |
-
-`append-stream.ts` uses default settings. It adds records with `sendAll()` and calls `shutdown()` to wait for writing to finish.
-
-## More runnable examples
-
-These examples show common ways to write data:
-
-| Example                                                            | Use it for                                                               | Run                                   |
-| ------------------------------------------------------------------ | ------------------------------------------------------------------------ | ------------------------------------- |
-| [`patterns/bulk-import.ts`](patterns/bulk-import.ts)               | Writing many records with `sendAll()`                                    | `pnpm run example:append-bulk`        |
-| [`patterns/telemetry.ts`](patterns/telemetry.ts)                   | Writing logs and events with a continue-mode stream                      | `pnpm run example:append-telemetry`   |
-| [`import-ndjson.ts`](import-ndjson.ts)                             | Importing an NDJSON file without rounding integers                       | `pnpm run example:import-ndjson`      |
-| [`patterns/admission-recovery.ts`](patterns/admission-recovery.ts) | Correcting a local encoding error without replaying the committed prefix | `pnpm run example -- append-recovery` |
-
-The admission recovery example enables [strict object encoding](../docs/usage.md#strict-object-encoding), deliberately supplies an invalid number in the second of three rows, confirms the first row, then corrects and submits only the remaining two. It uses the same disposable table shape as the quickstarts. It does not replay source rows after a delivery failure or unknown commit outcome, and does not implement durable recovery after a process crash.
-
-Set `SCOPEDB_INPUT_FILE` to an NDJSON file before running `example:import-ndjson`. The target table must match its rows. The importer keeps bounded input and request buffers, preserves original numeric text, accepts a missing final newline, and settles valid buffered rows before reporting a malformed later line. It makes single-attempt writes and prints the confirmed row count; an interrupted write can still have committed and requires reconciliation before replay.
+| Example                                              | Use case                                                                | Command                             |
+| ---------------------------------------------------- | ----------------------------------------------------------------------- | ----------------------------------- |
+| [`append.ts`](append.ts)                             | Appending a pre-encoded NDJSON string with `table.append()`             | `pnpm run example:append`           |
+| [`append-stream.ts`](append-stream.ts)               | Batching JavaScript objects with `table.appendStream()`                 | `pnpm run example:append-stream`    |
+| [`patterns/bulk-import.ts`](patterns/bulk-import.ts) | Streaming a large iterable with bounded backpressure (`sendAll()`)      | `pnpm run example:append-bulk`      |
+| [`patterns/telemetry.ts`](patterns/telemetry.ts)     | Non-blocking telemetry sink (`failurePolicy: "continue"`, `trySend()`)  | `pnpm run example:append-telemetry` |
+| [`import-ndjson.ts`](import-ndjson.ts)               | Importing an NDJSON file (`SCOPEDB_INPUT_FILE`) without parsing numbers | `pnpm run example:import-ndjson`    |
 
 ## Integration templates
 
-Templates are type-checked but are not directly executable. Copy a template into your application and provide the integrations listed below.
+These templates are type-checked against the built package and can be copied directly into your application:
 
-| Template                                                 | Requires                                                                       | Shows                                                    |
-| -------------------------------------------------------- | ------------------------------------------------------------------------------ | -------------------------------------------------------- |
-| [`templates/serverless.ts`](templates/serverless.ts)     | Web-standard `Request`/`Response` and a `waitUntil()` hook                     | Writing request events from an HTTP handler              |
-| [`templates/audit-outbox.ts`](templates/audit-outbox.ts) | Implementations of `AuditOutbox.readUnconfirmed()` and `checkpoint()`          | Sending saved records and updating the source checkpoint |
-| [`templates/retry-append.ts`](templates/retry-append.ts) | Node.js, an existing table, caller-encoded NDJSON, and an AbortSignal deadline | Retrying only confirmed temporary rejections             |
+| Template                                                 | Target integration                                                 | Purpose                                                             |
+| -------------------------------------------------------- | ------------------------------------------------------------------ | ------------------------------------------------------------------- |
+| [`templates/retry-append.ts`](templates/retry-append.ts) | Direct `table.append()` with an `AbortSignal` deadline             | Bounded retry loop that replays only confirmed temporary rejections |
+| [`templates/audit-outbox.ts`](templates/audit-outbox.ts) | Durable source implementing `readUnconfirmed()` and `checkpoint()` | At-least-once outbox delivery that checkpoints after `shutdown()`   |
+| [`templates/serverless.ts`](templates/serverless.ts)     | Fetch handlers providing a `waitUntil()` lifecycle hook            | Warm-invocation telemetry stream that flushes inside `waitUntil()`  |
 
 ## Framework and runtime templates
 
-These templates keep credentials on the server and use the same public SDK surface as the runnable examples.
-
-| Runtime            | Template                                                                               | Notes                                                                                                                        |
-| ------------------ | -------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
-| Next.js            | [`frameworks/nextjs-route-handler/route.ts`](frameworks/nextjs-route-handler/route.ts) | Route Handler with `server-only`, an application-level write token, and a bounded event shape; the Node runtime is preferred |
-| Cloudflare Workers | [`frameworks/cloudflare-worker/worker.ts`](frameworks/cloudflare-worker/worker.ts)     | Uses Web APIs without `nodejs_compat`; configure both the ScopeDB key and the separate application write token as secrets    |
-| Bun                | Use any runnable ESM example                                                           | Install with `bun add scopedb`; no Bun-specific SDK surface is required                                                      |
-
-The framework POST templates require `APP_WRITE_TOKEN` for incoming requests, in addition to the ScopeDB credential used by the server. They stop reading oversized bodies after the 64 KiB limit even without `Content-Length`, and reject non-finite or unsafe integer-valued numbers in `attributes` instead of appending silently changed values.
+| Runtime            | Template                                                                               | Notes                                                                                                     |
+| ------------------ | -------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------- |
+| Next.js            | [`frameworks/nextjs-route-handler/route.ts`](frameworks/nextjs-route-handler/route.ts) | App Router Route Handler with `server-only`, bearer write authentication (`APP_WRITE_TOKEN`), and limits  |
+| Cloudflare Workers | [`frameworks/cloudflare-worker/worker.ts`](frameworks/cloudflare-worker/worker.ts)     | Standard Web Fetch APIs without `nodejs_compat`; store `SCOPEDB_API_KEY` and `APP_WRITE_TOKEN` as secrets |
+| Bun                | Any runnable ESM example                                                               | Install with `bun add scopedb`; uses standard Web Fetch and CompressionStream APIs                        |
 
 ## Developing the examples
 
-List or run executable examples through the central runner:
-
 ```sh
 pnpm run example:list
-pnpm run example -- statement
-```
-
-Check every example against the built package entry, or emit their JavaScript:
-
-```sh
 pnpm run check:examples
 pnpm run build:examples
 ```

@@ -16,224 +16,125 @@
 
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { Client } from "../src/client.js";
-import { ScopeDBError } from "../src/errors.js";
+import { Client, ScopeDBError } from "../src/index.js";
 import {
-  cancelledStatus,
-  emptyResultSet,
   finishedStatus,
   jsonResponse,
   makeFetchStub,
-  parseJsonRequestBody,
   pendingStatus,
   textResponse,
 } from "./helpers.js";
 
-describe("Client.submitStatement", () => {
-  it("sends POST /v1/statements with correct body", async () => {
-    const status = pendingStatus();
-    const { fn, calls } = makeFetchStub([jsonResponse(200, status)]);
-    const client = new Client("http://localhost:8080", { fetch: fn });
-
-    await client.submitStatement({ statement: "SELECT 1", format: "json" });
-
-    assert.equal(calls.length, 1);
-    const call = calls[0]!;
-    assert.ok(call.url.endsWith("/v1/statements"));
-    assert.equal((call.init as RequestInit).method, "POST");
-    const body = parseJsonRequestBody(call.init) as Record<string, unknown>;
-    assert.equal(body["statement"], "SELECT 1");
-    assert.equal(body["format"], "json");
-    const headers = new Headers(call.init?.headers);
-    assert.equal(headers.get("Content-Encoding"), "gzip");
-    assert.equal(
-      headers.get("X-ScopeDB-Uncompressed-Content-Length"),
-      String(
-        new TextEncoder().encode(JSON.stringify({
-          statement: "SELECT 1",
-          format: "json",
-        })).byteLength,
-      ),
+describe("Client configuration and transport", () => {
+  it("rejects invalid endpoints and empty API keys", () => {
+    for (const invalid of ["", "not-a-url", "http://"]) {
+      assert.throws(
+        () => new Client(invalid),
+        (err: unknown) => err instanceof ScopeDBError && err.kind === "ConfigInvalid",
+      );
+    }
+    assert.throws(
+      () => new Client("http://localhost:8080", { apiKey: "" }),
+      (err: unknown) => err instanceof ScopeDBError && err.kind === "ConfigInvalid",
     );
   });
 
-  it("includes optional fields when set", async () => {
-    const status = pendingStatus();
-    const { fn, calls } = makeFetchStub([jsonResponse(200, status)]);
-    const client = new Client("http://localhost:8080", { fetch: fn });
-
-    await client.submitStatement({
-      statement: "SELECT 1",
-      format: "json",
-      statement_id: "my-id",
-      max_elapsed_seconds: 30,
+  it("sends the API key as a Bearer credential and disables framework fetch caching", async () => {
+    const { fn, calls } = makeFetchStub([
+      jsonResponse(200, { databases: [] }, { ETag: '"v1"' }),
+    ]);
+    const client = new Client("http://localhost:8080", {
+      fetch: fn,
+      apiKey: "api-key",
     });
 
-    const body = parseJsonRequestBody(calls[0]!.init) as Record<
-      string,
-      unknown
-    >;
-    assert.equal(body["statement_id"], "my-id");
-    assert.equal(body["max_elapsed_seconds"], 30);
-    assert.equal(body["max_parallelism"], undefined);
+    await client.catalog().get();
+
+    const init = calls[0]!.init as RequestInit;
+    const headers = new Headers(init.headers);
+    assert.equal(headers.get("Authorization"), "Bearer api-key");
+    assert.equal(init.cache, "no-store");
   });
 
-  it("returns the statement status from the response", async () => {
-    const status = pendingStatus("stmt-42");
-    const { fn } = makeFetchStub([jsonResponse(200, status)]);
+  it("invokes custom fetch without binding the Client instance as receiver", async () => {
+    const fetch: typeof globalThis.fetch = function (
+      this: unknown,
+      _input: RequestInfo | URL,
+      _init?: RequestInit,
+    ): Promise<Response> {
+      assert.equal(this, undefined);
+      return Promise.resolve(
+        jsonResponse(200, { databases: [] }, { ETag: '"v1"' }),
+      );
+    };
+    const client = new Client("http://localhost:8080", { fetch });
+
+    assert.deepEqual(await client.catalog().get(), {
+      definition: { databases: [] },
+      version: '"v1"',
+    });
+  });
+
+  it("executes statements and returns a ResultSet via client.query()", async () => {
+    const rs = {
+      metadata: {
+        fields: [{ name: "n", data_type: "int" as const }],
+        num_rows: 1,
+      },
+      format: "json" as const,
+      rows: [["5"]],
+    };
+    const { fn, calls } = makeFetchStub([
+      jsonResponse(200, pendingStatus()),
+      jsonResponse(200, finishedStatus(rs)),
+    ]);
     const client = new Client("http://localhost:8080", { fetch: fn });
 
-    const result = await client.submitStatement({
-      statement: "SELECT 1",
-      format: "json",
+    const result = await client.query("SELECT 5", {
+      initialDelayMs: 0,
+      maxDelayMs: 0,
     });
 
-    assert.equal(result.statement_id, "stmt-42");
-    assert.equal(result.status, "pending");
-  });
-});
-
-describe("Client.fetchStatement", () => {
-  it("sends GET /v1/statements/{id}?format=json", async () => {
-    const status = finishedStatus(emptyResultSet(), "stmt-99");
-    const { fn, calls } = makeFetchStub([jsonResponse(200, status)]);
-    const client = new Client("http://localhost:8080", { fetch: fn });
-
-    await client.fetchStatement("stmt-99");
-
-    assert.equal(calls.length, 1);
-    const call = calls[0]!;
-    assert.ok(
-      call.url.includes("/v1/statements/stmt-99"),
-      `unexpected URL: ${call.url}`,
-    );
-    assert.ok(
-      call.url.includes("format=json"),
-      `missing format=json in URL: ${call.url}`,
-    );
-    assert.equal((call.init as RequestInit).method, "GET");
-  });
-
-  it("returns the statement status from the response", async () => {
-    const status = finishedStatus(emptyResultSet(), "stmt-99");
-    const { fn } = makeFetchStub([jsonResponse(200, status)]);
-    const client = new Client("http://localhost:8080", { fetch: fn });
-
-    const result = await client.fetchStatement("stmt-99");
-    assert.equal(result.status, "finished");
-    assert.equal(result.statement_id, "stmt-99");
-  });
-
-  it("encodes the statement id as one path segment", async () => {
-    const status = finishedStatus(emptyResultSet(), "stmt/99");
-    const { fn, calls } = makeFetchStub([jsonResponse(200, status)]);
-    const client = new Client("http://localhost:8080", { fetch: fn });
-
-    await client.fetchStatement("stmt/99");
-
-    assert.equal(
-      calls[0]!.url,
-      "http://localhost:8080/v1/statements/stmt%2F99?format=json",
-    );
-  });
-});
-
-describe("Client.cancelStatement", () => {
-  it("sends POST /v1/statements/{id}/cancel", async () => {
-    const cancelResult = cancelledStatus();
-    const { fn, calls } = makeFetchStub([jsonResponse(200, cancelResult)]);
-    const client = new Client("http://localhost:8080", { fetch: fn });
-
-    await client.cancelStatement("stmt-1");
-
-    assert.equal(calls.length, 1);
-    const call = calls[0]!;
-    assert.ok(
-      call.url.endsWith("/v1/statements/stmt-1/cancel?format=json"),
-      `unexpected URL: ${call.url}`,
-    );
-    assert.equal((call.init as RequestInit).method, "POST");
+    assert.equal(calls.length, 2);
+    assert.equal(result.numRows(), 1);
+    assert.deepEqual(result.first(), { n: 5n });
   });
 });
 
 describe("Client error mapping", () => {
-  it("throws permanent ScopeDBError on 404 with JSON body", async () => {
-    const { fn } = makeFetchStub([jsonResponse(404, { message: "not found" })]);
-    const client = new Client("http://localhost:8080", { fetch: fn });
-
-    await assert.rejects(
-      () => client.fetchStatement("no-such-id"),
-      (err: unknown) => {
-        assert.ok(err instanceof ScopeDBError);
-        assert.ok(
-          err.message.includes("not found"),
-          `message was: ${err.message}`,
-        );
-        assert.ok(err.isPermanent(), `expected permanent, got ${err.status()}`);
-        return true;
-      },
-    );
-  });
-
-  it("throws temporary ScopeDBError on 503", async () => {
+  it("maps 4xx to permanent and 429/5xx to temporary ScopeDBError", async () => {
     const { fn } = makeFetchStub([
+      jsonResponse(404, { message: "not found" }),
+      jsonResponse(429, { message: "rate limited" }),
       jsonResponse(503, { message: "service unavailable" }),
     ]);
     const client = new Client("http://localhost:8080", { fetch: fn });
 
     await assert.rejects(
-      () => client.catalog().get(),
-      (err: unknown) => {
-        assert.ok(err instanceof ScopeDBError);
-        assert.ok(err.isTemporary(), `expected temporary, got ${err.status()}`);
-        return true;
-      },
+      () => client.statementHandle("no-such-id").refresh(),
+      (err: unknown) => err instanceof ScopeDBError && err.isPermanent() && err.message.includes("not found"),
     );
-  });
-
-  it("throws temporary ScopeDBError on 429", async () => {
-    const { fn } = makeFetchStub([
-      jsonResponse(429, { message: "rate limited" }),
-    ]);
-    const client = new Client("http://localhost:8080", { fetch: fn });
-
     await assert.rejects(
       () => client.catalog().get(),
-      (err: unknown) => {
-        assert.ok(err instanceof ScopeDBError);
-        assert.ok(err.isTemporary(), `expected temporary, got ${err.status()}`);
-        return true;
-      },
+      (err: unknown) => err instanceof ScopeDBError && err.isTemporary(),
+    );
+    await assert.rejects(
+      () => client.catalog().get(),
+      (err: unknown) => err instanceof ScopeDBError && err.isTemporary(),
     );
   });
 
-  it("falls back to plain-text body when response is not JSON", async () => {
+  it("falls back to plain text on non-JSON error bodies and wraps transport errors", async () => {
     const { fn } = makeFetchStub([textResponse(500, "internal server error")]);
     const client = new Client("http://localhost:8080", { fetch: fn });
 
     await assert.rejects(
       () => client.catalog().get(),
-      (err: unknown) => {
-        assert.ok(err instanceof ScopeDBError);
-        assert.ok(
-          err.message.includes("internal server error"),
-          `message was: ${err.message}`,
-        );
-        return true;
-      },
+      (err: unknown) => err instanceof ScopeDBError && err.message.includes("internal server error"),
     );
-  });
-
-  it("throws ScopeDBError on transport failure", async () => {
-    const { fn } = makeFetchStub([]);
-    const client = new Client("http://localhost:8080", { fetch: fn });
-
     await assert.rejects(
       () => client.catalog().get(),
-      (err: unknown) => {
-        assert.ok(err instanceof ScopeDBError);
-        return true;
-      },
+      (err: unknown) => err instanceof ScopeDBError,
     );
   });
 
@@ -267,92 +168,5 @@ describe("Client error mapping", () => {
         return true;
       },
     );
-  });
-
-  it("disables framework fetch caching", async () => {
-    const { fn, calls } = makeFetchStub([
-      jsonResponse(200, { databases: [] }, { ETag: '"v1"' }),
-    ]);
-    const client = new Client("http://localhost:8080", { fetch: fn });
-
-    await client.catalog().get();
-
-    assert.equal((calls[0]!.init as RequestInit).cache, "no-store");
-  });
-});
-
-describe("Client fetch transport", () => {
-  it("invokes fetch without using the Client as its receiver", async () => {
-    const fetch: typeof globalThis.fetch = function (
-      this: unknown,
-      _input: RequestInfo | URL,
-      _init?: RequestInit,
-    ): Promise<Response> {
-      assert.equal(this, undefined);
-      return Promise.resolve(
-        jsonResponse(200, { databases: [] }, { ETag: '"v1"' }),
-      );
-    };
-    const client = new Client("http://localhost:8080", { fetch });
-
-    assert.deepEqual(await client.catalog().get(), {
-      definition: { databases: [] },
-      version: '"v1"',
-    });
-  });
-});
-
-describe("Client.query shorthand", () => {
-  it("executes statement and returns ResultSet", async () => {
-    const rs = {
-      metadata: {
-        fields: [{ name: "n", data_type: "int" as const }],
-        num_rows: 1,
-      },
-      format: "json" as const,
-      rows: [["5"]],
-    };
-    const { fn, calls } = makeFetchStub([
-      jsonResponse(200, pendingStatus()),
-      jsonResponse(200, finishedStatus(rs)),
-    ]);
-    const client = new Client("http://localhost:8080", { fetch: fn });
-
-    const result = await client.query("SELECT 5", {
-      initialDelayMs: 0,
-      maxDelayMs: 0,
-    });
-
-    assert.ok(calls.length >= 1);
-    assert.equal(result.numRows(), 1);
-    assert.deepEqual(result.first(), { n: 5n });
-  });
-});
-
-describe("ClientOptions.apiKey", () => {
-  it("rejects an empty API key", () => {
-    assert.throws(
-      () => new Client("http://localhost:8080", { apiKey: "" }),
-      (error: unknown) => {
-        assert.ok(error instanceof ScopeDBError);
-        assert.equal(error.kind, "ConfigInvalid");
-        return true;
-      },
-    );
-  });
-
-  it("sends the API key as a Bearer credential", async () => {
-    const { fn, calls } = makeFetchStub([
-      jsonResponse(200, { databases: [] }, { ETag: '"v1"' }),
-    ]);
-    const client = new Client("http://localhost:8080", {
-      fetch: fn,
-      apiKey: "api-key",
-    });
-
-    await client.catalog().get();
-
-    const headers = (calls[0]!.init as RequestInit).headers as Headers;
-    assert.equal(headers.get("Authorization"), "Bearer api-key");
   });
 });

@@ -63,6 +63,13 @@ export interface ScopeDBErrorOptions {
   writeDetails?: WriteErrorDetails;
 }
 
+/**
+ * Base error type thrown by all ScopeDB SDK operations.
+ *
+ * Inspect {@link kind} for the failure category, {@link isTemporary} for general
+ * retry classification, {@link statementId} to recover an in-flight statement,
+ * or {@link catalogOutcome} to determine whether a catalog mutation may have committed.
+ */
 export class ScopeDBError extends Error {
   readonly kind: ErrorKind;
   /** Commit certainty for a Catalog mutation; absent for reads and dry runs. */
@@ -112,6 +119,7 @@ export class ScopeDBError extends Error {
     return this.errorContext.get("statement_id");
   }
 
+  /** @internal */
   withContext(key: string, value: string | number | boolean): this {
     this.errorContext.set(key, String(value));
     return this;
@@ -125,16 +133,19 @@ export class ScopeDBError extends Error {
     return this.errorStatus;
   }
 
+  /** @internal */
   setPermanent(): this {
     this.errorStatus = "permanent";
     return this;
   }
 
+  /** @internal */
   setTemporary(): this {
     this.errorStatus = "temporary";
     return this;
   }
 
+  /** @internal */
   setPersistent(): this {
     this.errorStatus = "persistent";
     return this;
@@ -178,6 +189,14 @@ export class ScopeDBError extends Error {
   }
 }
 
+/**
+ * Error thrown when a direct {@link Table.append} call or an {@link AppendStream} batch fails.
+ *
+ * Check {@link outcome} before replaying a batch:
+ * - `"failed"`: no rows in the batch were committed.
+ * - `"ambiguous"`: the request reached the transport boundary without a confirmed rejection
+ *   and may have committed; reconcile downstream before replaying.
+ */
 export class AppendRowsError extends ScopeDBError {
   readonly outcome: AppendRowsErrorPayload["status"];
   readonly rowErrors: readonly AppendRowError[];

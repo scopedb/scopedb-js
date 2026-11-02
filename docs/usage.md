@@ -1,82 +1,97 @@
 # Using the JavaScript SDK
 
-Start with the [runnable quickstart](../README.md#run-a-query). The snippets below use its `client`; Append snippets use an existing `events` table and the `table` created in [Append rows](#append-rows). For complete programs, see the [examples](../examples/README.md).
+Start with the [runnable quickstart](../README.md#run-a-query). The snippets below use its `client`; Append snippets use an existing `events` table. For complete programs, see the [examples](../examples/README.md).
 
-## Track or cancel a query
-
-Use `client.query()` to submit a statement and wait for its result.
-
-For a detached or long-running statement, keep its handle and choose between a local snapshot, one remote status request, or waiting for the result:
-
-```ts
-const handle = await client.statement("SELECT 1 AS ready").submit();
-
-// Synchronous and local: the snapshot updated by submit(), refresh(), wait(), or cancel().
-console.log(handle.snapshot()?.status);
-
-// Asynchronous: requests the latest remote status while the statement is active.
-const latest = await handle.refresh();
-console.log(latest.status);
-
-// Polls until the statement terminates and returns its result set.
-const result = await handle.wait();
-```
-
-`refresh()` returns the cached snapshot without another request once the handle has reached a terminal state. Use `client.statementHandle(id)` to resume this lifecycle from a previously stored statement ID. `wait()`, `query()`, and `execute()` accept `WaitOptions` when polling delays or cancellation need to be configured.
-
-`snapshot()` and `refresh()` return caller-owned copies. A local `AbortSignal` interrupts waiting; use `cancel()` to request server cancellation. `cancel()` returns the complete observed state, which may still be pending/running or may already be finished. `wait()` reports confirmed cancellation with `ScopeDBError.kind === "StatementCancelled"`.
-
-Use `.withMaxElapsedSeconds(60)` to limit elapsed execution time, including queueing, and `.withMaxEstimatedSeconds(5)` to reject a statement whose estimated duration exceeds the limit. These limits take positive seconds. Query waiting has no additional SDK deadline unless the caller supplies a signal.
+| Component                       | Purpose                                                                                             |
+| ------------------------------- | --------------------------------------------------------------------------------------------------- |
+| `Client`                        | Entry point configured with your ScopeDB endpoint, API key, default write timeout, and `fetch`.     |
+| `Statement` / `StatementHandle` | Submits ScopeQL queries, configures execution limits, and tracks, cancels, or resumes execution.    |
+| `ResultSet`                     | Decodes tabular results into row arrays or column-keyed objects with configurable integer modes.    |
+| `Table` / `AppendStream`        | Appends rows to a table via managed background batching (`appendStream()`) or one-shot NDJSON.      |
+| `Catalog` / `CatalogResource`   | Reads and updates declarative database, schema, table, and view definitions with version checks.    |
+| `ScopeDBError`                  | Structured error type exposing failure categories, retryability, and write/statement recovery data. |
 
 ## Read query results
 
-`int` and `uint` cells default to JS `bigint` to preserve the full signed and unsigned 64-bit ranges. This is the safe default but is **not** directly JSON-serializable — `JSON.stringify(rowWithBigInt)` throws `TypeError: Do not know how to serialize a BigInt`.
+`client.query(scopeql)` submits a statement, waits for completion, and returns a `ResultSet`. By default, `int` and `uint` columns decode to JavaScript `bigint` so signed and unsigned 64-bit values never lose precision. Because `JSON.stringify()` does not serialize `bigint` values directly, `toValues()`, `toObjects()`, and `first()` accept an `{ integerMode }` option:
 
-`toValues()`, `toObjects()`, and `first()` accept an optional `{ integerMode }` to opt in to a different representation:
+| `integerMode`        | Return type | When to use                                                                                                        |
+| -------------------- | ----------- | ------------------------------------------------------------------------------------------------------------------ |
+| `"bigint"` (default) | `bigint`    | General application logic requiring exact 64-bit integers.                                                         |
+| `"number"`           | `number`    | JSON responses and bounded counters within `Number.MIN_SAFE_INTEGER`..`Number.MAX_SAFE_INTEGER` ($\pm(2^{53}-1)$). |
+| `"string"`           | `string`    | JSON responses containing unbounded 64-bit identifiers or counters without precision loss.                         |
 
 ```ts
-// Default: bigint (lossless, NOT JSON-safe)
+// Default: lossless bigint
 const rowsBigint = result.toObjects();
 
-// JSON-safe number. Loses precision for |x| > Number.MAX_SAFE_INTEGER
-// (i.e. 2**53 - 1). Safe for typical count() / bounded counters.
+// JSON-safe number for bounded counts and small integers
 const rowsNumber = result.toObjects({ integerMode: "number" });
-JSON.stringify(rowsNumber); // ok
+JSON.stringify(rowsNumber);
 
-// Decimal string. Always safe, always JSON-safe.
-// Recommended for unbounded I64 identifiers.
+// Lossless decimal string for JSON payloads with 64-bit IDs
 const rowsString = result.toObjects({ integerMode: "string" });
 ```
 
-The option only affects `int` / `uint` columns; other types are unchanged. Typed conversions return `timestamp` cells as JavaScript `Date` values and therefore retain only millisecond precision, even when the server returns nanoseconds. Use `rawRows()` when exact timestamp text matters; `integerMode` does not change timestamp conversion.
+`integerMode` affects only `int` and `uint` columns. `timestamp` columns decode to `Date` (millisecond precision); use `rawRows()` when you need the raw nanosecond timestamp text returned by the server. `first()` returns the first row object or `null` when the result is empty. `toObjects()` and `first()` reject duplicate column names; use unique column aliases in SQL or read positional cells with `toValues()`.
 
-`first()` returns the first object or `null` for an empty result. Object conversion rejects duplicate column names; use unique aliases or `toValues()` when names repeat. Invalid or out-of-range result cells include row and column context in the error.
+## Track or cancel a query
+
+For long-running or non-idempotent statements, build a `Statement` with `client.statement(scopeql)` to configure execution limits or manage the execution handle directly:
+
+```ts
+const handle = await client.statement("SELECT 1 AS ready")
+  .withMaxElapsedSeconds(60)
+  .withMaxEstimatedSeconds(5)
+  .submit();
+
+// Synchronous local observation from submit(), refresh(), wait(), or cancel()
+console.log(handle.snapshot()?.status);
+
+// One remote status poll while the statement is pending or running
+const latest = await handle.refresh();
+console.log(latest.status);
+
+// Poll until finished, failed, or cancelled and decode the ResultSet
+const result = await handle.wait();
+```
+
+- `withMaxElapsedSeconds(seconds)` bounds total execution time including queueing; `withMaxEstimatedSeconds(seconds)` rejects queries whose estimated runtime exceeds the threshold.
+- `refresh()` and `cancel()` return the cached snapshot without making a network request once the handle reaches a terminal state (`finished`, `failed`, or `cancelled`).
+- Passing an `AbortSignal` to `wait()`, `query()`, or `execute()` stops local waiting without cancelling the server statement; call `handle.cancel()` to request server-side cancellation.
+- Use `client.statementHandle(statementId)` to reattach to a previously submitted statement by its UUID.
 
 ## Read or change table schemas
 
-Catalog reads return complete declarative definitions and opaque catalog versions. Select the smallest subtree you need. Apply replaces that whole subtree, including its children; omitted fields are cleared. Use a dry run and a version precondition to review changes and reject concurrent updates.
+`client.catalog()` and `table.catalog()` read and replace declarative definitions for databases, schemas, tables, and views. Each `get()` returns a complete `{ definition, version }` snapshot. `apply()` replaces the target resource and its children (clearing omitted fields); use `dryRun: true` and `expectedVersion` to preview changes and guard against concurrent edits:
 
 ```ts
 const resource = client.table("events").catalog();
 const snapshot = await resource.get();
 const definition = { ...snapshot.definition, comment: "Application events" };
+
 const preview = await resource.apply(definition, {
   dryRun: true,
   expectedVersion: snapshot.version,
 });
 console.log(preview.before, preview.after, preview.destructive);
+
 await resource.apply(definition, { expectedVersion: preview.version });
 ```
 
-Potentially destructive changes require `allowDestructive: true`. Mutations never retry automatically and use the client's `writeTimeoutMs` by default; `CatalogOptions.timeoutMs` overrides it. Inspect `ScopeDBError.catalogOutcome`: `"rejected"` confirms rejection, while `"unknown"` means the mutation may have committed. Read the current definition before deciding whether to replay an unknown outcome. Server `code` and diagnostics remain available; reads and dry runs have no mutation outcome. Keep `version` unchanged, including its quotes. `version` covers the whole tenant catalog: a catalog change to another resource can invalidate it, while data appends do not advance it. Dry runs return the base version; writes return the resulting version, and no-op writes retain the version. `expectedVersion` is checked atomically and a stale token fails with HTTP 412 and `precondition_failed`.
-
-Definitions use the server's snake_case field names and retain unknown fields when read and reapplied.
+- Pass `snapshot.version` unchanged as `expectedVersion`. The version token represents the tenant catalog state; concurrent catalog changes cause `apply()` or `delete()` to fail atomically with HTTP `412` (`code: "precondition_failed"`).
+- Dropping a resource or making destructive schema changes requires `allowDestructive: true`.
+- Catalog definitions use snake_case property names matching the ScopeDB schema model and preserve unknown extension fields across read-modify-write cycles.
+- Catalog mutations are single-attempt operations. When a mutation fails, inspect `error.catalogOutcome`: `"rejected"` means the change did not take effect, whereas `"unknown"` means the request was interrupted or failed ambiguously and you should re-read `get()` before retrying.
 
 ## Append rows
 
-A successful Append requires HTTP 200 and a valid `num_rows_inserted` matching the submitted row count; the wire response does not require `status`. Valid nested HTTP 4xx errors confirm failure, and HTTP 5xx errors remain ambiguous even when legacy details say rejected. Known error codes must agree with the HTTP status; unknown codes are preserved. Invalid acknowledgements and incomplete or malformed error envelopes remain ambiguous.
+ScopeDB provides two table write paths on `client.table(name, { database, schema })`:
 
-Use an append stream to write JavaScript objects to an existing table. The SDK groups them into batches automatically. This example uses a table named `events` with `id int` and `name string` columns:
+| Write path             | Best for                                                                                          |
+| ---------------------- | ------------------------------------------------------------------------------------------------- |
+| `table.appendStream()` | Event ingestion, bulk imports, and telemetry pipelines that benefit from automatic batching.      |
+| `table.append(ndjson)` | Pre-encoded newline-delimited JSON payloads or single-request writes with caller-managed retries. |
 
 ```ts
 const table = client.table("events", {
@@ -91,50 +106,53 @@ await stream.sendAll([
   { id: 3, name: "third" },
 ]);
 
-// Optional: wait for the current writes while keeping the stream open.
+// Optional: wait for buffered rows to commit while keeping the stream open
 // await stream.flush();
 
-// When finished, wait for remaining writes and close the stream.
+// Flush remaining buffered rows and permanently close the stream
 await stream.shutdown();
 ```
 
-`send()` and `sendAll()` add records to the SDK's pending writes. Call `shutdown()` when you are done sending to wait for writing to finish. `sendAll()` accepts an iterable or async iterable. Use `flush()` when you need to wait for the current writes and then continue using the stream.
+`send()` and `sendAll()` serialize records and enqueue them into the stream's bounded buffer. Await `flush()` to settle all rows admitted so far while keeping the stream open, or `shutdown()` when finished producing rows. If `sendAll()` fails midway (for example, on an invalid record), earlier rows from the iterable remain admitted in the stream; settle the stream before deciding which remaining input rows to send.
 
-`sendAll()` is not a transaction over its input: if encoding, iteration, or admission fails midway, earlier rows can already be buffered or committed. Settle the accepted prefix even after an exception; do not replay the entire input just because `sendAll()` threw. The [admission recovery example](../examples/patterns/admission-recovery.ts) keeps a finite source, confirms the prefix, corrects a local encoding error, and submits only the unadmitted suffix. It stops on delivery errors rather than guessing which rows reached the server.
+| Builder method                  | Default          | Description                                                                                         |
+| ------------------------------- | ---------------- | --------------------------------------------------------------------------------------------------- |
+| `.strictEncoding(enabled)`      | `false`          | Use `encodeAppendRecord()` to support `bigint` and reject lossy numbers or unsupported types.       |
+| `.targetBatchBytes(bytes)`      | `4 MiB`          | Target uncompressed NDJSON batch size before sealing a batch (maximum `8 MiB`).                     |
+| `.maxBatchRows(rows)`           | `200,000`        | Maximum rows per append request (maximum `200,000`).                                                |
+| `.flushIntervalMs(ms)`          | `1,000`          | Maximum delay from the first buffered row in a batch until dispatch.                                |
+| `.maxBufferedBytes(bytes)`      | `64 MiB`         | Total buffered and in-flight byte budget before `send()` applies backpressure or `trySend()` drops. |
+| `.maxConcurrentBatches(count)`  | `4`              | Maximum concurrent HTTP append requests per stream instance.                                        |
+| `.attemptTimeoutMs(ms \| null)` | `writeTimeoutMs` | Per-attempt HTTP deadline in milliseconds (`null` disables the per-attempt deadline).               |
+| `.maxElapsedTimeMs(ms)`         | `300,000`        | Total per-batch delivery budget across attempts and retry backoffs.                                 |
+| `.maxRetries(count)`            | `8`              | Maximum retries for confirmed temporary admission refusals (`0` disables retries).                  |
+| `.retryAmbiguous(enabled)`      | `false`          | Also retry transient `"ambiguous"` outcomes (can duplicate rows if an earlier attempt committed).   |
 
-Streams target 4 MiB batches by default, with limits of 8 MiB of uncompressed NDJSON and 200,000 rows per request. Use `targetBatchBytes()` and `maxBatchRows()` to reduce a batch's size. The default failure policy stops the stream after a failed batch; use [continue mode](#continue-after-a-failed-batch) for best-effort sinks.
-
-In stop mode, `flush()` and `shutdown()` return `AppendRowsResult | null`, with `num_rows_inserted` for committed rows and `null` for an empty barrier. In continue mode, they return an `AppendDeliveryReport`; inspect `outcome`, `committedRows`, `failedRows`, and `ambiguousRows`. Each report covers activity since the previous returned report.
-
-Streams automatically retry only valid HTTP 429 rejections by default. Ambiguous outcomes are not replayed unless `.retryAmbiguous(true)` is enabled, which can duplicate rows. `.maxRetries(0)` disables retries. Direct `append()` makes one attempt. See [timeouts and HTTP options](#timeouts-and-http-options) for deadlines and interruption outcomes.
+In the default `"stop"` policy, `flush()` and `shutdown()` resolve to `AppendRowsResult | null` (`{ status: "succeeded", num_rows_inserted }` when rows were committed in the interval, or `null` when no rows were pending) and reject on any unrecovered batch failure.
 
 ### JSON encoding for Append
 
-Each nonblank NDJSON line must be a JSON object keyed by destination column name. Append does not run a ScopeQL projection or general-purpose casts. Use these encodings for non-null input values:
+Each row must serialize to a JSON object keyed by destination column name:
 
-| Column type | JSON input                              | Example and constraints                                                                                                                                                                                                                                  |
-| ----------- | --------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `int`       | Integer number token                    | `42`, `-42`; signed 64-bit range. `"42"`, `42.0`, and `42e0` are not integer tokens.                                                                                                                                                                     |
-| `uint`      | Nonnegative integer number token        | `42`; this NDJSON decoder accepts only `0` through `9223372036854775807`, even though query results support the full unsigned 64-bit range.                                                                                                              |
-| `float`     | Finite number                           | `1.5`, `1e3`; integer tokens are accepted only when exactly representable as a float. Overflow, nonzero values that underflow to zero, NaN, and infinities are rejected.                                                                                 |
-| `boolean`   | Boolean                                 | `true` or `false`, without quotes.                                                                                                                                                                                                                       |
-| `string`    | String                                  | `"hello"`; numbers and objects are not implicitly converted to text.                                                                                                                                                                                     |
-| `timestamp` | RFC 3339 string with an explicit offset | `"2026-10-23T12:34:56.123456789Z"` or `"2026-10-23T20:34:56+08:00"`. Use `T` between date and time and `Z` or `±HH:MM`; date-only, timezone-free, and numeric epoch inputs are rejected. Values must fit signed 64-bit nanoseconds since the Unix epoch. |
-| `interval`  | Fixed-duration ISO 8601 `PT` string     | `"PT1H2M3.000000004S"`, `"-PT0.5S"`; hours, minutes, and seconds, with up to nine fractional second digits and signed 64-bit nanosecond range. Calendar years/months/days are not accepted.                                                              |
-| `binary`    | Canonical padded standard Base64 string | `"aGVsbG8="`; URL-safe or unpadded alternatives are rejected when they differ from canonical encoding.                                                                                                                                                   |
-| `object`    | JSON object                             | `{"nested":{"enabled":true}}`; pass the object itself, not a string containing serialized JSON.                                                                                                                                                          |
-| `array`     | JSON array                              | `[1,"two",null,{"ok":true}]`; elements may have different JSON types.                                                                                                                                                                                    |
-| `any`       | Any JSON value                          | Numbers, booleans, strings, arrays, and objects retain their JSON kinds; a timestamp-looking string remains a string.                                                                                                                                    |
+| Column type | JSON representation                  | Notes and constraints                                                                                                   |
+| ----------- | ------------------------------------ | ----------------------------------------------------------------------------------------------------------------------- |
+| `int`       | Integer number token                 | `42`, `-42` within signed 64-bit range; quoted strings (`"42"`) and fractional/exponential forms (`42.0`) are rejected. |
+| `uint`      | Nonnegative integer number token     | `0` through `9223372036854775807` in NDJSON input.                                                                      |
+| `float`     | Finite number                        | `1.5`, `1e3`; `NaN`, `Infinity`, and `-Infinity` are rejected.                                                          |
+| `boolean`   | Boolean                              | `true` or `false`.                                                                                                      |
+| `string`    | String                               | UTF-8 text; numbers and objects are not coerced to strings.                                                             |
+| `timestamp` | RFC 3339 string with explicit offset | `"2026-10-23T12:34:56.123456789Z"` or `"2026-10-23T20:34:56+08:00"` (`Date.toISOString()` produces millisecond UTC).    |
+| `interval`  | ISO 8601 `PT` duration string        | `"PT1H2M3.000000004S"`, `"-PT0.5S"` (hours, minutes, and seconds only; calendar day/month/year units are not used).     |
+| `binary`    | Standard padded Base64 string        | `"aGVsbG8="`.                                                                                                           |
+| `object`    | JSON object                          | `{"nested":{"enabled":true}}` (pass a nested object, not a JSON-encoded string).                                        |
+| `array`     | JSON array                           | `[1,"two",null,{"ok":true}]`.                                                                                           |
+| `any`       | Any JSON value                       | Preserves the JSON value kind.                                                                                          |
 
-Missing ordinary columns and explicit `null` become SQL NULL for every column type. Nested nulls inside objects/arrays remain JSON nulls. Computed columns are evaluated by the table and must be omitted from input. Unknown fields, duplicate object keys (including nested keys), and type mismatches reject the entire append request; other requests in a stream may already have committed. Inspect `AppendRowsError.outcome`, `code`, and `details`. Modern errors describe the whole request; `rowErrors` and `rowErrorsTruncated` retain optional legacy diagnostics only. Do not parse error messages to infer per-row outcomes.
-
-The signed 64-bit integer-token limit also applies inside `object`, `array`, and `any`. By default, `appendStream()` uses JavaScript's `JSON.stringify`: unsafe integers may already be rounded before the SDK sees them, `bigint` throws, NaN/Infinity become `null`, and `undefined` object properties are omitted. Opt into [strict encoding](#strict-object-encoding) to preserve int64 `bigint` values and reject lossy numbers before admission. If retaining the default encoder, validate numbers with `Number.isFinite` and use `Number.isSafeInteger` for integer-valued JavaScript numbers. Preserve original NDJSON text when importing data that must not pass through JavaScript number conversion, as shown in [import-ndjson.ts](../examples/import-ndjson.ts). Do not turn integers into quoted numeric strings for an integer column.
-
-For a JavaScript `Date` within the timestamp range above, `toISOString()` produces an accepted UTC timestamp. It has millisecond precision; retain an already valid RFC 3339 source string when sub-millisecond precision matters. Parse and validate any source text that contains serialized objects before passing the resulting object to Append.
+Omitted columns and `null` values become SQL `NULL`. Computed columns are evaluated by ScopeDB and must be omitted from input records. Append requests are atomic per batch: unknown columns, duplicate keys, or type mismatches reject the entire request with `AppendRowsError` (`outcome: "failed"`).
 
 ### Strict object encoding
 
-Enable `.strictEncoding(true)` before building a stream, or call `encodeAppendRecord()` to prepare one JSON object for direct Append. Both use the same encoder; the default stream encoder remains unchanged.
+By default, `appendStream()` serializes objects with `JSON.stringify()`, which throws on `bigint`, turns `NaN`/`Infinity` into `null`, and silently drops `undefined` properties. Enable `.strictEncoding(true)` on a stream or call `encodeAppendRecord(record)` for direct `table.append()` to emit exact 64-bit `bigint` tokens and reject lossy or unsupported values locally before buffering:
 
 ```ts
 import { encodeAppendRecord } from "scopedb";
@@ -143,19 +161,14 @@ const stream = table.appendStream().strictEncoding(true).build();
 await stream.send({ id: 9007199254740993n, name: "exact integer" });
 await stream.shutdown();
 
-// No trailing newline is added; join multiple encoded records with "\n".
 await table.append(encodeAppendRecord({ id: 9007199254740995n, name: "direct" }));
 ```
 
-Strict encoding accepts plain objects (including null-prototype objects), arrays, strings, booleans, null, valid Dates, finite numbers, and signed 64-bit bigints. Bigints become exact unquoted decimal tokens, including inside objects and arrays. Integer-valued numbers must satisfy `Number.isSafeInteger`; this conservative rule also applies when the intended column is a float. An already rounded Number cannot be repaired: construct a bigint from the original decimal text or retain validated NDJSON instead. The server's signed 64-bit input ceiling still applies to uint columns; this encoder does not extend it.
-
-Undefined values, functions, symbols, sparse array entries, invalid Dates, cycles, accessor properties, and custom objects such as Map or class instances fail locally instead of being omitted or substituted. Plain objects use own enumerable string data properties; enumerable symbol keys are rejected. Convert custom objects explicitly, omit absent fields intentionally, or supply null. Custom `toJSON()` hooks are not called. A nested Date is encoded using its ISO timestamp with millisecond precision; preserve a valid timestamp string when nanoseconds matter. Query results with JSON-encoded object/array cells still require explicit parsing before writing to those column types.
-
-Value validation errors are permanent `ScopeDBError` values with `kind: "AppendRowsFailed"` and a field path in the message and `error.context().get("record_path")`, for example `$["attrs"][0]["score"]`. `send()`/`sendAll()` reject before admitting that record; previously admitted records remain pending. `trySend()` returns false and increments `droppedByReason.invalidRecord`. The helper validates values, not table schemas or request limits: quoted numeric strings remain strings, and destination type errors can still reject an entire append request.
+Strict encoding accepts plain objects, arrays, strings, booleans, `null`, valid `Date` instances (serialized via `toISOString()`), finite numbers (integer-valued `number`s must satisfy `Number.isSafeInteger`), and signed 64-bit `bigint`s. It rejects `NaN`, `Infinity`, unsafe integers, `undefined`, functions, symbols, sparse arrays, custom class instances (`Map`, `Set`, `Uint8Array`), accessor properties, and circular references with a permanent `ScopeDBError` (`kind: "AppendRowsFailed"`) that records the offending field path in `error.context().get("record_path")` (such as `$["attrs"][0]["score"]`).
 
 ### Continue after a failed batch
 
-To keep processing later batches when one fails, set `failurePolicy` to `"continue"` and check the report returned by `flush()` or `shutdown()`:
+Set `{ failurePolicy: "continue" }` when a stream should keep processing subsequent batches after a batch fails. In continue mode, `flush()` and `shutdown()` resolve to an `AppendDeliveryReport` summarizing the interval since the previous barrier:
 
 ```ts
 const stream = table.appendStream({ failurePolicy: "continue" }).build();
@@ -166,12 +179,12 @@ await stream.sendAll([
 ]);
 
 const report = await stream.shutdown();
-console.log(report);
+console.log(report.outcome, report.committedRows, report.failedRows, report.ambiguousRows);
 ```
 
 ### Long-lived telemetry and rate limiting
 
-For a best-effort telemetry sink that must keep accepting later events after a failed batch, start with one stream per destination in each process and an explicit continue policy:
+For non-blocking telemetry sinks, combine `failurePolicy: "continue"`, `trySend()`, `onBatchFailure()`, and the built-in circuit breaker:
 
 ```ts
 const telemetry = table.appendStream({ failurePolicy: "continue" })
@@ -184,7 +197,6 @@ const telemetry = table.appendStream({ failurePolicy: "continue" })
   .maxRetries(2)
   .circuitBreaker({ failureThreshold: 5, cooldownMs: 30_000 })
   .onBatchFailure(({ outcome, batchRows, error }) => {
-    // Send diagnostics to a different sink to avoid recursive telemetry failures.
     console.error("telemetry batch failed", { outcome, batchRows, error });
   })
   .build();
@@ -193,24 +205,11 @@ telemetry.trySend({ id: 1, name: "request.completed" });
 // On graceful shutdown: stop producers, then await telemetry.shutdown().
 ```
 
-`trySend()` returns false for local admission failures and records the reason in `stats()`. Continue mode does not retain failed payloads for later replay. Its circuit breaker opens after consecutive availability failures, rejects `trySend()` admission during cooldown, and allows one `trySend()` probe afterwards; `send()` and `sendAll()` can still fill the bounded local queue while dispatch is paused. A permanent schema error does not open the breaker. The default breaker settings are five failures and a 30-second cooldown. Use a durable outbox when losing telemetry is unacceptable. See the runnable [telemetry example](../examples/patterns/telemetry.ts).
-
-| Metric                   | `stats()` field                                                  | Interpretation                                                                                                                                                                                                                                                                               |
-| ------------------------ | ---------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Dropped before admission | `droppedRows`, `droppedByReason`                                 | Failed `trySend()` calls, split into buffer full, invalid record, oversized record, open circuit, and closed stream. Thrown `send()`/`sendAll()` admission errors must be counted by the caller.                                                                                             |
-| Known not committed      | `failedRows`                                                     | Admitted rows whose batch ended in rejection; also includes admitted but unsent rows discarded after a fatal stream failure. For specifically server-rejected batches, count `batchRows` in `onBatchFailure` when `outcome === "failed"`, using HTTP metadata to distinguish local errors.   |
-| Possibly committed       | `ambiguousRows`                                                  | Admitted rows with an unresolved commit outcome; keep separate from definite loss and never blindly replay them.                                                                                                                                                                             |
-| Confirmed committed      | `committedRows`                                                  | Rows acknowledged as committed.                                                                                                                                                                                                                                                              |
-| Retry pressure           | `retries`, `lastFailure.error`                                   | Extra attempts and complete final failure diagnostics, including HTTP status and `retryAfterMs`.                                                                                                                                                                                             |
-| Current backlog          | `pendingRows`, `pendingBytes`, `inFlightBatches`, `circuitState` | Gauges for backpressure, requests in flight, and circuit state.                                                                                                                                                                                                                              |
-
-Row/retry counters are cumulative for the stream's lifetime and are not reset by `flush()`. Export their deltas or maintain a baseline per stream. `flush()`/`shutdown()` delivery reports cover activity since the previous returned report; do not add them to the lifetime counters again. Aborting `flush()` stops only local waiting, not delivery; its outcome is merged into the next `flush()` or `shutdown()` report so unresolved rows are not hidden.
-
-The SDK default remains four concurrent batches **per stream**, with no process-wide or fleet-wide coordinator. Twelve processes with one default stream each can issue up to 48 concurrent append requests; the recipe above reduces that bound to 12. Multiple streams per process multiply it again. Start at one batch per stream for a fleet that is already seeing 429s, then increase only after observing throughput, 429s, retries, and backlog. Concurrency limits requests in flight, not requests per second or total ingestion volume; reduce producer rate or coordinate admission across processes if the shared limit is still exceeded. Confirmed transient rejections use jittered backoff and honor `Retry-After`; a retry that cannot fit the delivery budget is not sent early. A 429 without a complete, valid error body remains ambiguous and is not replayed by default.
+`trySend()` never waits or throws; when it returns `false`, the drop reason is recorded in `telemetry.stats().droppedByReason` (`bufferFull`, `invalidRecord`, `recordTooLarge`, `circuitOpen`, or `closed`). The circuit breaker opens after `failureThreshold` consecutive availability failures, rejects `trySend()` calls while open, and admits a single probe after `cooldownMs`. Lifetime counters on `stats()` (`acceptedRows`, `committedRows`, `failedRows`, `ambiguousRows`, `droppedRows`, `retries`) accumulate over the life of the stream, whereas `flush()` and `shutdown()` reports cover only the interval since the previous completed barrier. See [`examples/patterns/telemetry.ts`](../examples/patterns/telemetry.ts) for a complete runnable example.
 
 ### Append an NDJSON string
 
-If you already have newline-delimited JSON, pass it to `table.append()`:
+When you already have newline-delimited JSON (up to `8 MiB` uncompressed and `200,000` rows per call), pass it directly to `table.append()`:
 
 ```ts
 const result = await table.append('{"id":6,"name":"sixth"}\n');
@@ -219,7 +218,7 @@ console.log(result.num_rows_inserted);
 
 ### Caller-managed retries
 
-If the application owns the retry loop, require both a confirmed rejection and a temporary classification. An HTTP status or `retryable` flag alone is insufficient. This Node.js example makes at most three attempts, honors `Retry-After`, and uses the caller's signal to bound the whole operation:
+`table.append()` makes a single HTTP attempt. If you write a custom retry loop around `table.append()`, retry only when `error instanceof AppendRowsError`, `error.outcome === "failed"`, `error.isTemporary()` is `true`, `error.serverRetryable !== false`, and `error.writeDetails === undefined`:
 
 ```ts
 import { setTimeout as delay } from "node:timers/promises";
@@ -231,40 +230,45 @@ async function appendWithRetry(table: Table, ndjson: string, signal: AbortSignal
     try {
       return await table.append(ndjson, { signal });
     } catch (error) {
-      if (!(error instanceof AppendRowsError) || error.outcome !== "failed" ||
-          !error.isTemporary() || error.serverRetryable === false ||
-          error.writeDetails !== undefined || retries >= 2) {
+      if (
+        !(error instanceof AppendRowsError) ||
+        error.outcome !== "failed" ||
+        !error.isTemporary() ||
+        error.serverRetryable === false ||
+        error.writeDetails !== undefined ||
+        retries >= 2
+      ) {
         throw error;
       }
       const backoffMs = 200 * 2 ** retries * (0.5 + Math.random() / 2);
       const waitMs = Math.max(backoffMs, error.retryAfterMs ?? 0);
-      // Give long server delays back to the caller; never shorten Retry-After.
       if (waitMs > 30_000) throw error;
       await delay(waitMs, undefined, { signal });
     }
   }
 }
-
-await appendWithRetry(table, '{"id":6,"name":"sixth"}', AbortSignal.timeout(30_000));
 ```
 
-An unknown result, including `writeDetails.outcome === "ambiguous"` after timeout or cancellation, may already be committed: stop and reconcile it. A subsequent definite rejection cannot resolve an earlier unknown attempt. Avoid layering an application retry loop around a retrying stream. A type-checked copy is in [retry-append.ts](../examples/templates/retry-append.ts).
+When `error.outcome === "ambiguous"` (for example, after a network disconnect, timeout, or HTTP `5xx`), the write may already have committed; reconcile downstream state before replaying to avoid duplicating rows. See [`examples/templates/retry-append.ts`](../examples/templates/retry-append.ts).
 
 ## Timeouts and HTTP options
 
-Each append attempt and Catalog mutation defaults to a 30-second SDK deadline. Its budget starts after local encoding, compression, and request preparation and includes reading the complete response. `ClientOptions.writeTimeoutMs` sets the default; direct writes and Catalog mutations accept `timeoutMs`, and streams accept `.attemptTimeoutMs()`. An omitted setting inherits the default; a positive integer overrides it; `null` disables that SDK deadline. Zero is invalid. Caller `AbortSignal` and transport deadlines remain effective. The stream's separate `.maxElapsedTimeMs()` delivery budget defaults to five minutes per batch and includes all attempts and retry delays, even when its per-attempt deadline is disabled.
+Configure default write timeouts, custom headers, or a custom `fetch` implementation when constructing `Client`:
 
-A timeout or in-flight cancellation does not roll back a write. Append errors retain their cause and HTTP diagnostics, with `writeDetails: { reason: "timeout" | "cancelled", outcome: "ambiguous" }`; Catalog mutations report `catalogOutcome: "unknown"` and preserve the interruption reason in `writeDetails` as well. Cancellation before sending preserves the caller's abort reason. Streams never replay client timeouts or cancellations, including when unknown replay is enabled.
+| Option / Parameter                     | Default      | Scope                                                                                              |
+| -------------------------------------- | ------------ | -------------------------------------------------------------------------------------------------- |
+| `ClientOptions.writeTimeoutMs`         | `30,000` ms  | Default per-attempt deadline for `table.append()`, `AppendStream` attempts, and Catalog mutations. |
+| `WriteOptions.timeoutMs`               | Inherited    | Per-call override for `table.append()` (`null` disables the SDK deadline for that call).           |
+| `CatalogOptions.timeoutMs`             | Inherited    | Per-call override for Catalog `apply()` and `delete()` (`null` disables the SDK deadline).         |
+| `AppendStreamBuilder.attemptTimeoutMs` | Inherited    | Per-attempt HTTP deadline for stream batches (`null` disables the per-attempt deadline).           |
+| `AppendStreamBuilder.maxElapsedTimeMs` | `300,000` ms | Total per-batch delivery budget across all attempts and retry delays in `AppendStream`.            |
+| `RequestOptions.signal`                | `undefined`  | Caller `AbortSignal` supported on all query, statement, catalog, and append operations.            |
 
-Streams automatically retry only valid HTTP 429 rejections by default. An unknown outcome stops that batch without replay because the original attempt may have committed. Set `.retryAmbiguous(true)` only when the application accepts duplicates or can reconcile them; explicit server retry refusal is always honored. `.maxRetries(0)` disables all retries. Direct `append()` and Catalog mutations make one attempt.
-
-HTTP redirects retain the fetch transport's default behavior. A custom `ClientOptions.fetch` can implement an application-specific redirect policy. Redirects are distinct from the SDK's append retry policy and share the attempt deadline.
-
-The SDK compresses Statement and Append request bodies with gzip using the Web Compression API. Catalog mutations use plain JSON. Append limits are based on the uncompressed NDJSON body.
+A timeout or in-flight cancellation does not roll back a write that has already been sent: `AppendRowsError` reports `outcome: "ambiguous"` with `writeDetails: { reason: "timeout" | "cancelled", outcome: "ambiguous" }`, and Catalog mutations report `catalogOutcome: "unknown"` with `writeDetails`. Statement requests do not use `writeTimeoutMs`; bound them with `.withMaxElapsedSeconds()` on the server and an `AbortSignal` locally.
 
 ## Errors
 
-Server messages pass through unchanged. `ScopeDBError` adds structured diagnostics without requiring callers to parse the message:
+All SDK failures throw `ScopeDBError` (or subclasses `AppendRowsError` and `AppendRetryExhaustedError`):
 
 ```ts
 import { ScopeDBError } from "scopedb";
@@ -274,32 +278,34 @@ try {
 } catch (error) {
   if (error instanceof ScopeDBError) {
     console.error({
+      kind: error.kind,
       code: error.code,
-      details: error.details,
       message: error.message,
       httpStatus: error.httpStatus,
       requestId: error.requestId,
       statementId: error.statementId,
+      catalogOutcome: error.catalogOutcome,
       retryable: error.retryable,
       retryAfterMs: error.retryAfterMs,
-      statementDetails: error.statementDetails,
     });
   }
   throw error;
 }
 ```
 
-`retryable` does not prove that replay is safe. After a successful submission, errors from `query()` and `execute()` are not marked retryable: repeating those methods would submit a second execution. Their SDK errors retain `statementId`, along with the original cause and server diagnostics. After deciding a polling failure is recoverable, use `client.statementHandle(error.statementId).wait({ signal })` with an active signal to resume the same execution. If you already retained a handle, retry waiting on that handle; its `refresh()` and `wait()` errors keep their temporary classification. The SDK does not retry failed polling requests automatically.
+Use the operation-specific recovery fields before retrying a failed call:
 
-A lost transport acknowledgement or an unstructured 408/429/5xx response during Statement submission has code `statement_submission_outcome_unknown` and is not marked retryable. Supply a caller-known UUID with `withStatementId()` before submission to retain that ID on SDK errors even if the response is lost. An error's `statementId` identifies the attempted statement; it does not prove acceptance or guarantee that the server still retains its result. Confirmed temporary submission rejections keep their retryable classification. Append and Catalog follow the outcome rules above.
+| Operation      | What to inspect on `ScopeDBError`                                         | Recovery contract                                                                                                                                            |
+| -------------- | ------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Queries        | `error.statementId`, `error.retryable`, `error.statementDetails`          | If `error.statementId` is present after a polling failure, resume waiting with `client.statementHandle(error.statementId).wait()` instead of re-running SQL. |
+| Table Appends  | `error instanceof AppendRowsError`, `error.outcome`, `error.writeDetails` | `"failed"` guarantees no rows committed; `"ambiguous"` means rows may have committed and require reconciliation before replay.                               |
+| Catalog Writes | `error.catalogOutcome`, `error.httpStatus`, `error.code`                  | `"rejected"` guarantees the change did not apply (for example, `412 precondition_failed`); `"unknown"` requires calling `get()` to inspect current state.    |
 
-Caller abort reasons are rethrown unchanged, without adding a statement ID or changing their retryability. Retain the handle or choose an ID before submission when cancellation recovery is needed.
-
-`stats().lastFailure.error` retains the full batch error, including timeout diagnostics. When a statement reaches the `failed` state, `statementDetails` preserves the server-provided `code`, `message`, and optional code-specific `details` object.
+To make statement submissions recoverable even if the initial submission response is lost in transit, assign a UUID before submitting with `client.statement(sql).withStatementId(uuid).submit()`; if submission fails ambiguously (`code: "statement_submission_outcome_unknown"`), `error.statementId` retains your UUID so you can inspect it with `client.statementHandle(uuid)`.
 
 ## CommonJS applications
 
-The package is ESM-only. CommonJS applications can load it with dynamic import:
+The package is ESM-only. Load it from CommonJS modules with dynamic `import()`:
 
 ```js
 async function main() {

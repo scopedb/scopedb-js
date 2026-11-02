@@ -1,14 +1,14 @@
 # Upgrade from 0.2 to 0.3
 
-Update your dependency with `npm install scopedb@0.3`, then follow the sections for APIs your application uses. Node.js 20 remains the minimum supported version, unchanged from 0.2. The package remains ESM-only.
+Update your dependency with `npm install scopedb@0.3`, then follow the sections for APIs your application uses. Applications upgrading to 0.4 should also follow [Upgrade from 0.3 to 0.4](migration-0.4.md). Node.js 20 remains the minimum supported version, unchanged from 0.2. The package remains ESM-only.
 
 ## Replace Ingest with Append
 
-| In 0.2                                 | In 0.3                                  |
-| -------------------------------------- | --------------------------------------- |
-| `Client.insert()` / `Client.ingest()`  | `client.table(name).append(ndjson)`     |
-| `Client.ingestStream()`                | `client.table(name).appendStream()`     |
-| `IngestStream` / `IngestStreamBuilder` | `AppendStream` / `AppendStreamBuilder`  |
+| In 0.2                                 | In 0.3                                 |
+| -------------------------------------- | -------------------------------------- |
+| `Client.insert()` / `Client.ingest()`  | `client.table(name).append(ndjson)`    |
+| `Client.ingestStream()`                | `client.table(name).appendStream()`    |
+| `IngestStream` / `IngestStreamBuilder` | `AppendStream` / `AppendStreamBuilder` |
 
 Append writes rows whose fields match an existing destination table. It does not take a ScopeQL transform. Move field renaming, conversion, filtering, and routing into your application before sending. For an `events` table with `occurred_at timestamp` and `name string` columns:
 
@@ -40,18 +40,18 @@ Streams retry confirmed temporary rejections by default. As in 0.2, unknown outc
 
 Replace paginated `list*`, `fetch*`, and `iterate*` calls with a resource selector followed by `get()`. Each read returns a complete `definition` and an opaque `etag`. In the table below, `catalog` is `client.catalog()`.
 
-| In 0.2                                           | In 0.3                                     |
-| ------------------------------------------------ | ------------------------------------------ |
-| List databases                                   | `catalog.get()`                            |
-| List schemas in a database                       | `catalog.database(db).get()`               |
-| List tables in a schema                          | `catalog.schema(db, schema).get()`         |
-| Fetch a table / `describe()` / `tableSchema()`   | `table.catalog().get()`                    |
-| `table.apply()`                                  | `table.catalog().apply(definition)`        |
-| `table.drop()`                                   | `table.catalog().delete(options)`          |
-| `distinctOn` / `distinct_on`                     | `definition.distinct` (with `on` and `by`) |
-| `dataRetentionDays` / `data_retention_days`      | `definition.retention_days`                |
-| `partitionBy` / `clusterBy`                      | `definition.partition_by` / `cluster_by`   |
-| Column `dataType`                                | Column `data_type`                         |
+| In 0.2                                         | In 0.3                                     |
+| ---------------------------------------------- | ------------------------------------------ |
+| List databases                                 | `catalog.get()`                            |
+| List schemas in a database                     | `catalog.database(db).get()`               |
+| List tables in a schema                        | `catalog.schema(db, schema).get()`         |
+| Fetch a table / `describe()` / `tableSchema()` | `table.catalog().get()`                    |
+| `table.apply()`                                | `table.catalog().apply(definition)`        |
+| `table.drop()`                                 | `table.catalog().delete(options)`          |
+| `distinctOn` / `distinct_on`                   | `definition.distinct` (with `on` and `by`) |
+| `dataRetentionDays` / `data_retention_days`    | `definition.retention_days`                |
+| `partitionBy` / `clusterBy`                    | `definition.partition_by` / `cluster_by`   |
+| Column `dataType`                              | Column `data_type`                         |
 
 For example, list the tables in a schema:
 
@@ -66,16 +66,16 @@ Definitions now use snake_case fields and preserve extension fields. An `apply()
 
 ## Update statements and query limits
 
-| In 0.2                                      | In 0.3                                |
-| ------------------------------------------- | ------------------------------------- |
-| `withExecTimeout("30s")`                    | `withMaxElapsedSeconds(30)`           |
-| `withMaxParallelism(...)`                   | Removed                               |
-| `handle.lastStatus()`                       | `handle.snapshot()`                   |
-| `handle.status()` / `fetchOnce()`           | `handle.refresh()`                    |
-| `handle.fetch()`                            | `handle.wait()`                       |
-| Handle `progress()` / `resultSet()`         | Inspect `snapshot()` or call `wait()` |
-| `StatementStatus*`                          | `StatementSnapshot*`                  |
-| `FetchOptions`                              | `WaitOptions`                         |
+| In 0.2                              | In 0.3                                |
+| ----------------------------------- | ------------------------------------- |
+| `withExecTimeout("30s")`            | `withMaxElapsedSeconds(30)`           |
+| `withMaxParallelism(...)`           | Removed                               |
+| `handle.lastStatus()`               | `handle.snapshot()`                   |
+| `handle.status()` / `fetchOnce()`   | `handle.refresh()`                    |
+| `handle.fetch()`                    | `handle.wait()`                       |
+| Handle `progress()` / `resultSet()` | Inspect `snapshot()` or call `wait()` |
+| `StatementStatus*`                  | `StatementSnapshot*`                  |
+| `FetchOptions`                      | `WaitOptions`                         |
 
 Execution limits now use positive seconds instead of duration strings. `withMaxElapsedSeconds()` includes queueing time. The separate `withMaxEstimatedSeconds()` option rejects queries whose estimated duration exceeds a limit; it does not control parallelism. Omitted limits use service defaults.
 
@@ -105,20 +105,20 @@ Aborting `flush()` only stops local waiting. Its delivery outcomes are included 
 
 ## Rename remaining fields and methods
 
-| In 0.2                                                                  | In 0.3                                                      |
-| ----------------------------------------------------------------------- | ----------------------------------------------------------- |
-| `ClientOptions.token`                                                   | `apiKey`                                                    |
-| `table.withDatabase()` / `withSchema()`                                 | `client.table(name, { database, schema })`                  |
-| `jsonRows()` / `intoValues()` / `intoObjects()`                         | `rawRows()` / `toValues()` / `toObjects()`                  |
-| `IntoOptions`                                                           | `ResultOptions`                                             |
-| `executeOne()`                                                          | `(await statement.execute()).first()`                       |
-| `batchBytes` / `flushInterval`                                          | `targetBatchBytes` / `flushIntervalMs`                      |
-| `maxPendingBytes` / `maxInFlightRequests`                               | `maxBufferedBytes` / `maxConcurrentBatches`                 |
-| `attemptTimeout`                                                        | `attemptTimeoutMs`                                          |
-| Append result `append_state`                                            | `status`                                                    |
-| `AppendRowsError.appendState`                                           | `outcome`                                                   |
-| Separate `stats().lastFailure` message/status fields                    | `stats().lastFailure.error`                                 |
-| `u_int`                                                                 | `uint`                                                      |
-| Low-level `Client` transport methods                                    | `Table.append()`, `Statement.submit()`, and handle methods  |
+| In 0.2                                               | In 0.3                                                     |
+| ---------------------------------------------------- | ---------------------------------------------------------- |
+| `ClientOptions.token`                                | `apiKey`                                                   |
+| `table.withDatabase()` / `withSchema()`              | `client.table(name, { database, schema })`                 |
+| `jsonRows()` / `intoValues()` / `intoObjects()`      | `rawRows()` / `toValues()` / `toObjects()`                 |
+| `IntoOptions`                                        | `ResultOptions`                                            |
+| `executeOne()`                                       | `(await statement.execute()).first()`                      |
+| `batchBytes` / `flushInterval`                       | `targetBatchBytes` / `flushIntervalMs`                     |
+| `maxPendingBytes` / `maxInFlightRequests`            | `maxBufferedBytes` / `maxConcurrentBatches`                |
+| `attemptTimeout`                                     | `attemptTimeoutMs`                                         |
+| Append result `append_state`                         | `status`                                                   |
+| `AppendRowsError.appendState`                        | `outcome`                                                  |
+| Separate `stats().lastFailure` message/status fields | `stats().lastFailure.error`                                |
+| `u_int`                                              | `uint`                                                     |
+| Low-level `Client` transport methods                 | `Table.append()`, `Statement.submit()`, and handle methods |
 
 `Table.identifier()` now always includes database and schema, defaulting to `scopedb` and `public`. Integer results still default to exact `bigint`; use `integerMode: "string"` for JSON output. Preserve original NDJSON text when importing integers that JavaScript numbers cannot represent exactly.

@@ -15,18 +15,25 @@
  */
 
 import assert from "node:assert/strict";
-import { AppendRowsError, Client, ScopeDBError } from "../src/index.js";
 import { test } from "node:test";
+import {
+  AppendRowsError,
+  type CatalogSchema,
+  Client,
+  encodeAppendRecord,
+  ScopeDBError,
+} from "../src/index.js";
+
 test(
-  "native 0.6 lifecycle",
+  "live ScopeDB end-to-end lifecycle",
   { skip: !process.env["SCOPEDB_ENDPOINT"] },
   async () => {
     const client = new Client(process.env["SCOPEDB_ENDPOINT"]!, {
       apiKey: process.env["SCOPEDB_API_KEY"],
     });
-    const name = `sdk06_js_${Date.now()}`;
+    const name = `sdk_js_${Date.now()}`;
     const resource = client.catalog().schema("scopedb", name);
-    const definition: import("../src/catalog.js").CatalogSchema = {
+    const definition: CatalogSchema = {
       name,
       tables: [
         {
@@ -57,7 +64,6 @@ test(
           assert.ok(e instanceof ScopeDBError);
           assert.equal(e.httpStatus, 412);
           assert.equal(e.code, "precondition_failed");
-          console.log(`STALE_VERSION code=${e.code}`);
           return true;
         },
       );
@@ -70,14 +76,10 @@ test(
       await assert.rejects(
         table.append('{"id":"bad","source":"js"}'),
         (e: unknown) => {
-          assert.ok(e instanceof ScopeDBError);
           assert.ok(e instanceof AppendRowsError);
           assert.equal(e.outcome, "failed");
           assert.equal(e.code, "bad_request");
           assert.equal(e.httpStatus, 400);
-          console.log(
-            `REJECTED code=${e.code} row_errors=${e.rowErrors.length}`,
-          );
           return true;
         },
       );
@@ -86,22 +88,17 @@ test(
         .submit();
       const result = await handle.wait();
       assert.equal(result.toObjects().length, 2);
-      console.log(
-        `QUERY rows=2 compute_seconds=${
-          handle.snapshot()?.progress!.compute_seconds
-        }`,
-      );
+
       const late = client.statementHandle(handle.statementId);
       assert.equal((await late.cancel()).status, "finished");
       assert.equal((await late.wait()).toObjects().length, 2);
-      console.log("CANCEL completed statement retained result");
+
       await assert.rejects(
         client.query("SELECT UNKNOWN_FUNCTION()"),
         (e: unknown) => {
           assert.ok(e instanceof ScopeDBError);
           assert.equal(e.code, "statement_failed");
           assert.ok(e.message);
-          console.log(`FAILED code=${e.code}`);
           return true;
         },
       );
@@ -113,7 +110,6 @@ test(
         (e: unknown) => {
           assert.ok(e instanceof ScopeDBError);
           assert.match(e.code ?? "", /timeout/);
-          console.log(`TIMEOUT code=${e.code}`);
           return true;
         },
       );
@@ -143,14 +139,16 @@ test(
         { id: 2n, doubled: 4n },
       );
       const specialSnapshot = await special.catalog().get();
-      await special.catalog().apply({
-        ...specialSnapshot.definition,
-        comment: "preserve indexes and expressions",
-      }, { expectedVersion: specialSnapshot.version });
+      await special.catalog().apply(
+        {
+          ...specialSnapshot.definition,
+          comment: "preserve indexes and expressions",
+        },
+        { expectedVersion: specialSnapshot.version },
+      );
       await assert.rejects(
         special.catalog().delete({ dryRun: true }),
-        (error) =>
-          error instanceof ScopeDBError && error.code === "bad_request",
+        (error) => error instanceof ScopeDBError && error.code === "bad_request",
       );
       await view.delete();
       const deletion = await special.catalog().delete({ dryRun: true });
@@ -158,37 +156,36 @@ test(
       assert.equal(deletion.after, null);
       await assert.rejects(
         special.catalog().delete(),
-        (error) =>
-          error instanceof ScopeDBError &&
-          error.code === "conflict",
-      );
-      console.log(
-        "CATALOG encoded identities, views, computed columns, indexes, and destructive guards passed",
+        (error) => error instanceof ScopeDBError && error.code === "conflict",
       );
 
-      // Bounded ingestion, conditional round trips, and real lost-acknowledgement probes.
       const snapshot = await table.catalog().get();
       const replacement = {
         ...snapshot.definition,
         comment: "conditional round trip",
       };
-      await table.catalog().apply(replacement, { expectedVersion: snapshot.version });
+      await table
+        .catalog()
+        .apply(replacement, { expectedVersion: snapshot.version });
       await assert.rejects(
         table.catalog().delete({
           expectedVersion: snapshot.version,
           allowDestructive: true,
         }),
         (error) =>
-          error instanceof ScopeDBError &&
-          error.code === "precondition_failed",
+          error instanceof ScopeDBError && error.code === "precondition_failed",
       );
       assert.equal(
         (await table.catalog().get()).definition.comment,
         replacement.comment,
       );
 
-      const stream = table.appendStream().maxBatchRows(128)
-        .maxConcurrentBatches(4).maxBufferedBytes(256 * 1024).build();
+      const stream = table
+        .appendStream()
+        .maxBatchRows(128)
+        .maxConcurrentBatches(4)
+        .maxBufferedBytes(256 * 1024)
+        .build();
       for (let id = 3; id <= 2_050; id++) {
         await stream.send({ id, source: "stream" });
       }
@@ -197,27 +194,25 @@ test(
       assert.equal((await stream.shutdown())?.num_rows_inserted, 1);
       assert.equal(stream.stats().pendingBytes, 0);
       assert.equal(
-        (await client.query(
-          `FROM ${table.identifier()} AGGREGATE count() AS n`,
-        )).first()?.["n"],
+        (
+          await client.query(
+            `FROM ${table.identifier()} AGGREGATE count() AS n`,
+          )
+        ).first()?.["n"],
         2_051n,
       );
 
-      const bestEffort = table.appendStream({ failurePolicy: "continue" })
-        .maxBatchRows(1).build();
+      const bestEffort = table
+        .appendStream({ failurePolicy: "continue" })
+        .maxBatchRows(1)
+        .build();
       await bestEffort.send({ id: 2_052, source: "valid" });
       await bestEffort.send({ id: "bad", source: "invalid" });
       const partial = await bestEffort.shutdown();
       assert.equal(partial.committedRows, 1);
       assert.equal(partial.failedRows, 1);
       assert.equal(partial.ambiguousRows, 0);
-      assert.equal(
-        bestEffort.stats().lastFailure?.error.code,
-        "bad_request",
-      );
-      console.log(
-        "STREAM bounded concurrent batches, flush intervals, and partial delivery passed",
-      );
+      assert.equal(bestEffort.stats().lastFailure?.error.code, "bad_request");
 
       const boundaries = await client.query(
         "SELECT -9223372036854775808 AS lo, 9223372036854775807 AS hi, 18446744073709551615 AS unsigned",
@@ -229,13 +224,12 @@ test(
       });
       await table.append('{"id":9007199254740993,"source":"exact"}');
       assert.equal(
-        (await client.query(
-          `FROM ${table.identifier()} WHERE source = 'exact' SELECT id`,
-        )).first()?.["id"],
+        (
+          await client.query(
+            `FROM ${table.identifier()} WHERE source = 'exact' SELECT id`,
+          )
+        ).first()?.["id"],
         9007199254740993n,
-      );
-      console.log(
-        "NUMBERS signed/unsigned query boundaries and exact NDJSON input passed",
       );
 
       if (process.env["SCOPEDB_API_KEY"]) {
@@ -248,7 +242,6 @@ test(
               error instanceof ScopeDBError && error.httpStatus === 401,
           );
         }
-        console.log("AUTH missing and invalid credentials rejected");
       }
 
       for (const replay of [false, true]) {
@@ -261,7 +254,8 @@ test(
             if (++attempts === 1) {
               assert.equal(response.status, 200);
               assert.equal(
-                (await response.json() as { num_rows_inserted: number }).num_rows_inserted,
+                (await response.json() as { num_rows_inserted: number })
+                  .num_rows_inserted,
                 1,
               );
               throw new TypeError("test discarded a committed acknowledgement");
@@ -269,22 +263,31 @@ test(
             return response;
           },
         });
-        const writing = faultClient.table("events", { schema: name })
-          .appendStream().retryAmbiguous(replay).initialBackoff(0).build();
+        const writing = faultClient
+          .table("events", { schema: name })
+          .appendStream()
+          .retryAmbiguous(replay)
+          .initialBackoff(0)
+          .build();
         await writing.send({ id: 3_000, source: label });
         if (replay) {
           assert.equal((await writing.shutdown())?.num_rows_inserted, 1);
-        } else {await assert.rejects(writing.shutdown(), (error) =>
-            error instanceof AppendRowsError && error.outcome === "ambiguous");}
-        const count = (await client.query(
-          `FROM ${table.identifier()} WHERE source = '${label}' AGGREGATE count() AS n`,
-        )).first()?.["n"];
+        } else {
+          await assert.rejects(
+            writing.shutdown(),
+            (error) =>
+              error instanceof AppendRowsError && error.outcome === "ambiguous",
+          );
+        }
+        const count = (
+          await client.query(
+            `FROM ${table.identifier()} WHERE source = '${label}' AGGREGATE count() AS n`,
+          )
+        ).first()?.["n"];
         assert.equal(count, replay ? 2n : 1n);
         assert.equal(attempts, replay ? 2 : 1);
       }
-      console.log(
-        "LOST_ACK one stored row by default, two only with explicit replay",
-      );
+
       let timeoutAttempts = 0;
       const timeoutClient = new Client(process.env["SCOPEDB_ENDPOINT"]!, {
         apiKey: process.env["SCOPEDB_API_KEY"],
@@ -294,7 +297,8 @@ test(
           const response = await fetch(input, init);
           assert.equal(response.status, 200);
           assert.equal(
-            (await response.json() as { num_rows_inserted: number }).num_rows_inserted,
+            (await response.json() as { num_rows_inserted: number })
+              .num_rows_inserted,
             1,
           );
           return new Response(
@@ -311,8 +315,11 @@ test(
           );
         },
       });
-      const timed = timeoutClient.table("events", { schema: name })
-        .appendStream().retryAmbiguous(true).build();
+      const timed = timeoutClient
+        .table("events", { schema: name })
+        .appendStream()
+        .retryAmbiguous(true)
+        .build();
       await timed.send({ id: 3_001, source: "timed" });
       await assert.rejects(
         timed.shutdown(),
@@ -322,13 +329,12 @@ test(
       );
       assert.equal(timeoutAttempts, 1);
       assert.equal(
-        (await client.query(
-          `FROM ${table.identifier()} WHERE source = 'timed' AGGREGATE count() AS n`,
-        )).first()?.["n"],
+        (
+          await client.query(
+            `FROM ${table.identifier()} WHERE source = 'timed' AGGREGATE count() AS n`,
+          )
+        ).first()?.["n"],
         1n,
-      );
-      console.log(
-        "TIMEOUT committed row retained, acknowledgement timeout not replayed",
       );
 
       const catalogFault = new Client(process.env["SCOPEDB_ENDPOINT"]!, {
@@ -341,12 +347,14 @@ test(
             "test discarded a committed catalog acknowledgement",
           );
         },
-      }).table("catalog_lost_ack", { schema: name }).catalog();
-      const catalogTarget = client.table("catalog_lost_ack", { schema: name })
+      })
+        .table("catalog_lost_ack", { schema: name })
+        .catalog();
+      const catalogTarget = client
+        .table("catalog_lost_ack", { schema: name })
         .catalog();
       const unknownMutation = (error: unknown) =>
-        error instanceof ScopeDBError &&
-        error.catalogOutcome === "unknown";
+        error instanceof ScopeDBError && error.catalogOutcome === "unknown";
       await assert.rejects(
         catalogFault.apply({
           name: "catalog_lost_ack",
@@ -366,13 +374,174 @@ test(
         catalogTarget.get(),
         (error) => error instanceof ScopeDBError && error.httpStatus === 404,
       );
-      console.log(
-        "CATALOG_LOST_ACK create/delete remain unknown and are not replayed",
-      );
-      console.log("PASS native 0.6 lifecycle");
     } finally {
       await resource.delete({ allowDestructive: true });
-      console.log("CLEANUP schema removed");
+    }
+  },
+);
+
+test(
+  "live ScopeDB append JSON encodings and atomic rejection",
+  { skip: !process.env["SCOPEDB_ENDPOINT"] },
+  async () => {
+    const endpoint = process.env["SCOPEDB_ENDPOINT"]!;
+    const apiKey = process.env["SCOPEDB_API_KEY"];
+    const client = new Client(endpoint, { apiKey });
+    const schemaName = `sdk_js_encoding_${Date.now()}`;
+    const schema = client.catalog().schema("scopedb", schemaName);
+    const table = client.table("encodings", { schema: schemaName });
+    try {
+      await schema.apply({
+        name: schemaName,
+        tables: [
+          {
+            name: "encodings",
+            columns: [
+              { name: "id", data_type: "int" },
+              { name: "unsigned", data_type: "uint" },
+              { name: "score", data_type: "float" },
+              { name: "ts", data_type: "timestamp" },
+              { name: "attrs", data_type: "object" },
+              { name: "items", data_type: "array" },
+              { name: "value", data_type: "any" },
+              { name: "payload", data_type: "binary" },
+              { name: "elapsed", data_type: "interval" },
+              { name: "enabled", data_type: "boolean" },
+              { name: "label", data_type: "string" },
+              { name: "empty", data_type: "string" },
+              { name: "doubled", data_type: "int", expression: "id * 2" },
+            ],
+          },
+        ],
+      });
+
+      const valid = [
+        '{"id":1,"unsigned":9223372036854775807,"score":1.5,"ts":"2026-10-23T12:34:56.123456789Z","attrs":{"nested":null,"ok":true},"items":[1,"two",null],"value":{"a":[true]},"payload":"aGVsbG8=","elapsed":"PT1H2M3.000000004S","enabled":true,"label":"hello","empty":null}',
+        '{"id":2,"score":1e3,"ts":"2026-10-23T20:34:56+08:00","value":[1,"two"],"elapsed":"-PT0.5S"}',
+        '{"id":3,"score":9007199254740992,"value":true}',
+        '{"id":4,"value":42}',
+        '{"id":5,"value":"2026-10-23T12:34:56Z"}',
+        '{"id":6,"value":null}',
+        "{}",
+      ];
+      assert.equal(
+        (await table.append(valid.join("\n"))).num_rows_inserted,
+        valid.length,
+      );
+      const result = await client.query(
+        `FROM ${table.identifier()} WHERE id = 1 SELECT unsigned, score, ts, attrs["ok"]::boolean AS ok, items[0]::int AS first_item, enabled, label, empty, doubled`,
+      );
+      const row = result.first()!;
+      assert.equal(row["unsigned"], 9223372036854775807n);
+      assert.equal(row["score"], 1.5);
+      assert.equal(row["ok"], true);
+      assert.equal(row["first_item"], 1n);
+      assert.equal(row["enabled"], true);
+      assert.equal(row["label"], "hello");
+      assert.equal(row["empty"], null);
+      assert.equal(row["doubled"], 2n);
+      assert.equal(result.rawRows()[0]?.[2], "2026-10-23T12:34:56.123456789Z");
+      assert.equal(
+        (
+          await client.query(
+            `FROM ${table.identifier()} WHERE id = 2 SELECT enabled`,
+          )
+        ).first()?.["enabled"],
+        null,
+      );
+      for (const input of [
+        '{"id":"42"}',
+        '{"id":42.0}',
+        '{"id":42e0}',
+        '{"unsigned":-1}',
+        '{"unsigned":9223372036854775808}',
+        '{"score":9007199254740993}',
+        '{"score":1e999}',
+        '{"score":1e-999}',
+        '{"score":NaN}',
+        '{"score":"NaN"}',
+        '{"score":Infinity}',
+        '{"ts":"2026-10-23"}',
+        '{"ts":"2026-10-23T12:34:56"}',
+        '{"ts":1792758896}',
+        '{"attrs":"{\\"ok\\":true}"}',
+        '{"items":{}}',
+        '{"payload":"aGVsbG8"}',
+        '{"payload":"_w=="}',
+        '{"elapsed":"P1D"}',
+        '{"enabled":1}',
+        '{"label":1}',
+        '{"extra":null}',
+        '{"doubled":null}',
+        '{"attrs":{"a":1,"a":2}}',
+        '{"value":{"id":9223372036854775808}}',
+      ]) {
+        await assert.rejects(table.append(`{"id":999}\n${input}`), (error) => {
+          assert.ok(error instanceof AppendRowsError, input);
+          assert.equal(error.outcome, "failed", input);
+          assert.ok([400, 422].includes(error.httpStatus ?? 0), input);
+          return true;
+        });
+      }
+      assert.equal(
+        (await client.query(`FROM ${table.identifier()} AGGREGATE count() AS n`))
+          .first()?.["n"],
+        BigInt(valid.length),
+      );
+      const stream = table.appendStream().strictEncoding(true).build();
+      try {
+        await assert.rejects(stream.send({ id: 40n, score: NaN }), /finite/);
+        await stream.send({
+          id: 41n,
+          unsigned: 9223372036854775807n,
+          ts: new Date("2026-10-29T00:00:00.123Z"),
+          attrs: { min: -9223372036854775808n },
+          items: [9007199254740993n],
+        });
+      } finally {
+        await stream.shutdown();
+      }
+      const strictResult = await client.query(
+        `FROM ${table.identifier()} WHERE id = 41 SELECT id, unsigned, ts`,
+      );
+      const typed = strictResult.first()!;
+      assert.equal(typed["unsigned"], 9223372036854775807n);
+      assert.equal(
+        (typed["ts"] as Date).toISOString(),
+        "2026-10-29T00:00:00.123Z",
+      );
+      const nested = (
+        await client.query(
+          `FROM ${table.identifier()} WHERE id = 41 SELECT attrs["min"]::int AS min, items[0]::int AS item`,
+        )
+      ).first()!;
+      assert.equal(nested["min"], -9223372036854775808n);
+      assert.equal(nested["item"], 9007199254740993n);
+      await table.append(encodeAppendRecord({ ...typed, id: 42n }));
+      assert.equal(
+        (
+          await client.query(
+            `FROM ${table.identifier()} WHERE id = 42 SELECT unsigned`,
+          )
+        ).first()?.["unsigned"],
+        9223372036854775807n,
+      );
+      assert.equal(
+        (
+          await client.query(
+            `FROM ${table.identifier()} AGGREGATE count() AS n`,
+          )
+        ).first()?.["n"],
+        BigInt(valid.length + 2),
+      );
+    } finally {
+      try {
+        await schema.delete({ allowDestructive: true });
+      } catch (error) {
+        if (!(error instanceof ScopeDBError) || error.httpStatus !== 404) {
+          throw error;
+        }
+      }
     }
   },
 );
