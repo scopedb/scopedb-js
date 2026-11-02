@@ -4,7 +4,14 @@ All significant changes to the ScopeDB JavaScript SDK are documented in this fil
 
 ## Unreleased
 
+### Breaking Changes
+
+* Rename Catalog `etag` / `ifMatch` to `version` / `expectedVersion` and expose mutation certainty through `ScopeDBError.catalogOutcome` while preserving server error codes. See [Upgrade from 0.3 to 0.4](docs/migration-0.4.md).
+* Rename `AppendState` to `AppendOutcome`, with `succeeded`, `failed`, and `ambiguous` values. Use `retryAmbiguous`, `ambiguousRows`, and `ambiguousBatches`; delivery reports use `succeeded` and `ambiguous` instead of `ok` and `unknown`.
+
 ### Bug Fixes
+
+* Accept Append HTTP 200 acknowledgements containing only `num_rows_inserted`. Derive certainty from valid error envelopes and HTTP status, preserve unknown codes, and automatically retry only valid HTTP 429 rejections. Malformed responses and HTTP 5xx remain ambiguous.
 
 * Preserve known statement IDs on SDK errors so callers can resume waiting with `statementHandle(id)`. After successful submission, `query()` and `execute()` no longer mark waiting failures as retryable; handle polling keeps its temporary error classification, and caller abort reasons remain unchanged.
 

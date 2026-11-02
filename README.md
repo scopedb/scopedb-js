@@ -6,6 +6,8 @@ Query [ScopeDB](https://www.scopedb.io) and write rows from server-side JavaScri
 
 Upgrading an existing application? See [Upgrade from 0.2 to 0.3](docs/migration-0.3.md), including the move from Ingest to Append.
 
+For the upcoming release, see [Upgrade from 0.3 to 0.4](docs/migration-0.4.md).
+
 ## Install
 
 Requires Node.js 20 or later, or a supported server runtime such as Bun, Next.js server code, or Cloudflare Workers. The package is ESM-only, includes TypeScript declarations, and has no runtime dependencies. Keep API keys in trusted server-side code, outside browser bundles and Next.js Client Components.

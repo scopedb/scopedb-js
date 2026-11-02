@@ -31,7 +31,7 @@ export async function appendWithRetry(
       return await table.append(ndjson, { signal });
     } catch (error) {
       if (
-        !(error instanceof AppendRowsError) || error.outcome !== "rejected" ||
+        !(error instanceof AppendRowsError) || error.outcome !== "failed" ||
         !error.isTemporary() || error.serverRetryable === false ||
         error.writeDetails !== undefined || retries >= 2
       ) {

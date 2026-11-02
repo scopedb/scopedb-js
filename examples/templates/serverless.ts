@@ -80,7 +80,7 @@ export function createServerlessTelemetryHandler(
       // attempt, while the platform's waitUntil budget governs the shared barrier.
       const report = await telemetry.flush();
       // A module-level report can cover other concurrent invocations too.
-      if (report.outcome !== "ok") {
+      if (report.outcome !== "succeeded") {
         console.error("serverless telemetry loss", report);
       }
     } catch (error) {

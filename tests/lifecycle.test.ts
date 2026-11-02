@@ -142,10 +142,10 @@ for (
     await assert.rejects(
       stream.shutdown(),
       (error) =>
-        error instanceof AppendRowsError && error.outcome === "unknown",
+        error instanceof AppendRowsError && error.outcome === "ambiguous",
     );
     assert.equal(calls, 1);
-    assert.equal(stream.stats().unknownRows, 1);
+    assert.equal(stream.stats().ambiguousRows, 1);
     assert.equal(stream.stats().retries, 0);
     assert.equal(stream.stats().pendingBytes, 0);
   });
@@ -166,7 +166,7 @@ it("honors server retry refusal even when unknown replay is enabled", async () =
       });
     },
   });
-  const stream = client.table("events").appendStream().retryUnknown(true)
+  const stream = client.table("events").appendStream().retryAmbiguous(true)
     .build();
   await stream.send({ id: 1 });
   await assert.rejects(stream.shutdown(), (error) => {
@@ -209,7 +209,7 @@ it("round-trips nested catalog extensions with the original ETag", async () => {
   const snapshot = await resource.get();
   snapshot.definition.comment = "updated";
   const applied = await resource.apply(snapshot.definition, {
-    ifMatch: snapshot.etag,
+    expectedVersion: snapshot.version,
   });
   assert.deepEqual(applied.after?.columns?.[0]?.["future_column_option"], [
     1,
@@ -236,8 +236,8 @@ it("rejects malformed catalog reads and keeps malformed writes ambiguous", async
       (error) => {
         assert.ok(error instanceof ScopeDBError);
         assert.equal(
-          error.code,
-          method === "get" ? undefined : "catalog_commit_outcome_unknown",
+          error.catalogOutcome,
+          method === "get" ? undefined : "unknown",
         );
         assert.match(String(error.cause), /columns/);
         return true;
@@ -254,7 +254,7 @@ it("does not infer a catalog rollback from an unstructured gateway failure", asy
     client.table("events").catalog().delete({ allowDestructive: true }),
     (error) =>
       error instanceof ScopeDBError &&
-      error.code === "catalog_commit_outcome_unknown" && !error.retryable,
+      error.catalogOutcome === "unknown" && !error.retryable,
   );
 });
 
@@ -309,7 +309,7 @@ it("rejects an oversized direct row count before making a request", async () => 
   });
   await assert.rejects(
     client.table("events").append("{}\n".repeat(200_001)),
-    (error) => error instanceof AppendRowsError && error.outcome === "rejected",
+    (error) => error instanceof AppendRowsError && error.outcome === "failed",
   );
   assert.equal(calls, 0);
 });

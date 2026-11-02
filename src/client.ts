@@ -147,14 +147,14 @@ export class Client {
     path: string[],
     definition: unknown,
     options: CatalogOptions,
-  ): Promise<{ body: Record<string, unknown>; etag: string }> {
+  ): Promise<{ body: Record<string, unknown>; version: string }> {
     const url = this.resourceUrl(["catalog", ...path]);
     if (options.dryRun) url.searchParams.set("dry_run", "true");
     if (options.allowDestructive) {
       url.searchParams.set("allow_destructive", "true");
     }
     const headers = new Headers();
-    if (options.ifMatch !== undefined) headers.set("If-Match", options.ifMatch);
+    if (options.expectedVersion !== undefined) headers.set("If-Match", options.expectedVersion);
     const body = definition === undefined
       ? undefined
       : JSON.stringify(definition);
@@ -199,23 +199,14 @@ export class Client {
           if (!response.ok) {
             failure = await responseToError(response);
             if (writing) {
-              if (failure.code === "catalog_commit_outcome_unknown") {
-                failure.setPersistent();
-              } else if (
-                failure.code === undefined &&
-                (response.status === 408 || response.status === 429 ||
-                  response.status >= 500)
-              ) {
-                failure = new ScopeDBError(
-                  "CatalogFailed",
-                  "catalog commit outcome is unknown",
-                  {
-                    cause: failure,
-                    code: "catalog_commit_outcome_unknown",
-                    ...responseMetadata(response),
-                  },
-                ).setPersistent();
-              }
+              const rejected = response.status >= 400 && response.status < 500 &&
+                response.status !== 408 && failure.code !== undefined;
+              failure = new ScopeDBError("CatalogFailed", failure.message, {
+                ...failure,
+                cause: failure,
+                catalogOutcome: rejected ? "rejected" : "unknown",
+                status: rejected ? "permanent" : "persistent",
+              });
             }
             throw failure;
           }
@@ -225,7 +216,7 @@ export class Client {
             throw new Error("invalid catalog response or missing ETag");
           }
           validateCatalogResponse(value, path, method);
-          return { body: value, etag };
+          return { body: value, version: etag };
         })(),
         aborted,
       ]);
@@ -238,7 +229,7 @@ export class Client {
           : "failed to read catalog",
         {
           cause,
-          code: writing ? "catalog_commit_outcome_unknown" : undefined,
+          catalogOutcome: writing ? "unknown" : undefined,
           status: writing
             ? "persistent"
             : cause instanceof ScopeDBError
@@ -273,7 +264,7 @@ export class Client {
       throw new AppendRowsError(
         {
           message,
-          status: "rejected",
+          status: "failed",
           row_errors: [],
           row_errors_truncated: false,
         },
@@ -286,7 +277,7 @@ export class Client {
         `append payload contains ${expectedRows} rows, exceeds the ${MAX_APPEND_ROWS}-row append limit`;
       throw new AppendRowsError({
         message,
-        status: "rejected",
+        status: "failed",
         row_errors: [],
         row_errors_truncated: false,
       }, message);
@@ -320,7 +311,7 @@ export class Client {
           "append response",
         );
         const result: AppendRowsResult = {
-          status: wire.status,
+          status: "succeeded",
           num_rows_inserted: wire.num_rows_inserted,
         };
         if (result.num_rows_inserted !== expectedRows) {
@@ -473,7 +464,7 @@ export class Client {
                   signal.reason.name === "TimeoutError"
                 ? "timeout"
                 : "cancelled",
-              outcome: "unknown",
+              outcome: "ambiguous",
             },
           },
         ).setPersistent(),
@@ -491,7 +482,7 @@ export class Client {
                 "write request timed out",
                 "TimeoutError",
               ),
-              writeDetails: { reason: "timeout", outcome: "unknown" },
+              writeDetails: { reason: "timeout", outcome: "ambiguous" },
             },
           ).withContext("write_timeout_ms", timeoutMs).setPersistent(),
         ), timeoutMs);
@@ -512,8 +503,11 @@ export class Client {
             signal: controller.signal,
           });
           if (!response.ok) {
-            responseFailure = await responseToError(response);
+            responseFailure = await responseToError(response, true);
             throw responseFailure;
+          }
+          if (response.status !== 200) {
+            throw new ScopeDBError("Unexpected", "append response must have HTTP status 200");
           }
           return decode(await parseJsonResponse<unknown>(response));
         })(),
@@ -551,7 +545,7 @@ export class Client {
       const unknown = new AppendRowsError(
         {
           message: error.message,
-          status: "unknown",
+          status: "ambiguous",
           row_errors: [],
           row_errors_truncated: false,
         },
@@ -679,7 +673,7 @@ function normalizeEndpoint(endpoint: string | URL): URL {
   return url;
 }
 
-async function responseToError(response: Response): Promise<ScopeDBError> {
+async function responseToError(response: Response, append = false): Promise<ScopeDBError> {
   const retryableByStatus = response.status === 408 ||
     response.status === 429 ||
     response.status >= 500;
@@ -712,7 +706,21 @@ async function responseToError(response: Response): Promise<ScopeDBError> {
       details = parsed.raw["details"];
       requestId = parsed.requestId ?? requestId;
       serverRetryable = parsed.retryable;
-      appendPayload = asAppendRowsErrorPayload(parsed.raw, parsed.message);
+      if (append) {
+        const modern = isRecord(payload) && "error" in payload;
+        const valid = code !== undefined &&
+          (parsed.raw["retryable"] == null || typeof parsed.raw["retryable"] === "boolean") &&
+          response.status >= 400 && response.status < 600 &&
+          (!modern || validIngestErrorCode(code, response.status));
+        const legacy = modern ? undefined : asAppendRowsErrorPayload(parsed.raw, parsed.message);
+        appendPayload = {
+          message,
+          status: valid && response.status < 500 && (modern || legacy?.status === "failed")
+            ? "failed" : "ambiguous",
+          row_errors: legacy?.row_errors ?? [],
+          row_errors_truncated: legacy?.row_errors_truncated ?? false,
+        };
+      }
     }
   } catch {
     // Fall back to the raw response body.
@@ -728,11 +736,13 @@ async function responseToError(response: Response): Promise<ScopeDBError> {
   const error = appendPayload === undefined
     ? new ScopeDBError("Unexpected", message, metadata)
     : new AppendRowsError(appendPayload, message, metadata);
-  if (error instanceof AppendRowsError && error.outcome === "unknown") {
+  if (error instanceof AppendRowsError && error.outcome === "ambiguous") {
     // Retrying an append with an unknown commit outcome can insert duplicates.
     return error.setPersistent();
   }
-  const retryable = serverRetryable ?? retryableByStatus;
+  const retryable = append
+    ? error instanceof AppendRowsError && response.status === 429 && serverRetryable !== false
+    : serverRetryable ?? retryableByStatus;
   if (retryable) {
     return error.setTemporary();
   }
@@ -775,7 +785,7 @@ function parseErrorPayload(value: unknown): ParsedErrorPayload | undefined {
     return undefined;
   }
 
-  if (typeof value["message"] === "string") {
+  if (!("error" in value) && typeof value["message"] === "string") {
     return {
       message: value["message"],
       ...(typeof value["request_id"] === "string"
@@ -828,7 +838,7 @@ function asAppendRowsErrorPayload(
 
   return {
     message,
-    status: outcome,
+    status: outcome === "rejected" ? "failed" : "ambiguous",
     row_errors: rowErrors ?? [],
     row_errors_truncated: rowErrorsTruncated ?? false,
   };
@@ -969,10 +979,22 @@ function countNDJSONRows(ndjson: string): number {
 
 function isAppendRowsResult(
   value: unknown,
-): value is { status: "committed"; num_rows_inserted: number } {
+): value is { num_rows_inserted: number } {
   return isRecord(value) &&
-    value["status"] === "committed" &&
+    (value["status"] === undefined || value["status"] === "committed") &&
     typeof value["num_rows_inserted"] === "number" &&
     Number.isSafeInteger(value["num_rows_inserted"]) &&
     value["num_rows_inserted"] >= 0;
+}
+
+// Known HTTP codes must agree with the status; unknown codes remain forward compatible.
+function validIngestErrorCode(code: string, status: number): boolean {
+  const expected: Record<string, number> = {
+    bad_request: 400, not_found: 404, method_not_allowed: 405,
+    request_timeout: 408, conflict: 409, precondition_failed: 412,
+    too_many_requests: 429, internal_server_error: 500, service_unavailable: 503,
+  };
+  if (["statement_timeout", "invalid_request", "unauthorized", "payload_too_large",
+    "timeout", "unavailable", "internal_error"].includes(code)) return false;
+  return !Object.hasOwn(expected, code) || expected[code] === status;
 }

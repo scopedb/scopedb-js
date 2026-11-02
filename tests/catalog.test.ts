@@ -41,7 +41,7 @@ it("previews a replacement and applies it with the opaque ETag and escaped ident
       { ETag: '"v2"' },
     ),
     jsonResponse(412, {
-      code: "catalog_version_mismatch",
+      code: "precondition_failed",
       message: "changed",
       details: { expected: "v1" },
     }),
@@ -55,17 +55,17 @@ it("previews a replacement and applies it with the opaque ETag and escaped ident
   const snapshot = await resource.get();
   const preview = await resource.apply(after, {
     dryRun: true,
-    ifMatch: snapshot.etag,
+    expectedVersion: snapshot.version,
   });
   assert.deepEqual(preview.after, after);
-  assert.equal(preview.etag, snapshot.etag);
-  const applied = await resource.apply(after, { ifMatch: preview.etag });
-  assert.equal(applied.etag, '"v2"');
+  assert.equal(preview.version, snapshot.version);
+  const applied = await resource.apply(after, { expectedVersion: preview.version });
+  assert.equal(applied.version, '"v2"');
   await assert.rejects(
-    resource.apply(after, { ifMatch: preview.etag }),
+    resource.apply(after, { expectedVersion: preview.version }),
     (error: unknown) => {
       assert.ok(error instanceof ScopeDBError);
-      assert.equal(error.code, "catalog_version_mismatch");
+      assert.equal(error.code, "precondition_failed");
       assert.equal(error.httpStatus, 412);
       assert.deepEqual(error.details, { expected: "v1" });
       assert.equal(error.retryable, false);
@@ -79,7 +79,7 @@ it("previews a replacement and applies it with the opaque ETag and escaped ident
   );
   assert.equal(
     new Headers(calls[2]!.init?.headers).get("If-Match"),
-    snapshot.etag,
+    snapshot.version,
   );
   // Match the native Catalog handler's JSON decoder; it does not decompress requests.
   assert.deepEqual(await new Response(calls[2]!.init?.body).json(), after);
@@ -98,7 +98,8 @@ it("does not retry or claim rollback when a catalog write response is unreadable
     resource.delete({ allowDestructive: true }),
     (error: unknown) => {
       assert.ok(error instanceof ScopeDBError);
-      assert.equal(error.code, "catalog_commit_outcome_unknown");
+      assert.equal(error.catalogOutcome, "unknown");
+      assert.equal(error.code, undefined);
       assert.equal(error.requestId, "request-1");
       assert.equal(error.retryable, false);
       return true;
@@ -127,7 +128,8 @@ it("bounds a mutation even when a custom transport ignores cancellation", async 
       .apply({ name: "events" }, { timeoutMs: 10 }),
     (error: unknown) => {
       assert.ok(error instanceof ScopeDBError);
-      assert.equal(error.code, "catalog_commit_outcome_unknown");
+      assert.equal(error.catalogOutcome, "unknown");
+      assert.equal(error.code, undefined);
       assert.equal(error.retryable, false);
       return true;
     },
@@ -153,9 +155,9 @@ it("rejects resource names that URL normalization could turn into a parent delet
 
 it("preserves native Catalog outcome classifications", async () => {
   for (const [status, code, classification] of [
-    [503, "unavailable", "temporary"],
-    [412, "catalog_version_mismatch", "permanent"],
-    [500, "catalog_commit_outcome_unknown", "persistent"],
+    [503, "service_unavailable", "persistent"],
+    [412, "precondition_failed", "permanent"],
+    [500, "internal_server_error", "persistent"],
   ] as const) {
     const { fn, calls } = makeFetchStub([
       jsonResponse(status, { code, message: "catalog mutation failed" }),
@@ -166,7 +168,7 @@ it("preserves native Catalog outcome classifications", async () => {
       assert.ok(error instanceof ScopeDBError);
       assert.equal(error.code, code);
       assert.equal(error.status(), classification);
-      assert.equal(error.retryable, classification === "temporary");
+      assert.equal(error.retryable, false);
       return true;
     });
     assert.equal(calls.length, 1);
@@ -184,7 +186,7 @@ it("keeps unstructured retryable Catalog mutation responses unknown", async () =
       resource.apply({ name: "events" }),
       (error: unknown) =>
         error instanceof ScopeDBError &&
-        error.code === "catalog_commit_outcome_unknown" &&
+        error.catalogOutcome === "unknown" &&
         error.isPersistent() && !error.retryable,
     );
     assert.equal(calls.length, 1);
@@ -210,5 +212,28 @@ it("rejects null Catalog fields that native ScopeDB does not accept", async () =
     const resource = new Client("https://example.com", { fetch: fn })
       .table("events").catalog();
     await assert.rejects(resource.get(), ScopeDBError);
+  }
+});
+
+it("preserves coded Catalog failures independently of mutation certainty", async () => {
+  for (const [status, code, outcome] of [
+    [412, "precondition_failed", "rejected"],
+    [408, "request_timeout", "unknown"],
+    [503, "service_unavailable", "unknown"],
+  ] as const) {
+    for (const mode of ["write", "read", "preview"] as const) {
+      const resource = new Client("https://example.com", {
+        fetch: async () => Response.json({ error: { code, message: "failed", details: { reason: "test" } }, request_id: "catalog-request" }, { status }),
+      }).table("events").catalog();
+      await assert.rejects(mode === "read" ? resource.get() : resource.apply({ name: "events" }, { dryRun: mode === "preview" }), error => {
+        assert.ok(error instanceof ScopeDBError);
+        assert.equal(error.catalogOutcome, mode === "write" ? outcome : undefined);
+        assert.equal(error.code, code);
+        assert.equal(error.requestId, "catalog-request");
+        assert.deepEqual(error.details, { reason: "test" });
+        if (mode === "write") assert.equal(error.retryable, false);
+        return true;
+      });
+    }
   }
 });
