@@ -58,19 +58,26 @@ Pass `version` unchanged (including its quotes) as `expectedVersion`. The versio
 
 Update Append outcome types, builder methods, and delivery report fields:
 
-| In 0.3                          | In 0.4                              |
-| ------------------------------- | ----------------------------------- |
-| `AppendState`                   | `AppendOutcome`                     |
-| `status: "committed"`           | `status: "succeeded"`               |
-| `error.outcome === "rejected"`  | `error.outcome === "failed"`        |
-| `error.outcome === "unknown"`   | `error.outcome === "ambiguous"`     |
-| `.retryUnknown(true)`           | `.retryAmbiguous(true)`             |
-| `unknownRows`, `unknownBatches` | `ambiguousRows`, `ambiguousBatches` |
-| Report `"ok"`, `"unknown"`      | Report `"succeeded"`, `"ambiguous"` |
+| In 0.3                            | In 0.4                              |
+| --------------------------------- | ----------------------------------- |
+| `AppendState`                     | `AppendOutcome`                     |
+| `status: "committed"`             | `status: "succeeded"`               |
+| `error.outcome === "rejected"`    | `error.outcome === "failed"`        |
+| `error.outcome === "unknown"`     | `error.outcome === "ambiguous"`     |
+| `writeDetails.outcome: "unknown"` | `writeDetails.outcome: "ambiguous"` |
+| `.retryUnknown(true)`             | `.retryAmbiguous(true)`             |
+| `unknownRows`, `unknownBatches`   | `ambiguousRows`, `ambiguousBatches` |
+| Report `"ok"`, `"unknown"`        | Report `"succeeded"`, `"ambiguous"` |
+
+These are runtime string changes, not just TypeScript type renames. Update string comparisons in error classifiers and retry logic, including code that reads errors as untyped objects. Update mocked errors and serialized fixtures as well: old `"unknown"` / `"rejected"` fixtures can keep tests passing while the classifier mishandles real 0.4 errors. Add consumer tests using 0.4 error shapes for confirmed temporary rejection, ambiguous delivery, and write interruption (`writeDetails.outcome: "ambiguous"`). Changing only the dependency version is insufficient.
+
+Limit these replacements to Append outcomes and `writeDetails.outcome`. `catalogOutcome` still uses `"rejected"` / `"unknown"`; unrelated ETags, such as object-storage ETags, are unaffected.
 
 - `error.outcome === "failed"` guarantees that no rows in the batch were committed.
 - `error.outcome === "ambiguous"` means the batch may have committed (for example, on HTTP `5xx`, network disconnects, or timeouts).
 - By default, `AppendStream` automatically retries only confirmed `HTTP 429` admission refusals (`outcome: "failed"`). Enable `.retryAmbiguous(true)` only when your pipeline can tolerate or deduplicate replayed rows. Client timeouts and cancellations are never replayed automatically.
+
+Caller-managed retries must preserve the same distinction. An HTTP `503` alone does not prove that a batch was rejected: requeueing an ambiguous batch can duplicate committed rows. Reconcile its outcome before replaying, or use a delivery policy that explicitly accepts duplicate rows or deduplicates writes.
 
 ## Strict record encoding and statement recovery
 
