@@ -1,10 +1,17 @@
 # Upgrade from 0.3 to 0.4
 
-The next minor release aligns Catalog concurrency and Append delivery with the current API contract. These changes are currently unreleased; update application code when upgrading to 0.4.
+The next minor release aligns Catalog version preconditions, Append outcome names, and strict record encoding with the current SDK contract. Applications upgrading from 0.2 should first follow [Upgrade from 0.2 to 0.3](migration-0.3.md).
 
-## Catalog versions
+## Catalog versions and mutation outcomes
 
 Replace `snapshot.etag` and `result.etag` with `.version`, and replace the `ifMatch` option with `expectedVersion`:
+
+| In 0.3                                      | In 0.4                                                    |
+| ------------------------------------------- | --------------------------------------------------------- |
+| `CatalogSnapshot.etag`                      | `CatalogSnapshot.version`                                 |
+| `CatalogResult.etag`                        | `CatalogResult.version`                                   |
+| `CatalogOptions.ifMatch`                    | `CatalogOptions.expectedVersion`                          |
+| `catalog_commit_outcome_unknown` code check | `ScopeDBError.catalogOutcome` (`"rejected" \| "unknown"`) |
 
 ```ts
 const resource = client.table("events").catalog();
@@ -17,13 +24,13 @@ const preview = await resource.apply(definition, {
 await resource.apply(definition, { expectedVersion: preview.version });
 ```
 
-The opaque token represents the whole tenant catalog, even when reading one resource. Preserve it exactly, including quotes. A catalog change elsewhere in the tenant can invalidate it; data appends do not advance it. Dry runs return the base version, writes return the resulting version, and no-op writes retain the version. The SDK carries the token through the HTTP `ETag` and `If-Match` headers. Stale versions fail atomically with HTTP 412 and `precondition_failed`.
-
-Use `ScopeDBError.catalogOutcome` instead of checking for an SDK-generated `catalog_commit_outcome_unknown` code. `"rejected"` means the mutation was rejected; `"unknown"` means it may have committed, including coded gateway failures, timeouts, transport failures, and invalid acknowledgements. Inspect the original server `code`, `details`, and HTTP metadata separately. Read the current definition before deciding whether to replay. Reads, dry runs, and local validation failures have no mutation outcome.
+Pass `version` unchanged (including its quotes) as `expectedVersion`. The version token covers the tenant catalog; a concurrent catalog change fails atomically with HTTP `412` (`code: "precondition_failed"`). When a catalog mutation (`apply()` or `delete()`) fails, inspect `error.catalogOutcome`: `"rejected"` confirms the change did not take effect, whereas `"unknown"` means the mutation may have committed and you should call `get()` before retrying.
 
 ## Append outcomes and replay
 
-| Before                          | After                               |
+Update Append outcome types, builder methods, and delivery report fields:
+
+| In 0.3                          | In 0.4                              |
 | ------------------------------- | ----------------------------------- |
 | `AppendState`                   | `AppendOutcome`                     |
 | `status: "committed"`           | `status: "succeeded"`               |
@@ -33,8 +40,11 @@ Use `ScopeDBError.catalogOutcome` instead of checking for an SDK-generated `cata
 | `unknownRows`, `unknownBatches` | `ambiguousRows`, `ambiguousBatches` |
 | Report `"ok"`, `"unknown"`      | Report `"succeeded"`, `"ambiguous"` |
 
-`writeDetails.outcome` and batch-failure callbacks also use the new outcome values. Update persisted SDK-result consumers and telemetry filters accordingly. Counts of confirmed rows remain `committedRows`; row-count acknowledgements remain `num_rows_inserted`.
+- `error.outcome === "failed"` guarantees that no rows in the batch were committed.
+- `error.outcome === "ambiguous"` means the batch may have committed (for example, on HTTP `5xx`, network disconnects, or timeouts).
+- By default, `AppendStream` automatically retries only confirmed `HTTP 429` admission refusals (`outcome: "failed"`). Enable `.retryAmbiguous(true)` only when your pipeline can tolerate or deduplicate replayed rows. Client timeouts and cancellations are never replayed automatically.
 
-HTTP 200 with a matching `num_rows_inserted` confirms success without requiring a wire `status` field. Legacy `status: "committed"` acknowledgements are still accepted. Valid nested HTTP 4xx errors establish failure; HTTP 5xx errors remain ambiguous. Known codes must match their HTTP status; unknown codes are retained. Missing or malformed error bodies, inconsistent codes, invalid acknowledgements, and row-count mismatches are ambiguous. Optional legacy row diagnostics remain available, but modern errors describe the entire request; do not parse messages for per-row outcomes.
+## Strict record encoding and statement recovery
 
-Streams automatically retry only valid HTTP 429 rejections. A valid HTTP 408 failure is not automatically retried, even with a positive server retry hint. A bodyless or malformed 429 is ambiguous. `.retryAmbiguous(true)` permits bounded replay of transient ambiguous failures and may duplicate rows; client timeouts, cancellations, and explicit server retry refusal still stop replay. A later definite failure cannot resolve an earlier ambiguous attempt. Direct `append()` makes one attempt.
+- Use `encodeAppendRecord(record)` or `table.appendStream().strictEncoding(true)` to serialize `bigint` values losslessly as 64-bit JSON integer tokens and reject `NaN`, `Infinity`, unsafe integer `number`s, `undefined`, custom class instances, and circular references locally before buffering. See [Strict object encoding](usage.md#strict-object-encoding).
+- When `client.query()` or `statement.execute()` fails after submission (for example, due to a transient polling failure), the thrown `ScopeDBError` preserves `error.statementId` and is marked non-retryable so callers resume waiting with `client.statementHandle(error.statementId).wait()` rather than submitting the SQL a second time.

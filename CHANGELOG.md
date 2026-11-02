@@ -6,20 +6,18 @@ All significant changes to the ScopeDB JavaScript SDK are documented in this fil
 
 ### Breaking Changes
 
-* Rename Catalog `etag` / `ifMatch` to `version` / `expectedVersion` and expose mutation certainty through `ScopeDBError.catalogOutcome` while preserving server error codes. See [Upgrade from 0.3 to 0.4](docs/migration-0.4.md).
-* Rename `AppendState` to `AppendOutcome`, with `succeeded`, `failed`, and `ambiguous` values. Use `retryAmbiguous`, `ambiguousRows`, and `ambiguousBatches`; delivery reports use `succeeded` and `ambiguous` instead of `ok` and `unknown`.
+* Rename Catalog `etag` / `ifMatch` to `version` / `expectedVersion` and expose mutation certainty through `ScopeDBError.catalogOutcome` (`"rejected"` or `"unknown"`) while preserving server error codes. See [Upgrade from 0.3 to 0.4](docs/migration-0.4.md).
+* Rename `AppendState` to `AppendOutcome`, with `"succeeded"`, `"failed"`, and `"ambiguous"` values. Use `retryAmbiguous`, `ambiguousRows`, and `ambiguousBatches`; delivery reports use `"succeeded"` and `"ambiguous"` instead of `"ok"` and `"unknown"`.
 
 ### New Features
 
-* Add `encodeAppendRecord()` and opt-in stream `.strictEncoding(true)` to write signed 64-bit bigints without precision loss and reject non-finite numbers, unsafe integer-valued numbers, and unsupported values locally with field paths.
+* Add `encodeAppendRecord()` and opt-in stream `.strictEncoding(true)` to serialize signed 64-bit `bigint` values without precision loss and reject non-finite numbers, unsafe integer-valued numbers, and unsupported values locally with field paths.
 
 ### Bug Fixes
 
 * Preserve timeout and cancellation reasons in Catalog mutation `writeDetails`, independently of `catalogOutcome`.
-
-* Accept Append HTTP 200 acknowledgements containing only `num_rows_inserted`. Derive certainty from valid error envelopes and HTTP status, preserve unknown codes, and automatically retry only valid HTTP 429 rejections. Malformed responses and HTTP 5xx remain ambiguous.
-
-* Preserve known statement IDs on SDK errors so callers can resume waiting with `statementHandle(id)`. After successful submission, `query()` and `execute()` no longer mark waiting failures as retryable; handle polling keeps its temporary error classification, and caller abort reasons remain unchanged.
+* Confirm table appends from HTTP 200 responses with matching `num_rows_inserted` counts, classify validated HTTP 4xx errors as `"failed"`, and keep HTTP 5xx or malformed responses `"ambiguous"` while limiting default stream retries to validated HTTP 429 rejections.
+* Preserve known statement IDs on `ScopeDBError.statementId` so callers can resume waiting with `client.statementHandle(id)`. After successful submission, `query()` and `execute()` no longer mark polling failures as retryable; handle polling keeps its temporary error classification, and caller abort reasons remain unchanged.
 
 ## v0.3.0 (2026-10-23)
 

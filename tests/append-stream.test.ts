@@ -16,9 +16,10 @@
 
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import type {
-  AppendStream,
-  AppendStreamOptions,
+import {
+  AppendRetryExhaustedError,
+  type AppendStream,
+  type AppendStreamOptions,
 } from "../src/append-stream.js";
 import { Client } from "../src/client.js";
 import { AppendRowsError, ScopeDBError } from "../src/errors.js";
@@ -1406,6 +1407,121 @@ describe("AppendStream cancellation and runtime compatibility", () => {
     } finally {
       Date.now = originalNow;
     }
+  });
+
+  it("classifies wire error envelopes, sticky ambiguous retries, and delivery budgets", async () => {
+    const cases = [
+      { name: "modern rate limit", status: 429, body: { error: { code: "too_many_requests", message: "busy" } }, outcome: "failed", retry: true },
+      { name: "explicit refusal", status: 429, body: { error: { code: "too_many_requests", message: "busy", retryable: false } }, outcome: "failed", retry: false },
+      { name: "HTTP timeout", status: 408, body: { error: { code: "request_timeout", message: "late", retryable: true } }, outcome: "failed", retry: false },
+      { name: "server error", status: 503, body: { error: { code: "service_unavailable", message: "busy", details: { status: "rejected" } } }, outcome: "ambiguous", retry: false },
+      { name: "future code", status: 409, body: { error: { code: "future_conflict", message: "conflict" } }, outcome: "failed", retry: false },
+      { name: "mismatched code", status: 429, body: { error: { code: "bad_request", message: "bad" } }, outcome: "ambiguous", retry: false },
+      { name: "statement code", status: 400, body: { error: { code: "invalid_request", message: "bad" } }, outcome: "ambiguous", retry: false },
+      { name: "missing code", status: 429, body: { error: { message: "busy" } }, outcome: "ambiguous", retry: false },
+      { name: "null message", status: 429, body: { error: { code: "too_many_requests", message: null } }, outcome: "ambiguous", retry: false },
+      { name: "invalid retry hint", status: 429, body: { error: { code: "too_many_requests", message: "busy", retryable: "true" } }, outcome: "ambiguous", retry: false },
+      { name: "legacy 5xx rejection", status: 503, body: { code: "ingest_failure", message: "busy", details: { status: "rejected" } }, outcome: "ambiguous", retry: false },
+      { name: "legacy missing outcome", status: 429, body: { code: "ingest_failure", message: "busy" }, outcome: "ambiguous", retry: false },
+    ] as const;
+
+    for (const entry of cases) {
+      let calls = 0;
+      const client = new Client("https://example.com", {
+        fetch: async () => {
+          calls++;
+          if (calls === 2) return Response.json({ num_rows_inserted: 1 });
+          return Response.json(
+            { ...entry.body, request_id: "request-body" },
+            {
+              status: entry.status,
+              headers: { "X-Request-ID": "request-header", "Retry-After": "0" },
+            },
+          );
+        },
+      });
+      const stream = client
+        .table("events")
+        .appendStream({ failurePolicy: "continue" })
+        .maxRetries(1)
+        .initialBackoff(0)
+        .build();
+      await stream.send({ id: 1 });
+      const report = await stream.shutdown();
+      assert.equal(calls, entry.retry ? 2 : 1, entry.name);
+      assert.equal(
+        report.outcome,
+        entry.retry ? "succeeded" : entry.outcome,
+        entry.name,
+      );
+    }
+
+    // Sticky ambiguous outcome after a subsequent permanent 422 rejection
+    let stickyCalls = 0;
+    const stickyStream = new Client("http://localhost:8080", {
+      fetch: async () =>
+        ++stickyCalls === 1
+          ? appendUnknown()
+          : jsonResponse(
+            422,
+            {
+              message: "failure",
+              code: "ingest_failure",
+              details: { status: "rejected", row_errors: [], row_errors_truncated: false },
+            },
+            { "X-Request-Id": "last-request" },
+          ),
+    })
+      .table("events")
+      .appendStream()
+      .retryAmbiguous(true)
+      .initialBackoff(0)
+      .build();
+    await stickyStream.send({ id: 1 });
+    await assert.rejects(stickyStream.shutdown(), (e: unknown) => {
+      assert.ok(e instanceof AppendRowsError);
+      assert.equal(e.outcome, "ambiguous");
+      assert.equal(e.httpStatus, 422);
+      assert.equal(e.requestId, "last-request");
+      return true;
+    });
+    assert.equal(stickyCalls, 2);
+    assert.equal(stickyStream.stats().ambiguousRows, 1);
+
+    // Retry-After exceeding maxElapsedTimeMs fails with AppendRetryExhaustedError without sleeping
+    let budgetCalls = 0;
+    const budgetStream = new Client("http://localhost:8080", {
+      fetch: async () => {
+        budgetCalls++;
+        return jsonResponse(
+          429,
+          {
+            message: "rate limited",
+            code: "ingest_failure",
+            details: { status: "rejected", row_errors: [], row_errors_truncated: false },
+          },
+          { "Retry-After": "10" },
+        );
+      },
+    })
+      .table("events")
+      .appendStream()
+      .maxElapsedTimeMs(80)
+      .build();
+    await budgetStream.send({ id: 1 });
+    await assert.rejects(budgetStream.shutdown(), AppendRetryExhaustedError);
+    assert.equal(budgetCalls, 1);
+
+    // Row larger than maxBufferedBytes is classified as recordTooLarge
+    const smallBufferStream = new Client("https://example.com")
+      .table("events")
+      .appendStream()
+      .maxBufferedBytes(4)
+      .build();
+    assert.equal(smallBufferStream.trySend({ id: 1 }), false);
+    assert.equal(smallBufferStream.stats().droppedByReason.recordTooLarge, 1);
+    assert.equal(smallBufferStream.stats().droppedByReason.bufferFull, 0);
+    await smallBufferStream.shutdown();
   });
 });
 
