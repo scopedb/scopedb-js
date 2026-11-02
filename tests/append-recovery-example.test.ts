@@ -24,7 +24,7 @@ import ts from "typescript";
 import { AppendRowsError } from "../src/index.js";
 import { jsonResponse, requestBodyText } from "./helpers.js";
 
-async function fixture(t: TestContext, outcome: "committed" | "rejected" | "unknown") {
+async function fixture(t: TestContext, outcome: "succeeded" | "failed" | "ambiguous") {
   const directory = await mkdtemp(join(tmpdir(), "scopedb-recovery-example-"));
   t.after(() => rm(directory, { recursive: true, force: true }));
   const environment = {
@@ -58,26 +58,27 @@ async function fixture(t: TestContext, outcome: "committed" | "rejected" | "unkn
   globalThis.fetch = async (_input, init) => {
     const rows = requestBodyText(init).split("\n").map((line) => JSON.parse(line) as { id: number });
     batches.push(rows);
-    if (outcome !== "committed") {
-      return jsonResponse(outcome === "rejected" ? 422 : 503, {
-        message: "mock delivery failure",
-        code: "test_failure",
-        retryable: false,
-        details: { status: outcome, row_errors: [], row_errors_truncated: false },
+    if (outcome !== "succeeded") {
+      return jsonResponse(outcome === "failed" ? 400 : 503, {
+        error: {
+          message: "mock delivery failure",
+          code: outcome === "failed" ? "bad_request" : "service_unavailable",
+          retryable: false,
+        },
       });
     }
-    return jsonResponse(200, { status: "committed", num_rows_inserted: rows.length });
+    return jsonResponse(200, { num_rows_inserted: rows.length });
   };
   return { run: () => import(pathToFileURL(entry).href), batches };
 }
 
 it("runs the recovery example without replaying its confirmed prefix", async (t) => {
-  const { run, batches } = await fixture(t, "committed");
+  const { run, batches } = await fixture(t, "succeeded");
   await run();
   assert.deepEqual(batches.map((rows) => rows.map((row) => row.id)), [[1], [2, 3]]);
 });
 
-for (const outcome of ["rejected", "unknown"] as const) {
+for (const outcome of ["failed", "ambiguous"] as const) {
   it(`does not start recovery after ${outcome} delivery`, async (t) => {
     const { run, batches } = await fixture(t, outcome);
     await assert.rejects(run(), (error: unknown) => {

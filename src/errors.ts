@@ -17,7 +17,7 @@
 import type {
   AppendRowError,
   AppendRowsErrorPayload,
-  AppendState,
+  AppendOutcome,
   StatementErrorDetails,
 } from "./protocol.js";
 
@@ -30,6 +30,8 @@ export type ErrorKind =
   | "StatementCancelled"
   /** The table append was rejected or its commit outcome is unknown. */
   | "AppendRowsFailed";
+export type CatalogMutationOutcome = "rejected" | "unknown";
+
 export type ErrorStatus = "permanent" | "temporary" | "persistent";
 
 /** The client-side reason an in-flight write was interrupted. */
@@ -38,10 +40,11 @@ export type WriteErrorReason = "timeout" | "cancelled";
 /** An unknown write outcome may have committed and must not be automatically replayed. */
 export interface WriteErrorDetails {
   readonly reason: WriteErrorReason;
-  readonly outcome: AppendState;
+  readonly outcome: AppendOutcome;
 }
 
 export interface ScopeDBErrorOptions {
+  catalogOutcome?: CatalogMutationOutcome;
   code?: string;
   /** Explicit retry permission from the server, independent of local replay policy. */
   serverRetryable?: boolean;
@@ -62,6 +65,8 @@ export interface ScopeDBErrorOptions {
 
 export class ScopeDBError extends Error {
   readonly kind: ErrorKind;
+  /** Commit certainty for a Catalog mutation; absent for reads and dry runs. */
+  readonly catalogOutcome?: CatalogMutationOutcome;
   readonly code?: string;
   readonly serverRetryable?: boolean;
   readonly details?: unknown;
@@ -84,6 +89,7 @@ export class ScopeDBError extends Error {
     );
     this.name = "ScopeDBError";
     this.kind = kind;
+    this.catalogOutcome = options?.catalogOutcome;
     this.code = options?.code;
     this.serverRetryable = options?.serverRetryable;
     this.details = options?.details;
@@ -214,7 +220,7 @@ export function writeErrorDetailsFromCause(
       code === "UND_ERR_HEADERS_TIMEOUT" ||
       code === "UND_ERR_BODY_TIMEOUT"
     ) {
-      return { reason: "timeout", outcome: "unknown" };
+      return { reason: "timeout", outcome: "ambiguous" };
     }
     cause = cause.cause;
   }

@@ -45,7 +45,7 @@ for (
         return new Response("unavailable", { status: 503 });
       }
       throw new Error(`unexpected response kind: ${kind}`);
-    }).appendStream().retryUnknown(true).attemptTimeoutMs(100).initialBackoff(0)
+    }).appendStream().retryAmbiguous(true).attemptTimeoutMs(100).initialBackoff(0)
       .build();
     await stream.send({ id: 1 });
     const result = await stream.shutdown();
@@ -53,7 +53,7 @@ for (
     assert.equal(bodies.length, 2);
     assert.deepEqual(bodies[0], bodies[1]);
     assert.equal(stream.stats().retries, 1);
-    assert.equal(stream.stats().unknownRows, 0);
+    assert.equal(stream.stats().ambiguousRows, 0);
     assert.equal(stream.stats().pendingBytes, 0);
   });
 }
@@ -69,21 +69,21 @@ it("does not replay a client timeout even with a retry budget", async () => {
           once: true,
         });}
     });
-  }).appendStream().retryUnknown(true).attemptTimeoutMs(100).initialBackoff(0)
+  }).appendStream().retryAmbiguous(true).attemptTimeoutMs(100).initialBackoff(0)
     .build();
   await stream.send({ id: 1 });
   await assert.rejects(stream.shutdown(), (error: unknown) => {
     assert.ok(error instanceof AppendRowsError);
     assert.deepEqual(error.writeDetails, {
       reason: "timeout",
-      outcome: "unknown",
+      outcome: "ambiguous",
     });
     assert.equal(error.retryable, false);
     return true;
   });
   assert.equal(calls, 1);
   assert.equal(stream.stats().retries, 0);
-  assert.equal(stream.stats().unknownRows, 1);
+  assert.equal(stream.stats().ambiguousRows, 1);
   assert.equal(stream.stats().pendingBytes, 0);
 });
 it("keeps unknown sticky after a permanent rejection and preserves diagnostics", async () => {
@@ -93,17 +93,17 @@ it("keeps unknown sticky after a permanent rejection and preserves diagnostics",
       ? failure()
       : failure("rejected", 422, { "X-Request-Id": "last-request" })
   )
-    .appendStream().retryUnknown(true).initialBackoff(0).build();
+    .appendStream().retryAmbiguous(true).initialBackoff(0).build();
   await stream.send({ id: 1 });
   await assert.rejects(stream.shutdown(), (e: unknown) => {
     assert.ok(e instanceof AppendRowsError);
-    assert.equal(e.outcome, "unknown");
+    assert.equal(e.outcome, "ambiguous");
     assert.equal(e.httpStatus, 422);
     assert.equal(e.requestId, "last-request");
     return true;
   });
   assert.equal(calls, 2);
-  assert.equal(stream.stats().unknownRows, 1);
+  assert.equal(stream.stats().ambiguousRows, 1);
   assert.equal(stream.stats().lastFailure?.error.requestId, "last-request");
 });
 it("does not retry permanent unknown HTTP failures", async () => {
@@ -164,19 +164,19 @@ it("bounds a stalled request by the total elapsed budget", async () => {
     assert.ok(error instanceof AppendRetryExhaustedError);
     assert.deepEqual(error.writeDetails, {
       reason: "timeout",
-      outcome: "unknown",
+      outcome: "ambiguous",
     });
     return true;
   });
   assert.ok(aborted);
-  assert.equal(stream.stats().unknownRows, 1);
+  assert.equal(stream.stats().ambiguousRows, 1);
 });
 it("disables retries with maxRetries(0)", async () => {
   let calls = 0;
   const stream = table(async () => {
     calls++;
     return failure();
-  }).appendStream().retryUnknown(true).maxRetries(0).build();
+  }).appendStream().retryAmbiguous(true).maxRetries(0).build();
   await stream.send({ id: 1 });
   await assert.rejects(stream.shutdown(), AppendRetryExhaustedError);
   assert.equal(calls, 1);

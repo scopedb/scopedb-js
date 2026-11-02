@@ -32,7 +32,7 @@ function appendOk(numRows = 1): Response {
   });
 }
 
-function appendRejected(status = 503): Response {
+function appendRejected(status = 429): Response {
   return jsonResponse(status, {
     message: "append is temporarily unavailable",
     code: "ingest_failure",
@@ -97,7 +97,7 @@ describe("AppendStream batching and barriers", () => {
     await stream.send({ id: 3 });
 
     assert.deepEqual(await stream.flush(), {
-      status: "committed",
+      status: "succeeded",
       num_rows_inserted: 3,
     });
     assert.equal(await stream.flush(), null);
@@ -394,18 +394,18 @@ describe("AppendStream concurrency", () => {
       flushing,
       (error: unknown) => {
         assert.ok(error instanceof AppendRowsError);
-        assert.equal(error.outcome, "unknown");
+        assert.equal(error.outcome, "ambiguous");
         assert.equal(error.context().get("failed_rows"), "1");
-        assert.equal(error.context().get("unknown_rows"), "1");
+        assert.equal(error.context().get("ambiguous_rows"), "1");
         return true;
       },
     );
     assert.equal(stream.stats().failedRows, 1);
-    assert.equal(stream.stats().unknownRows, 1);
+    assert.equal(stream.stats().ambiguousRows, 1);
     await assert.rejects(
       () => stream.shutdown(),
       (error: unknown) =>
-        error instanceof AppendRowsError && error.outcome === "unknown",
+        error instanceof AppendRowsError && error.outcome === "ambiguous",
     );
   });
 });
@@ -430,16 +430,16 @@ describe("AppendStream retry safety", () => {
     );
   });
 
-  it("safely retries an explicitly rejected append body timeout", async () => {
-    const { table, calls } = makeTable([appendRejected(408), appendOk(1)]);
+  it("does not automatically replay an explicitly rejected HTTP 408", async () => {
+    const { table, calls } = makeTable([appendRejected(408)]);
     const stream = table.appendStream()
       .maxRetries(1)
       .initialBackoff(0)
       .build();
 
     await stream.send({ id: 1 });
-    assert.equal((await stream.shutdown())?.num_rows_inserted, 1);
-    assert.equal(calls.length, 2);
+    await assert.rejects(stream.shutdown(), (error) => error instanceof AppendRowsError && error.outcome === "failed" && !error.retryable);
+    assert.equal(calls.length, 1);
   });
 
   it("honors Retry-After before safely retrying a rejected batch", async () => {
@@ -484,14 +484,14 @@ describe("AppendStream retry safety", () => {
     );
     assert.equal(calls.length, 2);
     assert.equal(stream.stats().failedRows, 2);
-    assert.equal(stream.stats().unknownRows, 0);
+    assert.equal(stream.stats().ambiguousRows, 0);
     assert.equal(stream.stats().retries, 0);
     await assert.rejects(() => stream.shutdown(), AppendRowsError);
   });
 
   it("retries a transient unknown outcome with the same payload when explicitly enabled", async () => {
     const { table, calls } = makeTable([appendUnknown(), appendOk(1)]);
-    const stream = table.appendStream().retryUnknown(true)
+    const stream = table.appendStream().retryAmbiguous(true)
       .initialBackoff(0)
       .build();
 
@@ -505,7 +505,7 @@ describe("AppendStream retry safety", () => {
       requestBodyText(calls[1]!.init),
     );
     assert.equal(stream.stats().committedRows, 1);
-    assert.equal(stream.stats().unknownRows, 0);
+    assert.equal(stream.stats().ambiguousRows, 0);
     assert.equal(stream.stats().retries, 1);
   });
 
@@ -521,7 +521,7 @@ describe("AppendStream retry safety", () => {
       () => stream.flush(),
       (error: unknown) => {
         assert.ok(error instanceof AppendRowsError);
-        assert.equal(error.outcome, "unknown");
+        assert.equal(error.outcome, "ambiguous");
         return true;
       },
     );
@@ -540,7 +540,7 @@ describe("AppendStream retry safety", () => {
       () => stream.flush(),
       (error: unknown) => {
         assert.ok(error instanceof AppendRowsError);
-        assert.equal(error.outcome, "unknown");
+        assert.equal(error.outcome, "ambiguous");
         assert.ok(error.isPersistent());
         return true;
       },
@@ -564,10 +564,10 @@ describe("AppendStream retry safety", () => {
       () => stream.flush(),
       (error: unknown) => {
         assert.ok(error instanceof AppendRowsError);
-        assert.equal(error.outcome, "rejected");
+        assert.equal(error.outcome, "failed");
         assert.ok(error.isPersistent());
         assert.equal(error.context().get("retries"), "1");
-        assert.equal(error.httpStatus, 503);
+        assert.equal(error.httpStatus, 429);
         assert.equal(error.requestId, "req-retry-exhausted");
         assert.equal(error.retryAfterMs, 0);
         return true;
@@ -762,7 +762,7 @@ describe("AppendStream local failures", () => {
     await assert.rejects(
       () => stream.flush(),
       (error: unknown) =>
-        error instanceof AppendRowsError && error.outcome === "unknown",
+        error instanceof AppendRowsError && error.outcome === "ambiguous",
     );
   });
 });
@@ -789,7 +789,7 @@ describe("AppendStream telemetry admission", () => {
     assert.equal(report.acceptedRows, 1);
     assert.equal(report.committedRows, 1);
     assert.equal(report.failedRows, 0);
-    assert.equal(report.unknownRows, 0);
+    assert.equal(report.ambiguousRows, 0);
     assert.equal(report.droppedRows, 2);
 
     await stream.shutdown();
@@ -800,7 +800,7 @@ describe("AppendStream telemetry admission", () => {
     assert.equal(stats.acceptedRows, 1);
     assert.equal(stats.committedRows, 1);
     assert.equal(stats.failedRows, 0);
-    assert.equal(stats.unknownRows, 0);
+    assert.equal(stats.ambiguousRows, 0);
     assert.equal(stats.droppedRows, 3);
     assert.equal(stats.droppedByReason.bufferFull, 1);
     assert.equal(stats.droppedByReason.invalidRecord, 1);
@@ -933,13 +933,13 @@ describe("AppendStream best-effort delivery", () => {
     assert.equal(report.acceptedRows, 2);
     assert.equal(report.committedRows, 1);
     assert.equal(report.failedRows, 1);
-    assert.equal(report.unknownRows, 0);
+    assert.equal(report.ambiguousRows, 0);
     assert.equal(errors.length, 1);
     assert.ok(errors[0] instanceof AppendRowsError);
-    assert.equal((errors[0] as AppendRowsError).outcome, "rejected");
+    assert.equal((errors[0] as AppendRowsError).outcome, "failed");
     assert.equal(
       (stream.stats().lastFailure?.error as AppendRowsError).outcome,
-      "rejected",
+      "failed",
     );
     assert.equal(typeof stream.stats().lastFailure?.atMs, "number");
     assert.deepEqual(calls.map(parseAppendRows), [[{ id: 1 }], [{ id: 2 }]]);
@@ -1004,10 +1004,10 @@ describe("AppendStream best-effort delivery", () => {
     assert.equal(report.acceptedRows, 2);
     assert.equal(report.committedRows, 1);
     assert.equal(report.failedRows, 0);
-    assert.equal(report.unknownRows, 1);
+    assert.equal(report.ambiguousRows, 1);
     assert.equal(errors.length, 1);
     assert.ok(errors[0] instanceof AppendRowsError);
-    assert.equal((errors[0] as AppendRowsError).outcome, "unknown");
+    assert.equal((errors[0] as AppendRowsError).outcome, "ambiguous");
     assert.equal(calls.length, 2);
     assert.deepEqual(calls.map(parseAppendRows), [[{ id: 1 }], [{ id: 2 }]]);
     await stream.shutdown();
@@ -1063,15 +1063,15 @@ describe("AppendStream best-effort delivery", () => {
       Date.now() - startedAt < 200,
       "attempt timeout should bound the append",
     );
-    assert.equal(report.outcome, "unknown");
+    assert.equal(report.outcome, "ambiguous");
     assert.equal(report.acceptedRows, 1);
     assert.equal(report.committedRows, 0);
     assert.equal(report.failedRows, 0);
-    assert.equal(report.unknownRows, 1);
+    assert.equal(report.ambiguousRows, 1);
     assert.equal(calls.length, 1);
     assert.equal(errors.length, 1);
     assert.ok(errors[0] instanceof AppendRowsError);
-    assert.equal((errors[0] as AppendRowsError).outcome, "unknown");
+    assert.equal((errors[0] as AppendRowsError).outcome, "ambiguous");
     await stream.shutdown();
   });
 
@@ -1096,20 +1096,20 @@ describe("AppendStream best-effort delivery", () => {
     assert.equal(report.acceptedRows, 3);
     assert.equal(report.committedRows, 1);
     assert.equal(report.failedRows, 1);
-    assert.equal(report.unknownRows, 1);
+    assert.equal(report.ambiguousRows, 1);
     assert.equal(report.droppedRows, 0);
     assert.equal(report.committedBatches, 1);
     assert.equal(report.failedBatches, 1);
-    assert.equal(report.unknownBatches, 1);
+    assert.equal(report.ambiguousBatches, 1);
     assert.equal(report.retries, 0);
     assert.equal(calls.length, 3);
 
     const empty = await stream.flush();
-    assert.equal(empty.outcome, "ok");
+    assert.equal(empty.outcome, "succeeded");
     assert.equal(empty.acceptedRows, 0);
     assert.equal(empty.committedRows, 0);
     assert.equal(empty.failedRows, 0);
-    assert.equal(empty.unknownRows, 0);
+    assert.equal(empty.ambiguousRows, 0);
     assert.equal(empty.droppedRows, 0);
     await stream.shutdown();
   });
@@ -1135,7 +1135,7 @@ describe("AppendStream best-effort delivery", () => {
     gate.resolve();
 
     const first = await flushing;
-    assert.equal(first.outcome, "ok");
+    assert.equal(first.outcome, "succeeded");
     assert.equal(first.droppedRows, 0);
 
     const second = await stream.flush();
@@ -1167,7 +1167,7 @@ describe("AppendStream best-effort delivery", () => {
 
     const report = await flushing;
     assert.equal(report.outcome, "partial");
-    assert.equal(report.unknownRows, 1);
+    assert.equal(report.ambiguousRows, 1);
     assert.equal(report.committedRows, 1);
     assert.equal(stream.stats().circuitState, "closed");
     assert.equal(calls.length, 2);
@@ -1184,7 +1184,7 @@ describe("AppendStream best-effort delivery", () => {
 
     assert.equal(stream.trySend({ id: 1 }), true);
     const failed = await stream.flush();
-    assert.equal(failed.unknownRows, 1);
+    assert.equal(failed.ambiguousRows, 1);
     assert.equal(stream.stats().circuitState, "open");
     assert.equal(stream.trySend({ id: 2 }), false);
 
@@ -1251,7 +1251,7 @@ describe("AppendStream best-effort delivery", () => {
     await waitForCallCount(calls, 4);
     const report = await flushing;
     assert.equal(report.committedRows, 2);
-    assert.equal(report.unknownRows, 2);
+    assert.equal(report.ambiguousRows, 2);
     assert.equal(stream.stats().circuitState, "closed");
     await stream.shutdown();
   });
@@ -1266,9 +1266,9 @@ describe("AppendStream best-effort delivery", () => {
     await stream.send({ id: 1 });
     const report = await stream.flush();
 
-    assert.equal(report.outcome, "unknown");
+    assert.equal(report.outcome, "ambiguous");
     assert.equal(report.committedRows, 0);
-    assert.equal(report.unknownRows, 1);
+    assert.equal(report.ambiguousRows, 1);
     assert.equal(calls.length, 1);
     await stream.shutdown();
   });
@@ -1284,11 +1284,11 @@ describe("AppendStream best-effort delivery", () => {
 
     assert.equal(first, second);
     const report = await first;
-    assert.equal(report.outcome, "ok");
+    assert.equal(report.outcome, "succeeded");
     assert.equal(report.acceptedRows, 1);
     assert.equal(report.committedRows, 1);
     assert.equal(report.failedRows, 0);
-    assert.equal(report.unknownRows, 0);
+    assert.equal(report.ambiguousRows, 0);
     assert.equal(calls.length, 1);
     assert.equal(stream.stats().state, "closed");
   });
@@ -1353,15 +1353,15 @@ describe("AppendStream cancellation and runtime compatibility", () => {
         assert.equal(report.outcome, "partial");
         assert.equal(report.acceptedRows, 2);
         assert.equal(report.committedRows, 1);
-        assert.equal(report.unknownRows, 1);
+        assert.equal(report.ambiguousRows, 1);
         assert.equal(report.droppedRows, 2);
         assert.ok(final !== null && "outcome" in final);
         assert.equal(final.acceptedRows, 0);
         assert.equal(final.droppedRows, 0);
-        assert.equal(final.unknownRows, 0);
+        assert.equal(final.ambiguousRows, 0);
         assert.deepEqual(stream.stats().lastReport, final);
       } else {
-        assert.deepEqual(report, { status: "committed", num_rows_inserted: 2 });
+        assert.deepEqual(report, { status: "succeeded", num_rows_inserted: 2 });
         assert.equal(final, null);
       }
       assert.equal(calls, 2);

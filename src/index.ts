@@ -37,6 +37,7 @@ export type {
 } from "./append-stream.js";
 export { AppendRowsError, ScopeDBError } from "./errors.js";
 export type {
+  CatalogMutationOutcome,
   ErrorKind,
   ErrorStatus,
   ScopeDBErrorOptions,
@@ -47,7 +48,7 @@ export type {
   AppendRowError,
   AppendRowsErrorPayload,
   AppendRowsResult,
-  AppendState,
+  AppendOutcome,
   DataType,
   StatementErrorDetails,
   StatementEstimatedProgress,

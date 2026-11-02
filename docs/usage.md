@@ -54,7 +54,7 @@ The option only affects `int` / `uint` columns; other types are unchanged. Typed
 
 ## Read or change table schemas
 
-Catalog reads return complete declarative definitions and opaque ETags. Select the smallest subtree you need. Apply replaces that whole subtree, including its children; omitted fields are cleared. Use a dry run and an ETag precondition to review changes and reject concurrent updates.
+Catalog reads return complete declarative definitions and opaque catalog versions. Select the smallest subtree you need. Apply replaces that whole subtree, including its children; omitted fields are cleared. Use a dry run and a version precondition to review changes and reject concurrent updates.
 
 ```ts
 const resource = client.table("events").catalog();
@@ -62,15 +62,19 @@ const snapshot = await resource.get();
 const definition = { ...snapshot.definition, comment: "Application events" };
 const preview = await resource.apply(definition, {
   dryRun: true,
-  ifMatch: snapshot.etag,
+  expectedVersion: snapshot.version,
 });
 console.log(preview.before, preview.after, preview.destructive);
-await resource.apply(definition, { ifMatch: preview.etag });
+await resource.apply(definition, { expectedVersion: preview.version });
 ```
 
-Potentially destructive changes require `allowDestructive: true`. Mutations never retry automatically and use the client's `writeTimeoutMs` by default; `CatalogOptions.timeoutMs` overrides it. An interrupted or malformed mutation response has code `catalog_commit_outcome_unknown`; read the current definition before deciding whether to replay. Keep the ETag unchanged, including its quotes. Definitions use the server's snake_case field names and retain unknown fields when read and reapplied.
+Potentially destructive changes require `allowDestructive: true`. Mutations never retry automatically and use the client's `writeTimeoutMs` by default; `CatalogOptions.timeoutMs` overrides it. Inspect `ScopeDBError.catalogOutcome`: `"rejected"` confirms rejection, while `"unknown"` means the mutation may have committed. Read the current definition before deciding whether to replay an unknown outcome. Server `code` and diagnostics remain available; reads and dry runs have no mutation outcome. Keep `version` unchanged, including its quotes. `version` covers the whole tenant catalog: a catalog change to another resource can invalidate it, while data appends do not advance it. Dry runs return the base version; writes return the resulting version, and no-op writes retain the version. `expectedVersion` is checked atomically and a stale token fails with HTTP 412 and `precondition_failed`.
+
+Definitions use the server's snake_case field names and retain unknown fields when read and reapplied.
 
 ## Append rows
+
+A successful Append requires HTTP 200 and a valid `num_rows_inserted` matching the submitted row count; the wire response does not require `status`. Valid nested HTTP 4xx errors confirm failure, and HTTP 5xx errors remain ambiguous even when legacy details say rejected. Known error codes must agree with the HTTP status; unknown codes are preserved. Invalid acknowledgements and incomplete or malformed error envelopes remain ambiguous.
 
 Use an append stream to write JavaScript objects to an existing table. The SDK groups them into batches automatically. This example uses a table named `events` with `id int` and `name string` columns:
 
@@ -100,9 +104,9 @@ await stream.shutdown();
 
 Streams target 4 MiB batches by default, with limits of 8 MiB of uncompressed NDJSON and 200,000 rows per request. Use `targetBatchBytes()` and `maxBatchRows()` to reduce a batch's size. The default failure policy stops the stream after a failed batch; use [continue mode](#continue-after-a-failed-batch) for best-effort sinks.
 
-In stop mode, `flush()` and `shutdown()` return `AppendRowsResult | null`, with `num_rows_inserted` for committed rows and `null` for an empty barrier. In continue mode, they return an `AppendDeliveryReport`; inspect `outcome`, `committedRows`, `failedRows`, and `unknownRows`. Each report covers activity since the previous returned report.
+In stop mode, `flush()` and `shutdown()` return `AppendRowsResult | null`, with `num_rows_inserted` for committed rows and `null` for an empty barrier. In continue mode, they return an `AppendDeliveryReport`; inspect `outcome`, `committedRows`, `failedRows`, and `ambiguousRows`. Each report covers activity since the previous returned report.
 
-Streams retry confirmed transient rejections by default. Unknown outcomes are not replayed unless `.retryUnknown(true)` is enabled, which can duplicate rows. `.maxRetries(0)` disables retries. Direct `append()` makes one attempt. See [timeouts and HTTP options](#timeouts-and-http-options) for deadlines and interruption outcomes.
+Streams automatically retry only valid HTTP 429 rejections by default. Ambiguous outcomes are not replayed unless `.retryAmbiguous(true)` is enabled, which can duplicate rows. `.maxRetries(0)` disables retries. Direct `append()` makes one attempt. See [timeouts and HTTP options](#timeouts-and-http-options) for deadlines and interruption outcomes.
 
 ### JSON encoding for Append
 
@@ -122,7 +126,7 @@ Each nonblank NDJSON line must be a JSON object keyed by destination column name
 | `array`     | JSON array                              | `[1,"two",null,{"ok":true}]`; elements may have different JSON types.                                                                                                                                                                                    |
 | `any`       | Any JSON value                          | Numbers, booleans, strings, arrays, and objects retain their JSON kinds; a timestamp-looking string remains a string.                                                                                                                                    |
 
-Missing ordinary columns and explicit `null` become SQL NULL for every column type. Nested nulls inside objects/arrays remain JSON nulls. Computed columns are evaluated by the table and must be omitted from input. Unknown fields, duplicate object keys (including nested keys), and type mismatches reject the entire append request; other requests in a stream may already have committed. Inspect `AppendRowsError.outcome`, `code`, and `rowErrors`; row diagnostics may be truncated.
+Missing ordinary columns and explicit `null` become SQL NULL for every column type. Nested nulls inside objects/arrays remain JSON nulls. Computed columns are evaluated by the table and must be omitted from input. Unknown fields, duplicate object keys (including nested keys), and type mismatches reject the entire append request; other requests in a stream may already have committed. Inspect `AppendRowsError.outcome`, `code`, and `details`. Modern errors describe the whole request; `rowErrors` and `rowErrorsTruncated` retain optional legacy diagnostics only. Do not parse error messages to infer per-row outcomes.
 
 The signed 64-bit integer-token limit also applies inside `object`, `array`, and `any`. By default, `appendStream()` uses JavaScript's `JSON.stringify`: unsafe integers may already be rounded before the SDK sees them, `bigint` throws, NaN/Infinity become `null`, and `undefined` object properties are omitted. Opt into [strict encoding](#strict-object-encoding) to preserve int64 `bigint` values and reject lossy numbers before admission. If retaining the default encoder, validate numbers with `Number.isFinite` and use `Number.isSafeInteger` for integer-valued JavaScript numbers. Preserve original NDJSON text when importing data that must not pass through JavaScript number conversion, as shown in [import-ndjson.ts](../examples/import-ndjson.ts). Do not turn integers into quoted numeric strings for an integer column.
 
@@ -194,15 +198,15 @@ telemetry.trySend({ id: 1, name: "request.completed" });
 | Metric                   | `stats()` field                                                  | Interpretation                                                                                                                                                                                                                                                                               |
 | ------------------------ | ---------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Dropped before admission | `droppedRows`, `droppedByReason`                                 | Failed `trySend()` calls, split into buffer full, invalid record, oversized record, open circuit, and closed stream. Thrown `send()`/`sendAll()` admission errors must be counted by the caller.                                                                                             |
-| Known not committed      | `failedRows`                                                     | Admitted rows whose batch ended in rejection; also includes admitted but unsent rows discarded after a fatal stream failure. For specifically server-rejected batches, count `batchRows` in `onBatchFailure` when `outcome === "rejected"`, using HTTP metadata to distinguish local errors. |
-| Possibly committed       | `unknownRows`                                                    | Admitted rows with an unresolved commit outcome; keep separate from definite loss and never blindly replay them.                                                                                                                                                                             |
+| Known not committed      | `failedRows`                                                     | Admitted rows whose batch ended in rejection; also includes admitted but unsent rows discarded after a fatal stream failure. For specifically server-rejected batches, count `batchRows` in `onBatchFailure` when `outcome === "failed"`, using HTTP metadata to distinguish local errors.   |
+| Possibly committed       | `ambiguousRows`                                                  | Admitted rows with an unresolved commit outcome; keep separate from definite loss and never blindly replay them.                                                                                                                                                                             |
 | Confirmed committed      | `committedRows`                                                  | Rows acknowledged as committed.                                                                                                                                                                                                                                                              |
 | Retry pressure           | `retries`, `lastFailure.error`                                   | Extra attempts and complete final failure diagnostics, including HTTP status and `retryAfterMs`.                                                                                                                                                                                             |
 | Current backlog          | `pendingRows`, `pendingBytes`, `inFlightBatches`, `circuitState` | Gauges for backpressure, requests in flight, and circuit state.                                                                                                                                                                                                                              |
 
 Row/retry counters are cumulative for the stream's lifetime and are not reset by `flush()`. Export their deltas or maintain a baseline per stream. `flush()`/`shutdown()` delivery reports cover activity since the previous returned report; do not add them to the lifetime counters again. Aborting `flush()` stops only local waiting, not delivery; its outcome is merged into the next `flush()` or `shutdown()` report so unresolved rows are not hidden.
 
-The SDK default remains four concurrent batches **per stream**, with no process-wide or fleet-wide coordinator. Twelve processes with one default stream each can issue up to 48 concurrent append requests; the recipe above reduces that bound to 12. Multiple streams per process multiply it again. Start at one batch per stream for a fleet that is already seeing 429s, then increase only after observing throughput, 429s, retries, and backlog. Concurrency limits requests in flight, not requests per second or total ingestion volume; reduce producer rate or coordinate admission across processes if the shared limit is still exceeded. Confirmed transient rejections use jittered backoff and honor `Retry-After`; a retry that cannot fit the delivery budget is not sent early. A 429 without a trustworthy rejected outcome remains unknown and is not replayed by default.
+The SDK default remains four concurrent batches **per stream**, with no process-wide or fleet-wide coordinator. Twelve processes with one default stream each can issue up to 48 concurrent append requests; the recipe above reduces that bound to 12. Multiple streams per process multiply it again. Start at one batch per stream for a fleet that is already seeing 429s, then increase only after observing throughput, 429s, retries, and backlog. Concurrency limits requests in flight, not requests per second or total ingestion volume; reduce producer rate or coordinate admission across processes if the shared limit is still exceeded. Confirmed transient rejections use jittered backoff and honor `Retry-After`; a retry that cannot fit the delivery budget is not sent early. A 429 without a complete, valid error body remains ambiguous and is not replayed by default.
 
 ### Append an NDJSON string
 
@@ -227,7 +231,7 @@ async function appendWithRetry(table: Table, ndjson: string, signal: AbortSignal
     try {
       return await table.append(ndjson, { signal });
     } catch (error) {
-      if (!(error instanceof AppendRowsError) || error.outcome !== "rejected" ||
+      if (!(error instanceof AppendRowsError) || error.outcome !== "failed" ||
           !error.isTemporary() || error.serverRetryable === false ||
           error.writeDetails !== undefined || retries >= 2) {
         throw error;
@@ -244,15 +248,15 @@ async function appendWithRetry(table: Table, ndjson: string, signal: AbortSignal
 await appendWithRetry(table, '{"id":6,"name":"sixth"}', AbortSignal.timeout(30_000));
 ```
 
-An unknown result, including `writeDetails.outcome === "unknown"` after timeout or cancellation, may already be committed: stop and reconcile it. A subsequent definite rejection cannot resolve an earlier unknown attempt. Avoid layering an application retry loop around a retrying stream. A type-checked copy is in [retry-append.ts](../examples/templates/retry-append.ts).
+An unknown result, including `writeDetails.outcome === "ambiguous"` after timeout or cancellation, may already be committed: stop and reconcile it. A subsequent definite rejection cannot resolve an earlier unknown attempt. Avoid layering an application retry loop around a retrying stream. A type-checked copy is in [retry-append.ts](../examples/templates/retry-append.ts).
 
 ## Timeouts and HTTP options
 
 Each append attempt and Catalog mutation defaults to a 30-second SDK deadline. Its budget starts after local encoding, compression, and request preparation and includes reading the complete response. `ClientOptions.writeTimeoutMs` sets the default; direct writes and Catalog mutations accept `timeoutMs`, and streams accept `.attemptTimeoutMs()`. An omitted setting inherits the default; a positive integer overrides it; `null` disables that SDK deadline. Zero is invalid. Caller `AbortSignal` and transport deadlines remain effective. The stream's separate `.maxElapsedTimeMs()` delivery budget defaults to five minutes per batch and includes all attempts and retry delays, even when its per-attempt deadline is disabled.
 
-A timeout or in-flight cancellation does not roll back a write. Append errors retain their cause and HTTP diagnostics, with `writeDetails: { reason: "timeout" | "cancelled", outcome: "unknown" }`; Catalog mutations report `code: "catalog_commit_outcome_unknown"`. Cancellation before sending preserves the caller's abort reason. Streams never replay client timeouts or cancellations, including when unknown replay is enabled.
+A timeout or in-flight cancellation does not roll back a write. Append errors retain their cause and HTTP diagnostics, with `writeDetails: { reason: "timeout" | "cancelled", outcome: "ambiguous" }`; Catalog mutations report `catalogOutcome: "unknown"` and preserve the interruption reason in `writeDetails` as well. Cancellation before sending preserves the caller's abort reason. Streams never replay client timeouts or cancellations, including when unknown replay is enabled.
 
-Streams retry confirmed transient rejections by default. An unknown outcome stops that batch without replay because the original attempt may have committed. Set `.retryUnknown(true)` only when the application accepts duplicates or can reconcile them; explicit server retry refusal is always honored. `.maxRetries(0)` disables all retries. Direct `append()` and Catalog mutations make one attempt.
+Streams automatically retry only valid HTTP 429 rejections by default. An unknown outcome stops that batch without replay because the original attempt may have committed. Set `.retryAmbiguous(true)` only when the application accepts duplicates or can reconcile them; explicit server retry refusal is always honored. `.maxRetries(0)` disables all retries. Direct `append()` and Catalog mutations make one attempt.
 
 HTTP redirects retain the fetch transport's default behavior. A custom `ClientOptions.fetch` can implement an application-specific redirect policy. Redirects are distinct from the SDK's append retry policy and share the attempt deadline.
 

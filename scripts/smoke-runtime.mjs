@@ -22,7 +22,6 @@ const fetch = async (input, init) => {
   if (url.pathname.endsWith("/ingest")) {
     const rows = (await requestText(init)).split("\n").length;
     return Response.json({
-      status: "committed",
       num_rows_inserted: rows,
     });
   }

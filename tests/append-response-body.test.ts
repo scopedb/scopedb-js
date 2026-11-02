@@ -55,7 +55,7 @@ describe("unreadable HTTP error responses", () => {
 
       await assert.rejects(table.append('{"id":1}'), (error: unknown) => {
         assert.ok(error instanceof AppendRowsError);
-        assert.equal(error.outcome, "unknown");
+        assert.equal(error.outcome, "ambiguous");
         assert.equal(error.httpStatus, status);
         assert.equal(error.requestId, "request-with-broken-body");
         assert.equal(error.retryAfterMs, 2_000);
@@ -101,20 +101,20 @@ describe("unreadable HTTP error responses", () => {
       const stream = new Client("http://localhost:8080", { fetch: fn }).table(
         "events",
       )
-        .appendStream().retryUnknown(true).maxRetries(1).initialBackoff(0)
+        .appendStream().retryAmbiguous(true).maxRetries(1).initialBackoff(0)
         .build();
 
       await stream.send({ id: 1 });
       await assert.rejects(stream.shutdown(), (error: unknown) => {
         assert.ok(error instanceof AppendRowsError);
-        assert.equal(error.outcome, "unknown");
+        assert.equal(error.outcome, "ambiguous");
         assert.equal(error.httpStatus, status);
         assert.equal(error.requestId, "request-with-broken-body");
         return true;
       });
       assert.equal(calls.length, 1);
       assert.equal(stream.stats().retries, 0);
-      assert.equal(stream.stats().unknownRows, 1);
+      assert.equal(stream.stats().ambiguousRows, 1);
       assert.equal(stream.stats().lastFailure?.error.httpStatus, status);
     });
   }
@@ -136,12 +136,12 @@ describe("unreadable HTTP error responses", () => {
     const stream = new Client("http://localhost:8080", { fetch }).table(
       "events",
     )
-      .appendStream().retryUnknown(true).maxRetries(1).initialBackoff(0)
+      .appendStream().retryAmbiguous(true).maxRetries(1).initialBackoff(0)
       .build();
 
     await stream.send({ id: 1 });
     assert.deepEqual(await stream.shutdown(), {
-      status: "committed",
+      status: "succeeded",
       num_rows_inserted: 1,
     });
     assert.equal(attempts.length, 2);
@@ -150,7 +150,7 @@ describe("unreadable HTTP error responses", () => {
     assert.deepEqual(bodies[0], bodies[1]);
     assert.equal(stream.stats().retries, 1);
     assert.equal(stream.stats().committedRows, 1);
-    assert.equal(stream.stats().unknownRows, 0);
+    assert.equal(stream.stats().ambiguousRows, 0);
   });
 
   it("retains HTTP metadata after exhausting unreadable HTTP 503 responses", async () => {
@@ -162,13 +162,13 @@ describe("unreadable HTTP error responses", () => {
     const stream = new Client("http://localhost:8080", { fetch: fn }).table(
       "events",
     )
-      .appendStream().retryUnknown(true).maxRetries(1).initialBackoff(0)
+      .appendStream().retryAmbiguous(true).maxRetries(1).initialBackoff(0)
       .build();
 
     await stream.send({ id: 1 });
     await assert.rejects(stream.shutdown(), (error: unknown) => {
       assert.ok(error instanceof AppendRetryExhaustedError);
-      assert.equal(error.outcome, "unknown");
+      assert.equal(error.outcome, "ambiguous");
       assert.equal(error.httpStatus, 503);
       assert.equal(error.requestId, "request-with-broken-body");
       assert.equal(error.retryAfterMs, 0);
@@ -179,7 +179,7 @@ describe("unreadable HTTP error responses", () => {
     });
     assert.equal(calls.length, 2);
     assert.equal(stream.stats().retries, 1);
-    assert.equal(stream.stats().unknownRows, 1);
+    assert.equal(stream.stats().ambiguousRows, 1);
     assert.equal(stream.stats().lastFailure?.error.httpStatus, 503);
   });
 
@@ -201,13 +201,13 @@ describe("unreadable HTTP error responses", () => {
     const stream = new Client("http://localhost:8080", { fetch: fn }).table(
       "events",
     )
-      .appendStream().retryUnknown(true).maxRetries(1).initialBackoff(0)
+      .appendStream().retryAmbiguous(true).maxRetries(1).initialBackoff(0)
       .build();
 
     await stream.send({ id: 1 });
     await assert.rejects(stream.shutdown(), (error: unknown) => {
       assert.ok(error instanceof AppendRowsError);
-      assert.equal(error.outcome, "unknown");
+      assert.equal(error.outcome, "ambiguous");
       assert.equal(error.httpStatus, 422);
       assert.equal(error.requestId, "rejected-request");
       assert.deepEqual(error.rowErrors, [
@@ -216,7 +216,7 @@ describe("unreadable HTTP error responses", () => {
       return true;
     });
     assert.equal(calls.length, 2);
-    assert.equal(stream.stats().unknownRows, 1);
+    assert.equal(stream.stats().ambiguousRows, 1);
     assert.equal(stream.stats().failedRows, 0);
   });
 });

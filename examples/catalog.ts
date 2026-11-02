@@ -33,7 +33,7 @@ for (const item of catalog.definition.databases ?? []) {
   console.log("database", item.name, item.comment ?? "");
 }
 const snapshot = await client.catalog().schema(database, schema).get();
-console.log("schema ETag", snapshot.etag);
+console.log("schema version", snapshot.version);
 for (const table of snapshot.definition.tables ?? []) {
   console.log("table", table.name, table.columns);
 }

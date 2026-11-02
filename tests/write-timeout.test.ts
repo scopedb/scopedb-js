@@ -58,11 +58,11 @@ function unknownTimeout(error: unknown): boolean {
   assert.equal(error.retryable, false);
   assert.deepEqual(error.writeDetails, {
     reason: "timeout",
-    outcome: "unknown",
+    outcome: "ambiguous",
   });
   assert.equal(error.context().get("write_timeout_ms") !== undefined, true);
   if (error instanceof AppendRowsError) {
-    assert.equal(error.outcome, "unknown");
+    assert.equal(error.outcome, "ambiguous");
   } else {
     assert.match(error.message, /commit outcome is unknown/);
   }
@@ -236,7 +236,7 @@ for (const [name, write] of Object.entries(writes)) {
         assert.equal(error.retryable, false);
         assert.deepEqual(error.writeDetails, {
           reason: "cancelled",
-          outcome: "unknown",
+          outcome: "ambiguous",
         });
         return true;
       },
@@ -253,12 +253,12 @@ for (const [name, write] of Object.entries(writes)) {
         new ScopeDBError("ConfigInvalid", "cancelled by caller"),
         new ScopeDBError("Unexpected", "previous request timed out", {
           cause: new DOMException("previous timeout", "TimeoutError"),
-          writeDetails: { reason: "timeout", outcome: "unknown" },
+          writeDetails: { reason: "timeout", outcome: "ambiguous" },
         }).withContext("write_timeout_ms", 10).setPersistent(),
         new AppendRowsError(
           {
             message: "previous batch rejected",
-            status: "rejected",
+            status: "failed",
             row_errors: [],
             row_errors_truncated: false,
           },
@@ -285,7 +285,7 @@ for (const [name, write] of Object.entries(writes)) {
             assert.equal(error.retryable, false);
             assert.deepEqual(error.writeDetails, {
               reason: "cancelled",
-              outcome: "unknown",
+              outcome: "ambiguous",
             });
             assert.ok(error.cause instanceof ScopeDBError);
             assert.equal(error.cause.cause, reason);
@@ -295,7 +295,7 @@ for (const [name, write] of Object.entries(writes)) {
             assert.equal(error.context().size, 0);
             if (name === "append") {
               assert.ok(error instanceof AppendRowsError);
-              assert.equal(error.outcome, "unknown");
+              assert.equal(error.outcome, "ambiguous");
             } else {
               assert.match(error.message, /commit outcome is unknown/);
             }
@@ -360,7 +360,7 @@ for (const [name, write] of Object.entries(writes)) {
         assert.ok(error instanceof ScopeDBError);
         assert.deepEqual(error.writeDetails, {
           reason: "timeout",
-          outcome: "unknown",
+          outcome: "ambiguous",
         });
         assert.equal(error.retryable, false);
         assert.ok(error.cause instanceof ScopeDBError);
@@ -393,7 +393,7 @@ for (const [name, write] of Object.entries(writes)) {
         assert.ok(error instanceof ScopeDBError);
         assert.deepEqual(error.writeDetails, {
           reason: "timeout",
-          outcome: "unknown",
+          outcome: "ambiguous",
         });
         assert.equal(error.retryable, false);
         assert.ok(error.cause instanceof ScopeDBError);
@@ -428,7 +428,7 @@ for (const [name, write] of Object.entries(writes)) {
         assert.ok(error instanceof ScopeDBError);
         assert.deepEqual(error.writeDetails, {
           reason: "timeout",
-          outcome: "unknown",
+          outcome: "ambiguous",
         });
         assert.equal(error.retryable, false);
         assert.equal(error.httpStatus, status);
@@ -464,7 +464,7 @@ for (const mode of ["stop", "continue"] as const) {
     assert.equal(transport.signals.length, 1);
     if (mode === "continue") {
       assert.ok("stats" in stream);
-      assert.equal(stream.stats().unknownRows, 1);
+      assert.equal(stream.stats().ambiguousRows, 1);
       assert.equal(stream.stats().retries, 0);
     }
   });
@@ -490,7 +490,7 @@ for (const failurePolicy of ["stop", "continue"] as const) {
     assert.equal(transport.signals[0]!.aborted, false);
     t.mock.timers.tick(40);
     await settled;
-    assert.equal(stream.stats().unknownRows, 1);
+    assert.equal(stream.stats().ambiguousRows, 1);
     assert.equal(stream.stats().retries, 0);
   });
 }
@@ -526,7 +526,7 @@ it("unknown append errors preserve the request ID from the response payload", as
   });
   await assert.rejects(writes.append(client), (error: unknown) => {
     assert.ok(error instanceof AppendRowsError);
-    assert.equal(error.outcome, "unknown");
+    assert.equal(error.outcome, "ambiguous");
     assert.equal(error.requestId, "body-request");
     assert.equal(error.retryable, false);
     return true;
@@ -552,7 +552,7 @@ it("statement requests keep their caller signal and have no write timeout", asyn
   assert.equal(controller.signal.aborted, false);
 });
 
-it("a server HTTP 408 rejection remains safely retryable", async () => {
+it("a server HTTP 408 rejection is definite but not automatically retryable", async () => {
   const client = new Client("https://example.com", {
     fetch: async () =>
       jsonResponse(408, {
@@ -564,9 +564,9 @@ it("a server HTTP 408 rejection remains safely retryable", async () => {
   });
   await assert.rejects(writes.append(client), (error: unknown) => {
     assert.ok(error instanceof AppendRowsError);
-    assert.equal(error.outcome, "rejected");
+    assert.equal(error.outcome, "failed");
     assert.equal(error.writeDetails, undefined);
-    assert.equal(error.retryable, true);
+    assert.equal(error.retryable, false);
     return true;
   });
 });
@@ -606,7 +606,7 @@ it("disables a stream attempt deadline without disabling the delivery budget", a
     writeTimeoutMs: 1,
   });
   const stream = client.table("events").appendStream().attemptTimeoutMs(null)
-    .maxElapsedTimeMs(100).retryUnknown(true).build();
+    .maxElapsedTimeMs(100).retryAmbiguous(true).build();
   await stream.send({ id: 1 });
   const rejected = assert.rejects(stream.shutdown(), AppendRowsError);
   await transport.ready;
@@ -633,7 +633,9 @@ it("disables the Catalog mutation deadline without ignoring caller cancellation"
     }),
     (error) =>
       error instanceof ScopeDBError &&
-      error.code === "catalog_commit_outcome_unknown",
+      error.catalogOutcome === "unknown" &&
+      error.writeDetails?.reason === "cancelled" &&
+      error.writeDetails.outcome === "ambiguous",
   );
   await transport.ready;
   t.mock.timers.tick(60_000);

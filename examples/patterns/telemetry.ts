@@ -69,7 +69,7 @@ function track(
 async function closeTelemetry(): Promise<void> {
   // In a real service: stop accepting requests and await producer tasks first.
   const report = await telemetry.shutdown();
-  if (report.outcome !== "ok") {
+  if (report.outcome !== "succeeded") {
     console.error("telemetry loss", report);
   }
   console.log("final stats", telemetry.stats());
@@ -82,7 +82,7 @@ function deliveryMetrics() {
   return {
     dropped: stats.droppedRows,
     knownNotCommitted: stats.failedRows,
-    unknown: stats.unknownRows,
+    unknown: stats.ambiguousRows,
     committed: stats.committedRows,
     retries: stats.retries,
     pendingBytes: stats.pendingBytes,
