@@ -34,6 +34,7 @@ const bin = (name) => join(consumerRoot, "node_modules", ".bin", name);
 const sdkApiKey = "packed-smoke-sdk-key";
 const applicationWriteToken = "packed-smoke-write-token";
 const appendedRows = [];
+const appendedPayloads = [];
 const backend = createServer(handleRequest).listen(0, "127.0.0.1");
 await once(backend, "listening");
 const bindings = {
@@ -78,7 +79,12 @@ try {
     "dev", "--local", "--ip", "127.0.0.1",
     ...Object.entries(bindings).flatMap(([key, value]) => ["--var", `${key}:${value}`]),
   ], join(consumerRoot, "worker"), "/");
-  assert.deepEqual(appendedRows.map((row) => row.name), ["Next.js", "Workers"]);
+  assert.deepEqual(appendedRows.map((row) => row.name), ["Next.js", "Workers", "stream-first", "stream-last"]);
+  assert.equal(
+    appendedPayloads[2],
+    '{"id":9007199254740993,"name":"stream-first"}\n{"id":9223372036854775807,"name":"stream-last"}',
+    "Workers stream preserves exact integers through encoding, batching, compression, and delivery",
+  );
   console.log("packed framework consumer smoke passed");
 } finally {
   backend.closeAllConnections();
@@ -133,6 +139,14 @@ async function smoke(name, command, args, cwd, path) {
     });
     assert.equal(response.status, 201);
     assert.deepEqual(await response.json(), { insertedRows: 1 });
+    if (name === "Workers") {
+      const streamed = await fetch(new URL("/stream", url), {
+        method: "POST",
+        signal: AbortSignal.timeout(10_000),
+      });
+      assert.equal(streamed.status, 200);
+      assert.deepEqual(await streamed.json(), { insertedRows: 2 });
+    }
     console.log(`${name} packed consumer passed`);
   } finally {
     // Wrangler starts workerd as a child; stop the process group as well as the CLI.
@@ -218,6 +232,7 @@ async function handleRequest(request, response) {
       assert.equal(request.url, "/v1/catalog/databases/scopedb/schemas/public/tables/events/ingest");
       const rows = body.trim().split("\n").map((line) => JSON.parse(line));
       appendedRows.push(...rows);
+      appendedPayloads.push(body);
       result = { num_rows_inserted: rows.length };
     }
     response.writeHead(200, { "Content-Type": "application/json" });

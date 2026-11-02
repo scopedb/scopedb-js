@@ -1,12 +1,12 @@
 # ScopeDB JavaScript SDK examples
 
-The runnable examples import the public `scopedb` package entry. Start with the [quickstart](../README.md#run-a-query), then choose an example for your workload. See the [usage guide](../docs/usage.md) for API contracts and [Upgrade from 0.3 to 0.4](../docs/migration-0.4.md) for migration steps.
+Start with the [quickstart](../README.md#run-a-query), then choose a complete program or a template for your workload. See the [usage guide](../docs/usage.md) for delivery, encoding, and error handling, and [Upgrade from 0.3 to 0.4](../docs/migration-0.4.md) when upgrading.
 
 The SDK is designed for trusted server-side runtimes. Never expose `SCOPEDB_API_KEY` in browser bundles or Next.js Client Components.
 
 ## Read-only quickstarts
 
-These examples run against a reachable ScopeDB server without modifying data:
+To run these programs from a checkout, install dependencies with `pnpm install --frozen-lockfile` and set the connection variables below. The commands build and run the selected program. These two examples read from a reachable ScopeDB service without modifying data:
 
 | Example                        | Shows                                                   | Command                      |
 | ------------------------------ | ------------------------------------------------------- | ---------------------------- |
@@ -15,7 +15,7 @@ These examples run against a reachable ScopeDB server without modifying data:
 
 ## Write examples
 
-Write examples read connection settings from environment variables and require `SCOPEDB_TABLE`:
+All runnable examples read connection settings from environment variables. Write examples also require `SCOPEDB_TABLE`:
 
 | Variable           | Default                 | Purpose                                  |
 | ------------------ | ----------------------- | ---------------------------------------- |
@@ -53,7 +53,7 @@ export SCOPEDB_TABLE=sdk_example_events
 
 ## Integration templates
 
-These templates are type-checked against the built package and can be copied directly into your application:
+Copy a template into your application and supply the host integration described below. An outbox needs durable storage and a checkpoint implementation; a serverless handler needs the runtime's lifecycle hook.
 
 | Template                                                 | Target integration                                                 | Purpose                                                             |
 | -------------------------------------------------------- | ------------------------------------------------------------------ | ------------------------------------------------------------------- |
@@ -69,10 +69,4 @@ These templates are type-checked against the built package and can be copied dir
 | Cloudflare Workers | [`frameworks/cloudflare-worker/worker.ts`](frameworks/cloudflare-worker/worker.ts)     | Standard Web Fetch APIs without `nodejs_compat`; store `SCOPEDB_API_KEY` and `APP_WRITE_TOKEN` as secrets |
 | Bun                | Any runnable ESM example                                                               | Install with `bun add scopedb`; uses standard Web Fetch and CompressionStream APIs                        |
 
-## Developing the examples
-
-```sh
-pnpm run example:list
-pnpm run check:examples
-pnpm run build:examples
-```
+For SDK development and example validation, see [Contributing](../CONTRIBUTING.md).

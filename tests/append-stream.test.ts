@@ -16,6 +16,7 @@
 
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
+import { setImmediate as nextTurn } from "node:timers/promises";
 import {
   AppendRetryExhaustedError,
   type AppendStream,
@@ -173,15 +174,13 @@ describe("AppendStream batching and barriers", () => {
     );
   });
 
-  it("supports ergonomic batching and concurrency configuration names", async () => {
+  it("splits an iterable at the configured row limit without losing its final partial batch", async () => {
     const { table, calls } = makeTable([appendOk(2), appendOk(2), appendOk(1)]);
     const stream = table.appendStream()
       .targetBatchBytes(1024)
       .maxBatchRows(2)
       .flushIntervalMs(60_000)
       .maxConcurrentBatches(1)
-      .maxBufferedBytes(1024 * 1024)
-      .attemptTimeoutMs(10_000)
       .build();
 
     await stream.sendAll([
@@ -200,19 +199,45 @@ describe("AppendStream batching and barriers", () => {
     ]);
   });
 
-  it("flushes by the first-row deadline even while records keep arriving", async () => {
-    const { table, calls } = makeTable([appendOk(2)]);
-    const stream = table.appendStream()
+  it("flushes at the first-row deadline without resetting it for later rows", { timeout: 2_000 }, async (t) => {
+    t.mock.timers.enable({ apis: ["setTimeout"] });
+    let now = 0;
+    t.mock.method(Date, "now", () => now);
+    const dispatched = new TestDeferred<unknown[]>();
+    const response = new TestDeferred<Response>();
+    const client = new Client("http://localhost:8080", {
+      fetch: async (_input, init) => {
+        dispatched.resolve(parseAppendRows({ url: "", init }));
+        return response.promise;
+      },
+    });
+    const stream = client.table("events").appendStream()
       .targetBatchBytes(1024)
       .flushIntervalMs(30)
       .build();
+    t.after(() => {
+      response.resolve(appendOk(2));
+      return stream.shutdown();
+    });
 
     await stream.send({ id: 1 });
-    await delay(15);
+    await nextTurn();
+    now = 15;
+    t.mock.timers.tick(15);
     await stream.send({ id: 2 });
-    await waitForCallCount(calls, 1);
+    await nextTurn();
+    now = 29;
+    t.mock.timers.tick(14);
+    await nextTurn();
+    assert.equal(stream.stats().inFlightBatches, 0);
+    assert.equal(stream.stats().pendingRows, 2);
 
-    assert.deepEqual(parseAppendRows(calls[0]!), [{ id: 1 }, { id: 2 }]);
+    now = 30;
+    t.mock.timers.tick(1);
+    await nextTurn();
+    assert.equal(stream.stats().inFlightBatches, 1);
+    assert.deepEqual(await dispatched.promise, [{ id: 1 }, { id: 2 }]);
+    response.resolve(appendOk(2));
     assert.equal((await stream.shutdown())?.num_rows_inserted, 2);
   });
 
@@ -688,19 +713,11 @@ describe("AppendStream local failures", () => {
     assert.equal(calls.length, 0);
   });
 
-  it("keeps the stream usable after a record serialization error", async () => {
+  it("rejects non-object records locally and remains usable", async () => {
     const { table, calls } = makeTable([appendOk(1)]);
     const stream = table.appendStream().build();
 
     await assert.rejects(() => stream.send(undefined as never), ScopeDBError);
-    await stream.send({ id: 1 });
-    assert.equal((await stream.shutdown())?.num_rows_inserted, 1);
-    assert.equal(calls.length, 1);
-  });
-
-  it("accepts only top-level JSON objects", async () => {
-    const { table, calls } = makeTable([appendOk(1)]);
-    const stream = table.appendStream().build();
 
     await assert.rejects(
       () => stream.send([]),
@@ -720,8 +737,9 @@ describe("AppendStream local failures", () => {
     );
 
     await stream.send({ id: 1 });
-    await stream.shutdown();
+    assert.equal((await stream.shutdown())?.num_rows_inserted, 1);
     assert.equal(calls.length, 1);
+    assert.deepEqual(parseAppendRows(calls[0]!), [{ id: 1 }]);
   });
 
   it("does not start shutdown when its signal is already aborted", async () => {

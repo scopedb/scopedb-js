@@ -64,7 +64,8 @@ export interface ScopeDBErrorOptions {
 }
 
 /**
- * Base error type thrown by all ScopeDB SDK operations.
+ * Base type for SDK operation errors. Caller abort reasons and input iterator
+ * errors may propagate unchanged instead of being wrapped in this type.
  *
  * Inspect {@link kind} for the failure category, {@link isTemporary} for general
  * retry classification, {@link statementId} to recover an in-flight statement,

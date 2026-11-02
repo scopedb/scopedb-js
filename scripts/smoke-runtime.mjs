@@ -25,6 +25,38 @@ const fetch = async (input, init) => {
       num_rows_inserted: rows,
     });
   }
+  if (url.pathname.endsWith("/statements")) {
+    return Response.json({
+      statement_id: "smoke-query",
+      status: "finished",
+      created_at: "2026-01-01T00:00:00Z",
+      progress: {
+        total_percentage: 100,
+        compute_seconds: 0,
+        nanos_from_submitted: 0,
+        nanos_from_started: 0,
+        total_stages: 0,
+        total_partitions: 0,
+        total_rows: 0,
+        total_compressed_bytes: 0,
+        total_uncompressed_bytes: 0,
+        scanned_stages: 0,
+        scanned_partitions: 0,
+        scanned_rows: 0,
+        scanned_compressed_bytes: 0,
+        scanned_uncompressed_bytes: 0,
+        skipped_partitions: 0,
+        skipped_rows: 0,
+        skipped_compressed_bytes: 0,
+        skipped_uncompressed_bytes: 0,
+      },
+      result_set: {
+        metadata: { fields: [{ name: "id", data_type: "int" }], num_rows: 1 },
+        format: "json",
+        rows: [["9007199254740993"]],
+      },
+    });
+  }
   return Response.json({ databases: [{ name: "scopedb", schemas: [] }] }, { headers: { ETag: '"v1"' } });
 };
 
@@ -42,18 +74,8 @@ const stream = client.table("events").appendStream()
   .flushIntervalMs(60_000)
   .maxConcurrentBatches(1)
   .build();
-const originalBuffer = globalThis.Buffer;
-if (process.argv.includes("--without-buffer")) {
-  Reflect.deleteProperty(globalThis, "Buffer");
-}
-try {
-  check(encodeAppendRecord({ id: 9007199254740993n }) === '{"id":9007199254740993}', "exact direct encoding");
-  await stream.sendAll([{ id: 9223372036854775807n }, { id: 2n }, { id: 3n }]);
-} finally {
-  if (originalBuffer !== undefined) {
-    Reflect.set(globalThis, "Buffer", originalBuffer);
-  }
-}
+check(encodeAppendRecord({ id: 9007199254740993n }) === '{"id":9007199254740993}', "exact direct encoding");
+await stream.sendAll([{ id: 9223372036854775807n }, { id: 2n }, { id: 3n }]);
 const result = await stream.shutdown();
 check(result?.num_rows_inserted === 3, "append stream result");
 check(calls.length === 2, "catalog plus one append request");
@@ -70,6 +92,10 @@ check(
     "Bearer runtime-smoke-key"),
   "API key propagation",
 );
+
+const rows = await client.query("SELECT 9007199254740993 AS id");
+check(rows.first()?.id === 9007199254740993n, "lossless query result");
+check(JSON.stringify(rows.toObjects({ integerMode: "string" })) === '[{"id":"9007199254740993"}]', "JSON-safe query result");
 
 async function requestText(init) {
   const encoding = new Headers(init?.headers).get("Content-Encoding");

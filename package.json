@@ -37,6 +37,7 @@
   },
   "files": [
     "CHANGELOG.md",
+    "CONTRIBUTING.md",
     "dist",
     "docs/**/*.md",
     "examples/**/*.ts",
@@ -51,9 +52,8 @@
     "check": "pnpm run build && pnpm run check:examples:built",
     "check:examples": "pnpm run build && pnpm run check:examples:built",
     "check:examples:built": "tsc -p tsconfig.examples.json --noEmit && pnpm run check:package",
-    "check:package": "node scripts/check-package.mjs",
+    "check:package": "node scripts/smoke-runtime.mjs",
     "smoke:runtime": "pnpm run build && node scripts/smoke-runtime.mjs",
-    "smoke:web-runtime": "pnpm run build && node scripts/smoke-runtime.mjs --without-buffer",
     "smoke:frameworks": "pnpm run build && node scripts/smoke-framework-consumers.mjs",
     "clean:dist": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\"",
     "clean:examples": "node -e \"require('node:fs').rmSync('dist-test/examples-build', { recursive: true, force: true })\"",

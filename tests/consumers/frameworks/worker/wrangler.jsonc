@@ -1,6 +1,6 @@
 {
   "$schema": "../node_modules/wrangler/config-schema.json",
   "name": "scopedb-sdk-framework-smoke",
-  "main": "worker.ts",
+  "main": "entry.mjs",
   "compatibility_date": "2026-08-01"
 }
