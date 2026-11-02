@@ -37,10 +37,15 @@ export class Statement {
   private maxElapsedSeconds?: number;
   private maxEstimatedSeconds?: number;
 
-  constructor(
+  private constructor(
     private readonly client: Client,
     private readonly statementText: string,
   ) {}
+
+  /** @internal */
+  static create(client: Client, statementText: string): Statement {
+    return new Statement(client, statementText);
+  }
 
   withStatementId(statementId: string): this {
     this.statementIdValue = statementId;
@@ -67,7 +72,7 @@ export class Statement {
         max_estimated_seconds: this.maxEstimatedSeconds,
         format: "json",
       }, options);
-      return new StatementHandle(
+      return StatementHandle.create(
         this.client,
         statementId ?? snapshot.statement_id,
         snapshot,
@@ -101,13 +106,22 @@ export class StatementHandle {
   private appliedObservation = 0;
   readonly statementId: string;
 
-  constructor(
+  private constructor(
     private readonly client: Client,
     statementId: string,
     snapshot?: StatementSnapshot,
   ) {
     this.statementId = canonicalStatementId(statementId);
     if (snapshot !== undefined) this.remember(snapshot, 0);
+  }
+
+  /** @internal */
+  static create(
+    client: Client,
+    statementId: string,
+    snapshot?: StatementSnapshot,
+  ): StatementHandle {
+    return new StatementHandle(client, statementId, snapshot);
   }
 
   /** Returns a caller-owned copy of the latest observation without a request. */

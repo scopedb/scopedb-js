@@ -17,7 +17,7 @@ All significant changes to the ScopeDB JavaScript SDK are documented in this fil
 
 * Make the public header option type-check in Node.js projects without the DOM type library.
 * Include TypeScript sources in the package so declaration navigation and source-map debugging can resolve their targets.
-* Preserve timeout and cancellation reasons in Catalog mutation `writeDetails`, independently of `catalogOutcome`.
+* Record timeout and cancellation reasons in `ScopeDBError.writeDetails` when a Catalog mutation is interrupted in flight.
 * Confirm table appends from HTTP 200 responses with matching `num_rows_inserted` counts, classify validated HTTP 4xx errors as `"failed"`, and keep HTTP 5xx or malformed responses `"ambiguous"` while limiting default stream retries to validated HTTP 429 rejections.
 * Preserve known statement IDs on `ScopeDBError.statementId` so callers can resume waiting with `client.statementHandle(id)`. After successful submission, `query()` and `execute()` no longer mark polling failures as retryable; handle polling keeps its temporary error classification, and caller abort reasons remain unchanged.
 

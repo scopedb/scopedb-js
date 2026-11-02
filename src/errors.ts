@@ -216,6 +216,7 @@ export class AppendRowsError extends ScopeDBError {
   }
 }
 
+/** @internal */
 export function asScopeDBError(
   kind: ErrorKind,
   message: string,
@@ -227,6 +228,7 @@ export function asScopeDBError(
   return new ScopeDBError(kind, message, { cause });
 }
 
+/** @internal */
 export function writeErrorDetailsFromCause(
   cause: unknown,
 ): WriteErrorDetails | undefined {

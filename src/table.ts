@@ -32,13 +32,22 @@ export class Table {
   private readonly databaseName: string;
   private readonly schemaName: string;
 
-  constructor(
+  private constructor(
     private readonly client: Client,
     private readonly tableName: string,
     options: TableOptions = {},
   ) {
     this.databaseName = options.database ?? "scopedb";
     this.schemaName = options.schema ?? "public";
+  }
+
+  /** @internal */
+  static create(
+    client: Client,
+    tableName: string,
+    options: TableOptions = {},
+  ): Table {
+    return new Table(client, tableName, options);
   }
 
   identifier(): string {
@@ -85,7 +94,7 @@ export class Table {
     );
   }
 
-  /** Selects the complete definition and ETag used for conditional mutations. */
+  /** Selects the complete definition and version used for conditional mutations. */
   catalog(): CatalogResource<CatalogTable> {
     return this.client.catalog().table(
       this.databaseName,

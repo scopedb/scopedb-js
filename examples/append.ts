@@ -16,9 +16,6 @@
 
 import { AppendRowsError, Client } from "scopedb";
 
-// Layer: quickstart (runnable write).
-// Shows one caller-owned NDJSON request with no automatic batching.
-
 const tableName = process.env["SCOPEDB_TABLE"];
 if (tableName === undefined || tableName.length === 0) {
   throw new Error(

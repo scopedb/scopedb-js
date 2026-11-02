@@ -16,10 +16,6 @@
 
 import { AppendRowsError, Client } from "scopedb";
 
-// Layer: production pattern (runnable).
-// Guarantees bounded local memory and strict delivery barriers.
-// Does not provide durable resume, idempotency, or whole-job rollback.
-
 const tableName = process.env["SCOPEDB_TABLE"];
 if (tableName === undefined || tableName.length === 0) {
   throw new Error(
@@ -48,11 +44,8 @@ async function* generateRows(count: number): AsyncIterable<object> {
   }
 }
 
-// The default failure policy is strict `stop`. Sequential local admission keeps
-// memory bounded; HTTP append concurrency is controlled independently below.
 const stream = table
   .appendStream()
-  // Small enough for this sample to exercise several concurrent HTTP batches.
   .targetBatchBytes(32 * 1024)
   .flushIntervalMs(1_000)
   .maxConcurrentBatches(4)
@@ -66,9 +59,7 @@ try {
   console.log("accepted locally", accepted.acceptedRows);
 } catch (error) {
   admissionError = error;
-  // There is no transactional stream-wide abort. This example deliberately
-  // settles the already accepted prefix below, even if the input iterator,
-  // serialization, cancellation, or an early append ended sendAll().
+  // Settle the admitted prefix before reporting the admission failure.
   console.error("row admission stopped; settling the accepted prefix", error);
 }
 
@@ -80,7 +71,6 @@ try {
     process.exitCode = 1;
   }
 } catch (deliveryError) {
-  // A strict stream is terminal after an append failure. Do not reuse it.
   if (
     deliveryError instanceof AppendRowsError &&
     deliveryError.outcome === "ambiguous"
@@ -89,9 +79,6 @@ try {
   } else {
     console.error("bulk append failed", deliveryError);
   }
-  // Even a rejected final request does not make this entire input safe to
-  // replay: earlier concurrent batches may have committed. Production imports
-  // need durable source checkpoints, stable IDs, or destination deduplication.
   console.error("final stream stats", stream.stats());
   process.exitCode = 1;
 }
