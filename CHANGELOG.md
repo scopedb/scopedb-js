@@ -8,6 +8,7 @@ All significant changes to the ScopeDB JavaScript SDK are documented in this fil
 
 * Rename Catalog `etag` / `ifMatch` to `version` / `expectedVersion` and expose mutation certainty through `ScopeDBError.catalogOutcome` (`"rejected"` or `"unknown"`) while preserving server error codes. See [Upgrade from 0.3 to 0.4](docs/migration-0.4.md).
 * Rename `AppendState` to `AppendOutcome`, with `"succeeded"`, `"failed"`, and `"ambiguous"` values. Use `retryAmbiguous`, `ambiguousRows`, and `ambiguousBatches`; delivery reports use `"succeeded"` and `"ambiguous"` instead of `"ok"` and `"unknown"`.
+* Make `Table`, `Statement`, `StatementHandle`, `Catalog`, and `CatalogResource` constructors private, and remove `ResultSet.fromStatementResultSet()` from the public TypeScript API. Use the client and catalog factory methods described in [Object creation](docs/migration-0.4.md#object-creation).
 
 ### New Features
 

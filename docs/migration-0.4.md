@@ -1,6 +1,34 @@
 # Upgrade from 0.3 to 0.4
 
-The next minor release aligns Catalog version preconditions, Append outcome names, and strict record encoding with the current SDK contract. Applications upgrading from 0.2 should first follow [Upgrade from 0.2 to 0.3](migration-0.3.md).
+Version 0.4 changes object creation, Catalog version preconditions, and Append outcome names, and adds strict record encoding. Applications upgrading from 0.2 should first follow [Upgrade from 0.2 to 0.3](migration-0.3.md).
+
+## Object creation
+
+Create tables, statements, handles, and catalog resources through a `Client`. Their constructors are now private in TypeScript:
+
+| In 0.3                                 | In 0.4                                |
+| -------------------------------------- | ------------------------------------- |
+| `new Table(client, name, options)`     | `client.table(name, options)`         |
+| `new Statement(client, sql)`           | `client.statement(sql)`               |
+| `new StatementHandle(client, id)`      | `client.statementHandle(id)`          |
+| `new Catalog(transport)`               | `client.catalog()`                    |
+| `new CatalogResource(transport, path)` | `client.catalog()` resource selectors |
+
+Select a catalog resource with `client.catalog().database(name)`, `.schema(database, name)`, `.table(database, schema, name)`, or `.view(database, schema, name)`.
+
+To reattach to an existing statement, use `client.statementHandle(id)` and call `refresh()` or `wait()` to retrieve its state. Supplying an initial snapshot to a handle constructor is no longer supported. If you previously supplied a custom Catalog transport, configure HTTP behavior through the `Client`'s `fetch` option.
+
+`ResultSet.fromStatementResultSet()` is no longer part of the public TypeScript API. Obtain query results through `client.query()` or `handle.wait()`. To construct a result yourself, such as an application test fixture, use the public result constructors:
+
+```ts
+import { FieldSchema, ResultSet, Schema } from "scopedb";
+
+const result = new ResultSet(
+  new Schema([new FieldSchema("id", "int")]),
+  1,
+  [["42"]],
+);
+```
 
 ## Catalog versions and mutation outcomes
 

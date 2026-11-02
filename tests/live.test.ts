@@ -74,7 +74,9 @@ test(
         2,
       );
       await assert.rejects(
-        table.append('{"id":"bad","source":"js"}'),
+        table.append(
+          '{"id":999,"source":"rejected-batch"}\n{"id":"bad","source":"rejected-batch"}',
+        ),
         (e: unknown) => {
           assert.ok(e instanceof AppendRowsError);
           assert.equal(e.outcome, "failed");
@@ -87,7 +89,11 @@ test(
         .statement(`FROM ${table.identifier()}`)
         .submit();
       const result = await handle.wait();
-      assert.equal(result.toObjects().length, 2);
+      assert.equal(
+        result.toObjects().length,
+        2,
+        "a rejected batch must not commit its valid prefix",
+      );
 
       const late = client.statementHandle(handle.statementId);
       assert.equal((await late.cancel()).status, "finished");
