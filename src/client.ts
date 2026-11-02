@@ -66,7 +66,7 @@ export interface ClientOptions {
    */
   writeTimeoutMs?: number | null;
   /** Default headers sent with every request. */
-  headers?: HeadersInit;
+  headers?: ConstructorParameters<typeof Headers>[0];
   /**
    * ScopeDB API key. It is sent as a Bearer credential and must only be used
    * from trusted server-side code. It takes precedence over an
