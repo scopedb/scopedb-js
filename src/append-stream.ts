@@ -15,6 +15,7 @@
  */
 
 import type { Client } from "./client.js";
+import { encodeAppendRecord } from "./append-encoding.js";
 import { AppendRowsError, asScopeDBError, ScopeDBError } from "./errors.js";
 import type { AppendRowsResult } from "./protocol.js";
 import {
@@ -146,6 +147,7 @@ interface AppendStreamConfig<Policy extends AppendFailurePolicy> {
   readonly database: string;
   readonly schema: string;
   readonly table: string;
+  readonly strictEncoding: boolean;
   readonly batchBytes: number;
   readonly batchRows: number;
   readonly flushIntervalMs: number;
@@ -217,6 +219,7 @@ interface LifetimeCounters {
 export class AppendStreamBuilder<
   Policy extends AppendFailurePolicy = "stop",
 > {
+  private currentStrictEncoding = false;
   private currentBatchBytes = DEFAULT_BATCH_BYTES;
   private currentBatchRows = MAX_APPEND_ROWS;
   private currentFlushIntervalMs = DEFAULT_FLUSH_INTERVAL_MS;
@@ -266,6 +269,18 @@ export class AppendStreamBuilder<
     if (failurePolicy !== "stop" && failurePolicy !== "continue") {
       throw configError("failurePolicy must be 'stop' or 'continue'");
     }
+  }
+
+  /**
+   * Opt into encodeAppendRecord(): exact int64 bigints and local rejection of
+   * lossy numbers or unsupported values. Defaults to JSON.stringify behavior.
+   */
+  strictEncoding(enabled: boolean): this {
+    if (typeof enabled !== "boolean") {
+      throw configError("strictEncoding must be a boolean");
+    }
+    this.currentStrictEncoding = enabled;
+    return this;
   }
 
   /**
@@ -423,6 +438,7 @@ export class AppendStreamBuilder<
       database: this.database,
       schema: this.schema,
       table: this.table,
+      strictEncoding: this.currentStrictEncoding,
       batchBytes: this.currentBatchBytes,
       batchRows: this.currentBatchRows,
       flushIntervalMs: this.currentFlushIntervalMs,
@@ -522,7 +538,7 @@ export class AppendStream<Policy extends AppendFailurePolicy = "stop"> {
 
     let serialized: SerializedRecord;
     try {
-      serialized = prepareRecord(record);
+      serialized = prepareRecord(record, this.config.strictEncoding);
     } catch (cause) {
       this.noteDrop(
         cause instanceof RecordTooLargeError
@@ -566,7 +582,7 @@ export class AppendStream<Policy extends AppendFailurePolicy = "stop"> {
   async send(record: unknown, options: AppendWaitOptions = {}): Promise<void> {
     throwIfAborted(options.signal);
     this.checkUsable();
-    const serialized = prepareRecord(record);
+    const serialized = prepareRecord(record, this.config.strictEncoding);
     const reservedBytes = serialized.bytes + 1;
     let reservation: PendingBytesReservation;
     try {
@@ -608,7 +624,11 @@ export class AppendStream<Policy extends AppendFailurePolicy = "stop"> {
     this.checkFatal();
   }
 
-  /** Consumes a sync or async iterable one row at a time with bounded backpressure. */
+  /**
+   * Consumes a sync or async iterable one row at a time with bounded backpressure.
+   * An error does not undo previously admitted rows. Settle them with shutdown()
+   * and reconcile their outcomes before replaying the input.
+   */
   async sendAll(
     records: Iterable<unknown> | AsyncIterable<unknown>,
     options: AppendWaitOptions = {},
@@ -1363,8 +1383,8 @@ export class AppendStream<Policy extends AppendFailurePolicy = "stop"> {
 
 class RecordTooLargeError extends ScopeDBError {}
 
-function prepareRecord(record: unknown): SerializedRecord {
-  const payload = serializeRecord(record);
+function prepareRecord(record: unknown, strictEncoding: boolean): SerializedRecord {
+  const payload = strictEncoding ? encodeAppendRecord(record) : serializeRecord(record);
   const bytes = byteLength(payload);
   if (bytes > MAX_APPEND_BODY_BYTES) {
     throw new RecordTooLargeError(

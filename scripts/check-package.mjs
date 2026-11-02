@@ -17,6 +17,7 @@
 const sdk = await import("scopedb");
 const expected = [
   [sdk, "Client"],
+  [sdk, "encodeAppendRecord"],
   [sdk, "AppendStream"],
   [sdk, "AppendRowsError"],
   [sdk.Client.prototype, "catalog"],
@@ -28,6 +29,7 @@ const expected = [
   [sdk.StatementHandle.prototype, "wait"],
   [sdk.Table.prototype, "catalog"],
   [sdk.AppendStreamBuilder.prototype, "targetBatchBytes"],
+  [sdk.AppendStreamBuilder.prototype, "strictEncoding"],
   [sdk.AppendStreamBuilder.prototype, "maxBatchRows"],
   [sdk.AppendStreamBuilder.prototype, "flushIntervalMs"],
   [sdk.AppendStreamBuilder.prototype, "maxConcurrentBatches"],

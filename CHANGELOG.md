@@ -9,6 +9,10 @@ All significant changes to the ScopeDB JavaScript SDK are documented in this fil
 * Rename Catalog `etag` / `ifMatch` to `version` / `expectedVersion` and expose mutation certainty through `ScopeDBError.catalogOutcome` while preserving server error codes. See [Upgrade from 0.3 to 0.4](docs/migration-0.4.md).
 * Rename `AppendState` to `AppendOutcome`, with `succeeded`, `failed`, and `ambiguous` values. Use `retryAmbiguous`, `ambiguousRows`, and `ambiguousBatches`; delivery reports use `succeeded` and `ambiguous` instead of `ok` and `unknown`.
 
+### New Features
+
+* Add `encodeAppendRecord()` and opt-in stream `.strictEncoding(true)` to write signed 64-bit bigints without precision loss and reject non-finite numbers, unsafe integer-valued numbers, and unsupported values locally with field paths.
+
 ### Bug Fixes
 
 * Preserve timeout and cancellation reasons in Catalog mutation `writeDetails`, independently of `catalogOutcome`.

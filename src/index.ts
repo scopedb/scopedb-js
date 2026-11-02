@@ -15,6 +15,7 @@
  */
 
 export { Client } from "./client.js";
+export { encodeAppendRecord } from "./append-encoding.js";
 export type { ClientOptions, RequestOptions, WriteOptions } from "./client.js";
 export {
   AppendRetryExhaustedError,
