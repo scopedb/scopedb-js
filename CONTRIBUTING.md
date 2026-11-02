@@ -4,11 +4,10 @@ Use the Node.js version range and pnpm version declared in `package.json`:
 
 ```sh
 pnpm install --frozen-lockfile
-pnpm test
-pnpm run check
+pnpm run ci
 ```
 
-`pnpm test` compiles the source and tests, then runs the behavior suites with Node's test runner. The default suite uses local fetch stubs and requires no ScopeDB service. `pnpm run check` builds the package, type-checks the examples against its declarations, and exercises the package entry with query, catalog, and append operations.
+`pnpm run ci` runs the behavior tests and package checks. `pnpm test` compiles the source and tests, then runs the behavior suites with Node's test runner. The default suite uses local fetch stubs and requires no ScopeDB service. `pnpm run check` builds the package, type-checks the examples and Node/Web consumers against its declarations, exercises query, catalog, and append operations, and runs publint against the package contents.
 
 ## Choosing a test
 
@@ -24,7 +23,7 @@ pnpm run smoke:frameworks
 pnpm pack --dry-run
 ```
 
-The runtime smoke program exercises the built package in Node.js; CI also runs it in Bun. The framework smoke installs a tarball into temporary Next.js and Workers consumers and runs them against a local mock backend. The Workers consumer runs without `nodejs_compat`, validating the package in a Web runtime. It requires network access for consumer dependencies. `pnpm pack --dry-run` runs the prepack checks and lists the published files.
+The runtime smoke program exercises the built package in Node.js; CI also runs it in Bun. The framework smoke installs a tarball into temporary consumers, verifies that source maps resolve to packaged files, and compiles the public declarations separately with Node and Web globals. It then runs Next.js and Workers consumers against a local mock backend. The Workers consumer runs without `nodejs_compat`, validating the package in a Web runtime. This check requires network access for consumer dependencies. `pnpm pack --dry-run` runs the prepack checks and lists the published files.
 
 ## Live integration
 

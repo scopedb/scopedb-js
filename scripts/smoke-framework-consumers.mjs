@@ -17,10 +17,10 @@
 import assert from "node:assert/strict";
 import { execFile, spawn } from "node:child_process";
 import { once } from "node:events";
-import { cp, copyFile, lstat, mkdir, mkdtemp, rm } from "node:fs/promises";
+import { access, cp, copyFile, lstat, mkdir, mkdtemp, readFile, readdir, rm } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
@@ -58,6 +58,7 @@ try {
     "pack", "--json", "--ignore-scripts", "--pack-destination", temporaryRoot,
   ], repositoryRoot));
   await cp(join(repositoryRoot, "tests/consumers/frameworks"), consumerRoot, { recursive: true });
+  await cp(join(repositoryRoot, "tests/consumers/types"), join(consumerRoot, "types"), { recursive: true });
   await mkdir(join(consumerRoot, "app/api/events"), { recursive: true });
   await copyFile(
     join(repositoryRoot, "examples/frameworks/nextjs-route-handler/route.ts"),
@@ -72,6 +73,17 @@ try {
     join(temporaryRoot, packed[0].filename),
   ]);
   assert.equal((await lstat(join(consumerRoot, "node_modules/scopedb"))).isSymbolicLink(), false);
+  const dist = join(consumerRoot, "node_modules/scopedb/dist");
+  for (const file of (await readdir(dist)).filter((file) => file.endsWith(".map"))) {
+    const map = JSON.parse(await readFile(join(dist, file), "utf8"));
+    for (const source of map.sources) {
+      await access(resolve(dist, map.sourceRoot, source));
+    }
+  }
+  await run(bin("tsc"), ["-p", "types/tsconfig.node.json"]);
+  await run(bin("tsc"), ["-p", "types/tsconfig.web.json"]);
+  // Keep standalone type fixtures out of Next.js's own project-wide type check.
+  await rm(join(consumerRoot, "types"), { recursive: true });
   await run(bin("tsc"), ["-p", "worker/tsconfig.json"]);
   await run(bin("next"), ["build"]);
   await smoke("Next.js", bin("next"), ["start", "--hostname", "127.0.0.1"], consumerRoot, "/api/events");
