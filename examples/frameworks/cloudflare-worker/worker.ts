@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-import { Client } from "scopedb";
+import { Client, encodeAppendRecord } from "scopedb";
 
 // ScopeDB uses standard Fetch APIs and does not require the Workers
 // `nodejs_compat` flag. Store both keys below as Worker secrets. Replace the
@@ -60,21 +60,16 @@ export default {
       });
     }
 
-    const event = await readEvent(request);
-    if (event instanceof Response) {
-      return event;
+    const record = await readEventRecord(request);
+    if (record instanceof Response) {
+      return record;
     }
 
     const table = client.table(tableName, {
       database: env.SCOPEDB_DATABASE ?? "scopedb",
       schema: env.SCOPEDB_SCHEMA ?? "public",
     });
-    const result = await table.append(JSON.stringify({
-      event_id: crypto.randomUUID(),
-      occurred_at: new Date().toISOString(),
-      name: event.name,
-      attributes: event.attributes ?? {},
-    }), {
+    const result = await table.append(record, {
       signal: AbortSignal.timeout(30_000),
     });
     return Response.json(
@@ -89,7 +84,7 @@ interface EventInput {
   attributes?: Record<string, unknown>;
 }
 
-async function readEvent(request: Request): Promise<EventInput | Response> {
+async function readEventRecord(request: Request): Promise<string | Response> {
   const declaredBytes = Number(request.headers.get("Content-Length"));
   if (Number.isFinite(declaredBytes) && declaredBytes > MAX_EVENT_BYTES) {
     return Response.json({ error: "request body is too large" }, { status: 413 });
@@ -110,13 +105,19 @@ async function readEvent(request: Request): Promise<EventInput | Response> {
       { status: 400 },
     );
   }
-  if (!hasOnlySafeJsonNumbers(value.attributes)) {
+  try {
+    return encodeAppendRecord({
+      event_id: crypto.randomUUID(),
+      occurred_at: new Date().toISOString(),
+      name: value.name,
+      attributes: value.attributes ?? {},
+    });
+  } catch {
     return Response.json(
       { error: "attributes contain a number that cannot be represented safely" },
       { status: 400 },
     );
   }
-  return value;
 }
 
 async function readBody(request: Request): Promise<string | Response> {
@@ -152,22 +153,6 @@ function isEventInput(value: unknown): value is EventInput {
   }
   const attributes = value["attributes"];
   return attributes === undefined || isJsonObject(attributes);
-}
-
-function hasOnlySafeJsonNumbers(root: unknown): boolean {
-  const pending = [root];
-  while (pending.length > 0) {
-    const value = pending.pop()!;
-    if (typeof value === "number") {
-      if (!Number.isFinite(value) ||
-          (Number.isInteger(value) && !Number.isSafeInteger(value))) {
-        return false;
-      }
-    } else if (typeof value === "object" && value !== null) {
-      for (const child of Object.values(value)) pending.push(child);
-    }
-  }
-  return true;
 }
 
 function isJsonObject(value: unknown): value is Record<string, unknown> {

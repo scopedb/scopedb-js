@@ -16,9 +16,6 @@
 
 import { Client } from "scopedb";
 
-// Layer: quickstart (read-only and runnable).
-// Run: pnpm run example:catalog
-
 const client = new Client(
   process.env["SCOPEDB_ENDPOINT"] ?? "http://127.0.0.1:6543",
   {

@@ -16,9 +16,6 @@
 
 import { Client } from "scopedb";
 
-// Layer: integration template (type-checked, not directly runnable).
-// Requires a Web-standard server runtime with a waitUntil() lifecycle hook.
-
 export interface FetchExecutionContext {
   /** Keeps the invocation alive for background work after returning a response. */
   waitUntil(task: Promise<unknown>): void;
@@ -40,8 +37,8 @@ export function createServerlessTelemetryHandler(
   config: ServerlessTelemetryConfig,
 ): (request: Request, context: FetchExecutionContext) => Response {
   const client = new Client(config.endpoint, { apiKey: config.apiKey });
-  // Module scope lets warm invocations reuse the stream. Do not call shutdown()
-  // after each invocation because shutdown permanently closes it.
+  // Module scope lets warm invocations reuse the stream; flush() instead of
+  // shutdown() keeps the stream open across invocations.
   const telemetry = client
     .table(config.table, {
       database: config.database ?? "scopedb",
@@ -63,9 +60,6 @@ export function createServerlessTelemetryHandler(
     });
 
     if (accepted) {
-      // This settlement-first recipe flushes after every invocation. It favors
-      // lifecycle safety over large batches. For higher throughput in a process
-      // with graceful shutdown, use ../patterns/telemetry.ts.
       context.waitUntil(settleTelemetry());
     } else {
       console.error("serverless telemetry dropped locally", telemetry.stats());
@@ -76,10 +70,7 @@ export function createServerlessTelemetryHandler(
 
   async function settleTelemetry(): Promise<void> {
     try {
-      // Keep the real barrier promise alive. attemptTimeoutMs() bounds each HTTP
-      // attempt, while the platform's waitUntil budget governs the shared barrier.
       const report = await telemetry.flush();
-      // A module-level report can cover other concurrent invocations too.
       if (report.outcome !== "succeeded") {
         console.error("serverless telemetry loss", report);
       }

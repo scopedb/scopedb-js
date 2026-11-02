@@ -16,10 +16,6 @@
 
 import { Client } from "scopedb";
 
-// Layer: production pattern (runnable demo).
-// Guarantees bounded, observable best-effort delivery.
-// Does not retain rejected or ambiguous payloads for replay.
-
 const tableName = process.env["SCOPEDB_TABLE"];
 if (tableName === undefined || tableName.length === 0) {
   throw new Error(
@@ -38,6 +34,7 @@ const table = client.table(tableName, {
   schema: process.env["SCOPEDB_SCHEMA"] ?? "public",
 });
 
+// Continue mode keeps the stream open when a batch fails.
 const telemetry = table
   .appendStream({ failurePolicy: "continue" })
   .targetBatchBytes(1024 * 1024)
@@ -49,7 +46,7 @@ const telemetry = table
   .maxRetries(2)
   .circuitBreaker({ failureThreshold: 5, cooldownMs: 30_000 })
   .onBatchFailure(({ error, action }) => {
-    // Use a different diagnostics sink, never this same telemetry stream.
+    // Log to a separate diagnostics sink to avoid recursive telemetry writes.
     console.error("telemetry append error", action, error);
   })
   .build();
@@ -67,7 +64,7 @@ function track(
 }
 
 async function closeTelemetry(): Promise<void> {
-  // In a real service: stop accepting requests and await producer tasks first.
+  // Stop producers before calling shutdown() to settle all admitted rows.
   const report = await telemetry.shutdown();
   if (report.outcome !== "succeeded") {
     console.error("telemetry loss", report);
@@ -75,8 +72,6 @@ async function closeTelemetry(): Promise<void> {
   console.log("final stats", telemetry.stats());
 }
 
-// Export lifetime counter deltas to the application's metrics backend. Unknown
-// rows may have committed; do not count them as definite loss or replay them.
 function deliveryMetrics() {
   const stats = telemetry.stats();
   return {
@@ -91,8 +86,6 @@ function deliveryMetrics() {
   };
 }
 
-// Demo driver only. Applications normally call track() from request/logging
-// paths and closeTelemetry() from their graceful-shutdown hook.
 let rejectedLocally = 0;
 for (let request = 1; request <= 100; request += 1) {
   if (!track("request.completed", { request, status: 200 })) {

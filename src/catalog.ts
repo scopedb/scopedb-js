@@ -91,10 +91,15 @@ type Transport = (
 
 /** A complete declarative resource. Writes are single attempts and never automatically retried. */
 export class CatalogResource<T> {
-  constructor(
+  private constructor(
     private readonly transport: Transport,
     private readonly path: string[],
   ) {}
+
+  /** @internal */
+  static create<T>(transport: Transport, path: string[]): CatalogResource<T> {
+    return new CatalogResource(transport, path);
+  }
 
   async get(options: RequestOptions = {}): Promise<CatalogSnapshot<T>> {
     const result = await this.transport("GET", this.path, undefined, options);
@@ -125,8 +130,13 @@ export class CatalogResource<T> {
 /** Selects resources by unescaped names; reads return complete definitions without pagination. */
 export class Catalog {
   private readonly root: CatalogResource<CatalogDocument>;
-  constructor(private readonly transport: Transport) {
-    this.root = new CatalogResource(transport, []);
+  private constructor(private readonly transport: Transport) {
+    this.root = CatalogResource.create(transport, []);
+  }
+
+  /** @internal */
+  static create(transport: Transport): Catalog {
+    return new Catalog(transport);
   }
   get(options: RequestOptions = {}): Promise<CatalogSnapshot<CatalogDocument>> {
     return this.root.get(options);
@@ -138,10 +148,10 @@ export class Catalog {
     return this.root.apply(definition, options);
   }
   database(database: string): CatalogResource<CatalogDatabase> {
-    return new CatalogResource(this.transport, ["databases", database]);
+    return CatalogResource.create(this.transport, ["databases", database]);
   }
   schema(database: string, schema: string): CatalogResource<CatalogSchema> {
-    return new CatalogResource(this.transport, [
+    return CatalogResource.create(this.transport, [
       "databases",
       database,
       "schemas",
@@ -153,7 +163,7 @@ export class Catalog {
     schema: string,
     table: string,
   ): CatalogResource<CatalogTable> {
-    return new CatalogResource(this.transport, [
+    return CatalogResource.create(this.transport, [
       "databases",
       database,
       "schemas",
@@ -167,7 +177,7 @@ export class Catalog {
     schema: string,
     view: string,
   ): CatalogResource<CatalogView> {
-    return new CatalogResource(this.transport, [
+    return CatalogResource.create(this.transport, [
       "databases",
       database,
       "schemas",
@@ -180,6 +190,7 @@ export class Catalog {
 
 // Validate modeled fields without rebuilding objects: extensions survive a
 // read/modify/write cycle at every level, including future index/storage fields.
+/** @internal */
 export function validateCatalogResponse(
   value: unknown,
   path: string[],

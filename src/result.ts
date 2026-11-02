@@ -143,6 +143,7 @@ export class ResultSet {
     });
   }
 
+  /** @internal */
   static fromStatementResultSet(resultSet: StatementResultSet): ResultSet {
     return new ResultSet(
       new Schema(

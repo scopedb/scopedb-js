@@ -16,9 +16,6 @@
 
 import { Client } from "scopedb";
 
-// Layer: quickstart (runnable write).
-// Shows SDK-owned asynchronous batching with the default strict policy.
-
 const tableName = process.env["SCOPEDB_TABLE"];
 if (tableName === undefined || tableName.length === 0) {
   throw new Error(
@@ -46,7 +43,6 @@ const accepted = await stream.sendAll([
 ]);
 console.log("accepted locally", accepted.acceptedRows);
 
-// Successful strict shutdown confirms the accepted prefix committed. See the
-// bulk pattern for production failure handling and durable-resume boundaries.
+// shutdown() flushes all accepted rows and closes the stream.
 const committed = await stream.shutdown();
 console.log("committed remotely", committed?.num_rows_inserted ?? 0);

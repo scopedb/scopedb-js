@@ -110,15 +110,15 @@ export class Client {
   }
 
   statement(scopeql: string): Statement {
-    return new Statement(this, scopeql);
+    return Statement.create(this, scopeql);
   }
 
   statementHandle(statementId: string): StatementHandle {
-    return new StatementHandle(this, statementId);
+    return StatementHandle.create(this, statementId);
   }
 
   table(table: string, options: TableOptions = {}): Table {
-    return new Table(this, table, options);
+    return Table.create(this, table, options);
   }
 
   /**
@@ -137,7 +137,7 @@ export class Client {
   }
 
   catalog(): Catalog {
-    return new Catalog((method, path, definition, options) =>
+    return Catalog.create((method, path, definition, options) =>
       this.catalogRequest(method, path, definition, options)
     );
   }

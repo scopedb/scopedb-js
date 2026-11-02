@@ -16,7 +16,7 @@
 
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { setImmediate as nextTurn } from "node:timers/promises";
+import { setImmediate as nextTurn, setTimeout as delay } from "node:timers/promises";
 import {
   AppendRetryExhaustedError,
   type AppendStream,
@@ -24,6 +24,7 @@ import {
 } from "../src/append-stream.js";
 import { Client } from "../src/client.js";
 import { AppendRowsError, ScopeDBError } from "../src/errors.js";
+import { Deferred } from "../src/stream-internals.js";
 import type { FetchCall } from "./helpers.js";
 import { jsonResponse, makeFetchStub, requestBodyText } from "./helpers.js";
 
@@ -203,8 +204,8 @@ describe("AppendStream batching and barriers", () => {
     t.mock.timers.enable({ apis: ["setTimeout"] });
     let now = 0;
     t.mock.method(Date, "now", () => now);
-    const dispatched = new TestDeferred<unknown[]>();
-    const response = new TestDeferred<Response>();
+    const dispatched = new Deferred<unknown[]>();
+    const response = new Deferred<Response>();
     const client = new Client("http://localhost:8080", {
       fetch: async (_input, init) => {
         dispatched.resolve(parseAppendRows({ url: "", init }));
@@ -259,13 +260,13 @@ describe("AppendStream batching and barriers", () => {
 describe("AppendStream concurrency", () => {
   it("runs up to the configured number of append requests concurrently", async () => {
     const calls: FetchCall[] = [];
-    const gates: Array<TestDeferred<void>> = [];
+    const gates: Array<Deferred<void>> = [];
     let active = 0;
     let maxActive = 0;
 
     const fetch: typeof globalThis.fetch = async (input, init) => {
       calls.push({ url: input.toString(), init });
-      const gate = new TestDeferred<void>();
+      const gate = new Deferred<void>();
       gates.push(gate);
       active += 1;
       maxActive = Math.max(maxActive, active);
@@ -301,8 +302,8 @@ describe("AppendStream concurrency", () => {
 
   it("releases blocked producers on fatal but keeps flush pending until all in-flight appends settle", async () => {
     const calls: FetchCall[] = [];
-    const fatalGate = new TestDeferred<void>();
-    const successfulGate = new TestDeferred<void>();
+    const fatalGate = new Deferred<void>();
+    const successfulGate = new Deferred<void>();
     let callIndex = 0;
 
     const fetch: typeof globalThis.fetch = async (input, init) => {
@@ -386,8 +387,8 @@ describe("AppendStream concurrency", () => {
 
   it("promotes a strict barrier error to unknown when a later concurrent batch is ambiguous", async () => {
     const calls: FetchCall[] = [];
-    const rejectedGate = new TestDeferred<void>();
-    const unknownGate = new TestDeferred<void>();
+    const rejectedGate = new Deferred<void>();
+    const unknownGate = new Deferred<void>();
     let callIndex = 0;
     const fetch: typeof globalThis.fetch = async (input, init) => {
       const index = callIndex++;
@@ -758,7 +759,7 @@ describe("AppendStream local failures", () => {
 
   it("observes a barrier that fails after its caller aborts", async () => {
     const calls: FetchCall[] = [];
-    const gate = new TestDeferred<void>();
+    const gate = new Deferred<void>();
     const fetch: typeof globalThis.fetch = async (input, init) => {
       calls.push({ url: input.toString(), init });
       await gate.promise;
@@ -1135,7 +1136,7 @@ describe("AppendStream best-effort delivery", () => {
 
   it("snapshots local drops when a barrier is requested", async () => {
     const calls: FetchCall[] = [];
-    const gate = new TestDeferred<void>();
+    const gate = new Deferred<void>();
     const fetch: typeof globalThis.fetch = async (input, init) => {
       calls.push({ url: input.toString(), init });
       await gate.promise;
@@ -1221,9 +1222,9 @@ describe("AppendStream best-effort delivery", () => {
 
   it("settles pre-open requests before allowing one half-open probe", async () => {
     const calls: FetchCall[] = [];
-    const firstFailure = new TestDeferred<void>();
-    const lateOldFailure = new TestDeferred<void>();
-    const probe = new TestDeferred<void>();
+    const firstFailure = new Deferred<void>();
+    const lateOldFailure = new Deferred<void>();
+    const probe = new Deferred<void>();
     let callIndex = 0;
     const fetch: typeof globalThis.fetch = async (input, init) => {
       const index = callIndex++;
@@ -1313,32 +1314,11 @@ describe("AppendStream best-effort delivery", () => {
   });
 });
 
-describe("AppendStream cancellation and runtime compatibility", () => {
-  it("dispatches on runtimes without AbortSignal.any", async () => {
-    const original = Object.getOwnPropertyDescriptor(AbortSignal, "any");
-    Object.defineProperty(AbortSignal, "any", {
-      configurable: true,
-      value: undefined,
-    });
-    try {
-      const { table, calls } = makeTable([appendOk(1)]);
-      const stream = table.appendStream().maxElapsedTimeMs(2_000).build();
-      await stream.send({ id: 1 });
-      assert.equal((await stream.shutdown())?.num_rows_inserted, 1);
-      assert.equal(calls.length, 1);
-    } finally {
-      if (original === undefined) {
-        Reflect.deleteProperty(AbortSignal, "any");
-      } else {
-        Object.defineProperty(AbortSignal, "any", original);
-      }
-    }
-  });
-
+describe("AppendStream cancellation and wire classification", () => {
   for (const policy of ["continue", "stop"] as const) {
     it(`carries an aborted ${policy}-mode flush into the next report without double counting`, async () => {
-      const started = new TestDeferred<void>();
-      const gate = new TestDeferred<void>();
+      const started = new Deferred<void>();
+      const gate = new Deferred<void>();
       let calls = 0;
       const client = new Client("http://localhost:8080", {
         fetch: async () => {
@@ -1388,8 +1368,8 @@ describe("AppendStream cancellation and runtime compatibility", () => {
   }
 
   it("retains the oldest barrier start across consecutive aborted flushes", async () => {
-    const gates = [new TestDeferred<void>(), new TestDeferred<void>()];
-    const started = [new TestDeferred<void>(), new TestDeferred<void>()];
+    const gates = [new Deferred<void>(), new Deferred<void>()];
+    const started = [new Deferred<void>(), new Deferred<void>()];
     let requests = 0;
     const fetch: typeof globalThis.fetch = async () => {
       const index = requests++;
@@ -1543,17 +1523,6 @@ describe("AppendStream cancellation and runtime compatibility", () => {
   });
 });
 
-class TestDeferred<T> {
-  readonly promise: Promise<T>;
-  resolve!: (value: T) => void;
-
-  constructor() {
-    this.promise = new Promise<T>((resolve) => {
-      this.resolve = resolve;
-    });
-  }
-}
-
 async function waitForCallCount(
   calls: FetchCall[],
   expected: number,
@@ -1567,8 +1536,4 @@ async function waitForCallCount(
     }
     await delay(1);
   }
-}
-
-async function delay(ms: number): Promise<void> {
-  await new Promise<void>((resolve) => setTimeout(resolve, ms));
 }

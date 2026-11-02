@@ -21,9 +21,10 @@ import {
   AppendRowsError,
   Client,
   encodeAppendRecord,
+  FieldSchema,
   ResultSet,
+  Schema,
   ScopeDBError,
-  Table,
 } from "../src/index.js";
 import {
   jsonResponse,
@@ -39,15 +40,15 @@ describe("Table.identifier — ScopeQL quoting", () => {
 
   it("quotes database, schema, and table identifiers with special character escaping", () => {
     assert.equal(
-      new Table(client, "events").identifier(),
+      client.table("events").identifier(),
       "`scopedb`.`public`.`events`",
     );
     assert.equal(
-      new Table(client, "events", { database: "mydb", schema: "logs" }).identifier(),
+      client.table("events", { database: "mydb", schema: "logs" }).identifier(),
       "`mydb`.`logs`.`events`",
     );
     assert.equal(
-      new Table(client, "my`table\t\n\r\\ctrl\x01").identifier(),
+      client.table("my`table\t\n\r\\ctrl\x01").identifier(),
       "`scopedb`.`public`.`my\\`table\\t\\n\\r\\\\ctrl\\x01`",
     );
   });
@@ -127,18 +128,15 @@ describe("encodeAppendRecord and strict encoding", () => {
   });
 
   it("integrates with AppendStream.strictEncoding(true) and Table.append()", async () => {
-    const record = ResultSet.fromStatementResultSet({
-      metadata: {
-        num_rows: 1,
-        fields: [
-          { name: "id", data_type: "int" },
-          { name: "unsigned", data_type: "uint" },
-          { name: "time", data_type: "timestamp" },
-        ],
-      },
-      format: "json",
-      rows: [["-9223372036854775808", "9223372036854775807", "2026-10-29T00:00:00.123Z"]],
-    }).first();
+    const record = new ResultSet(
+      new Schema([
+        new FieldSchema("id", "int"),
+        new FieldSchema("unsigned", "uint"),
+        new FieldSchema("time", "timestamp"),
+      ]),
+      1,
+      [["-9223372036854775808", "9223372036854775807", "2026-10-29T00:00:00.123Z"]],
+    ).first();
     const { fn, calls } = makeFetchStub([
       jsonResponse(200, { status: "committed", num_rows_inserted: 1 }),
       jsonResponse(200, { status: "committed", num_rows_inserted: 3 }),
