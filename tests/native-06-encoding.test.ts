@@ -114,7 +114,7 @@ test("native 0.6 Append JSON encodings and atomic rejection", {
       // A valid row preceding the error must not be committed from the same request.
       await assert.rejects(table.append(`{"id":999}\n${input}`), (error) => {
         assert.ok(error instanceof AppendRowsError, input);
-        assert.equal(error.outcome, "rejected", input);
+        assert.equal(error.outcome, "failed", input);
         assert.ok([400, 422].includes(error.httpStatus ?? 0), input);
         return true;
       });

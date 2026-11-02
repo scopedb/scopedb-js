@@ -106,7 +106,7 @@ describe("Table.identifier — ScopeQL quoting", () => {
 
 describe("Table.append", () => {
   it("posts the NDJSON payload to the fully qualified table ingest endpoint", async () => {
-    const appendResult = { status: "committed", num_rows_inserted: 2 };
+    const appendResult = { status: "succeeded", num_rows_inserted: 2 };
     const { fn, calls } = makeFetchStub([
       jsonResponse(200, { status: "committed", num_rows_inserted: 2 }),
     ]);
@@ -175,7 +175,7 @@ describe("Table.append", () => {
       () => client.table("events").append(oversized),
       (error: unknown) => {
         assert.ok(error instanceof AppendRowsError);
-        assert.equal(error.outcome, "rejected");
+        assert.equal(error.outcome, "failed");
         assert.match(error.message, /8388608-byte append limit/);
         return true;
       },
@@ -222,7 +222,7 @@ describe("Table.append", () => {
       () => client.table("events").append('{"id":"bad"}'),
       (error: unknown) => {
         assert.ok(error instanceof AppendRowsError);
-        assert.equal(error.outcome, "rejected");
+        assert.equal(error.outcome, "failed");
         assert.deepEqual(error.rowErrors, [
           { row_index: 1, column: "id", message: "expected int, got string" },
         ]);
@@ -251,7 +251,7 @@ describe("Table.append", () => {
       () => client.table("events").append('{"id":1}'),
       (error: unknown) => {
         assert.ok(error instanceof AppendRowsError);
-        assert.equal(error.outcome, "unknown");
+        assert.equal(error.outcome, "ambiguous");
         assert.ok(error.isPersistent());
         return true;
       },
@@ -268,7 +268,7 @@ describe("Table.append", () => {
       () => client.table("events").append('{"id":1}'),
       (error: unknown) => {
         assert.ok(error instanceof AppendRowsError);
-        assert.equal(error.outcome, "unknown");
+        assert.equal(error.outcome, "ambiguous");
         assert.ok(error.isPersistent());
         assert.match(error.message, /2 inserted rows for a 1-row request/);
         return true;
@@ -298,7 +298,7 @@ describe("Table.append", () => {
         () => client.table("events").append('{"id":1}'),
         (error: unknown) => {
           assert.ok(error instanceof AppendRowsError);
-          assert.equal(error.outcome, "unknown");
+          assert.equal(error.outcome, "ambiguous");
           assert.equal(error.httpStatus, 200);
           assert.equal(error.requestId, requestId);
           return true;
@@ -334,7 +334,7 @@ describe("Table.catalog", () => {
     }).catalog().get();
 
     assert.deepEqual(description.definition, resource);
-    assert.equal(description.etag, '"v1"');
+    assert.equal(description.version, '"v1"');
   });
 
   it("does not let request options override the table handle identity", async () => {

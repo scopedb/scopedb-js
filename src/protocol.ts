@@ -121,23 +121,24 @@ export interface StatementRequest {
   format: ResultFormat;
 }
 
-export type AppendState = "committed" | "rejected" | "unknown";
+export type AppendOutcome = "succeeded" | "failed" | "ambiguous";
 
 export interface AppendRowsResult {
-  status: "committed";
+  status: "succeeded";
   num_rows_inserted: number;
 }
 
+/** Optional legacy diagnostics; modern errors describe the whole request. */
 export interface AppendRowError {
   row_index: number;
   column: string;
   message: string;
 }
 
-/** Normalized SDK diagnostics; Client decodes the server's nested details.status. */
+/** SDK outcome and optional legacy row diagnostics; modern errors describe the whole request. */
 export interface AppendRowsErrorPayload {
   message: string;
-  status: Exclude<AppendState, "committed">;
+  status: Exclude<AppendOutcome, "succeeded">;
   row_errors: AppendRowError[];
   row_errors_truncated: boolean;
 }

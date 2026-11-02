@@ -72,7 +72,7 @@ for (const [kind, sourcePath] of [
     const payloads: unknown[] = [];
     globalThis.fetch = async (_input, init) => {
       payloads.push(JSON.parse(requestBodyText(init)));
-      return Response.json({ status: "committed", num_rows_inserted: 1 });
+      return Response.json({ num_rows_inserted: 1 });
     };
     const template = await import(pathToFileURL(entry).href) as {
       POST(request: Request): Promise<Response>;

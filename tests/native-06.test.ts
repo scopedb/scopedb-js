@@ -41,23 +41,23 @@ test(
     const preview = await resource.apply(definition, { dryRun: true });
     assert.equal(preview.before, null);
     assert.ok(preview.after);
-    assert.ok(preview.etag);
+    assert.ok(preview.version);
     await assert.rejects(
       resource.get(),
       (e) => e instanceof ScopeDBError && e.httpStatus === 404,
     );
     try {
       const applied = await resource.apply(definition, {
-        ifMatch: preview.etag,
+        expectedVersion: preview.version,
       });
-      assert.equal((await resource.get()).etag, applied.etag);
+      assert.equal((await resource.get()).version, applied.version);
       await assert.rejects(
-        resource.apply(definition, { ifMatch: preview.etag }),
+        resource.apply(definition, { expectedVersion: preview.version }),
         (e: unknown) => {
           assert.ok(e instanceof ScopeDBError);
           assert.equal(e.httpStatus, 412);
-          assert.equal(e.code, "catalog_version_mismatch");
-          console.log(`STALE_ETAG code=${e.code}`);
+          assert.equal(e.code, "precondition_failed");
+          console.log(`STALE_VERSION code=${e.code}`);
           return true;
         },
       );
@@ -72,10 +72,9 @@ test(
         (e: unknown) => {
           assert.ok(e instanceof ScopeDBError);
           assert.ok(e instanceof AppendRowsError);
-          assert.equal(e.outcome, "rejected");
-          assert.equal(e.code, "invalid_schema");
-          assert.equal(e.rowErrors.length, 1);
-          assert.equal((e.details as { status: string }).status, "rejected");
+          assert.equal(e.outcome, "failed");
+          assert.equal(e.code, "bad_request");
+          assert.equal(e.httpStatus, 400);
           console.log(
             `REJECTED code=${e.code} row_errors=${e.rowErrors.length}`,
           );
@@ -147,11 +146,11 @@ test(
       await special.catalog().apply({
         ...specialSnapshot.definition,
         comment: "preserve indexes and expressions",
-      }, { ifMatch: specialSnapshot.etag });
+      }, { expectedVersion: specialSnapshot.version });
       await assert.rejects(
         special.catalog().delete({ dryRun: true }),
         (error) =>
-          error instanceof ScopeDBError && error.code === "invalid_request",
+          error instanceof ScopeDBError && error.code === "bad_request",
       );
       await view.delete();
       const deletion = await special.catalog().delete({ dryRun: true });
@@ -161,7 +160,7 @@ test(
         special.catalog().delete(),
         (error) =>
           error instanceof ScopeDBError &&
-          error.code === "catalog_destructive_change",
+          error.code === "conflict",
       );
       console.log(
         "CATALOG encoded identities, views, computed columns, indexes, and destructive guards passed",
@@ -173,15 +172,15 @@ test(
         ...snapshot.definition,
         comment: "conditional round trip",
       };
-      await table.catalog().apply(replacement, { ifMatch: snapshot.etag });
+      await table.catalog().apply(replacement, { expectedVersion: snapshot.version });
       await assert.rejects(
         table.catalog().delete({
-          ifMatch: snapshot.etag,
+          expectedVersion: snapshot.version,
           allowDestructive: true,
         }),
         (error) =>
           error instanceof ScopeDBError &&
-          error.code === "catalog_version_mismatch",
+          error.code === "precondition_failed",
       );
       assert.equal(
         (await table.catalog().get()).definition.comment,
@@ -211,10 +210,10 @@ test(
       const partial = await bestEffort.shutdown();
       assert.equal(partial.committedRows, 1);
       assert.equal(partial.failedRows, 1);
-      assert.equal(partial.unknownRows, 0);
+      assert.equal(partial.ambiguousRows, 0);
       assert.equal(
         bestEffort.stats().lastFailure?.error.code,
-        "invalid_schema",
+        "bad_request",
       );
       console.log(
         "STREAM bounded concurrent batches, flush intervals, and partial delivery passed",
@@ -262,8 +261,8 @@ test(
             if (++attempts === 1) {
               assert.equal(response.status, 200);
               assert.equal(
-                (await response.json() as { status: string }).status,
-                "committed",
+                (await response.json() as { num_rows_inserted: number }).num_rows_inserted,
+                1,
               );
               throw new TypeError("test discarded a committed acknowledgement");
             }
@@ -271,12 +270,12 @@ test(
           },
         });
         const writing = faultClient.table("events", { schema: name })
-          .appendStream().retryUnknown(replay).initialBackoff(0).build();
+          .appendStream().retryAmbiguous(replay).initialBackoff(0).build();
         await writing.send({ id: 3_000, source: label });
         if (replay) {
           assert.equal((await writing.shutdown())?.num_rows_inserted, 1);
         } else {await assert.rejects(writing.shutdown(), (error) =>
-            error instanceof AppendRowsError && error.outcome === "unknown");}
+            error instanceof AppendRowsError && error.outcome === "ambiguous");}
         const count = (await client.query(
           `FROM ${table.identifier()} WHERE source = '${label}' AGGREGATE count() AS n`,
         )).first()?.["n"];
@@ -295,8 +294,8 @@ test(
           const response = await fetch(input, init);
           assert.equal(response.status, 200);
           assert.equal(
-            (await response.json() as { status: string }).status,
-            "committed",
+            (await response.json() as { num_rows_inserted: number }).num_rows_inserted,
+            1,
           );
           return new Response(
             new ReadableStream({
@@ -313,7 +312,7 @@ test(
         },
       });
       const timed = timeoutClient.table("events", { schema: name })
-        .appendStream().retryUnknown(true).build();
+        .appendStream().retryAmbiguous(true).build();
       await timed.send({ id: 3_001, source: "timed" });
       await assert.rejects(
         timed.shutdown(),
@@ -347,7 +346,7 @@ test(
         .catalog();
       const unknownMutation = (error: unknown) =>
         error instanceof ScopeDBError &&
-        error.code === "catalog_commit_outcome_unknown";
+        error.catalogOutcome === "unknown";
       await assert.rejects(
         catalogFault.apply({
           name: "catalog_lost_ack",

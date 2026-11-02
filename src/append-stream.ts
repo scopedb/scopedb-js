@@ -77,18 +77,18 @@ export interface AppendAdmissionResult {
 /** Delivery outcomes covered by a continue-mode `flush()` or `shutdown()`. */
 export interface AppendDeliveryReport {
   /**
-   * `unknown` means no covered rows are known to have committed and at least
+   * `ambiguous` means no covered rows are known to have committed and at least
    * one batch may have committed; replay can insert duplicates.
    */
-  outcome: "ok" | "partial" | "failed" | "unknown";
+  outcome: "succeeded" | "partial" | "failed" | "ambiguous";
   acceptedRows: number;
   committedRows: number;
   failedRows: number;
-  unknownRows: number;
+  ambiguousRows: number;
   droppedRows: number;
   committedBatches: number;
   failedBatches: number;
-  unknownBatches: number;
+  ambiguousBatches: number;
   retries: number;
   /** Wall time from the oldest included barrier until every covered batch settled. */
   durationMs: number;
@@ -100,7 +100,7 @@ export interface AppendStreamStats {
   acceptedRows: number;
   committedRows: number;
   failedRows: number;
-  unknownRows: number;
+  ambiguousRows: number;
   droppedRows: number;
   droppedByReason: Readonly<{
     bufferFull: number;
@@ -121,7 +121,7 @@ export interface AppendBatchFailureEvent {
   error: ScopeDBError;
   batchRows: number;
   batchBytes: number;
-  outcome: "rejected" | "unknown";
+  outcome: "failed" | "ambiguous";
   action: "continuing" | "circuit-opened" | "stopped";
 }
 
@@ -134,7 +134,7 @@ export type AppendBarrierResult<Policy extends AppendFailurePolicy> =
   Policy extends "continue" ? AppendDeliveryReport : AppendRowsResult | null;
 
 interface RetryConfig {
-  retryUnknown: boolean;
+  retryAmbiguous: boolean;
   maxRetries: number;
   initialBackoffMs: number;
   maxBackoffMs: number;
@@ -198,10 +198,10 @@ interface IntervalCounters {
   acceptedRows: number;
   committedRows: number;
   failedRows: number;
-  unknownRows: number;
+  ambiguousRows: number;
   committedBatches: number;
   failedBatches: number;
-  unknownBatches: number;
+  ambiguousBatches: number;
   retries: number;
 }
 
@@ -209,7 +209,7 @@ interface LifetimeCounters {
   acceptedRows: number;
   committedRows: number;
   failedRows: number;
-  unknownRows: number;
+  ambiguousRows: number;
   droppedRows: number;
   retries: number;
 }
@@ -232,7 +232,7 @@ export class AppendStreamBuilder<
     (event: AppendBatchFailureEvent) => void | PromiseLike<void>
   > = [];
   private currentRetry: RetryConfig = {
-    retryUnknown: false,
+    retryAmbiguous: false,
     maxRetries: DEFAULT_MAX_RETRIES,
     initialBackoffMs: DEFAULT_INITIAL_BACKOFF_MS,
     maxBackoffMs: DEFAULT_MAX_BACKOFF_MS,
@@ -326,12 +326,12 @@ export class AppendStreamBuilder<
     return this;
   }
 
-  /** Allow replay after an unknown outcome. May duplicate committed rows; defaults to false. */
-  retryUnknown(enabled: boolean): this {
+  /** Allow replay after an ambiguous outcome. May duplicate committed rows; defaults to false. */
+  retryAmbiguous(enabled: boolean): this {
     if (typeof enabled !== "boolean") {
-      throw configError("retryUnknown must be a boolean");
+      throw configError("retryAmbiguous must be a boolean");
     }
-    this.currentRetry.retryUnknown = enabled;
+    this.currentRetry.retryAmbiguous = enabled;
     return this;
   }
 
@@ -458,7 +458,7 @@ export class AppendStream<Policy extends AppendFailurePolicy = "stop"> {
     acceptedRows: 0,
     committedRows: 0,
     failedRows: 0,
-    unknownRows: 0,
+    ambiguousRows: 0,
     droppedRows: 0,
     retries: 0,
   };
@@ -666,7 +666,7 @@ export class AppendStream<Policy extends AppendFailurePolicy = "stop"> {
       acceptedRows: this.lifetime.acceptedRows,
       committedRows: this.lifetime.committedRows,
       failedRows: this.lifetime.failedRows,
-      unknownRows: this.lifetime.unknownRows,
+      ambiguousRows: this.lifetime.ambiguousRows,
       droppedRows: this.lifetime.droppedRows,
       droppedByReason: { ...this.droppedByReason },
       retries: this.lifetime.retries,
@@ -913,7 +913,7 @@ export class AppendStream<Policy extends AppendFailurePolicy = "stop"> {
           throw retryExhaustedError(
             retries,
             lastError ??
-              unknownError(
+              ambiguousError(
                 asStreamError(new Error("append time budget expired")),
               ),
           );
@@ -934,7 +934,7 @@ export class AppendStream<Policy extends AppendFailurePolicy = "stop"> {
           const original = asStreamError(cause);
           const error = original instanceof AppendRowsError
             ? original
-            : unknownError(original);
+            : ambiguousError(original);
           if (
             error.context().has("write_timeout_ms") &&
             this.config.attemptTimeoutMs != null
@@ -944,7 +944,7 @@ export class AppendStream<Policy extends AppendFailurePolicy = "stop"> {
               this.config.attemptTimeoutMs,
             );
           }
-          ambiguous ||= error.outcome === "unknown";
+          ambiguous ||= error.outcome === "ambiguous";
           lastError = error;
           if (elapsed.signal.aborted || performance.now() >= deadline) {
             throw retryExhaustedError(retries, error);
@@ -980,8 +980,8 @@ export class AppendStream<Policy extends AppendFailurePolicy = "stop"> {
       }
     } catch (cause) {
       const error = asStreamError(cause);
-      throw ambiguous && appendOutcome(error) !== "unknown"
-        ? unknownError(error)
+      throw ambiguous && appendOutcome(error) !== "ambiguous"
+        ? ambiguousError(error)
         : error;
     } finally {
       clearTimeout(timer);
@@ -992,8 +992,8 @@ export class AppendStream<Policy extends AppendFailurePolicy = "stop"> {
     if (error.writeDetails !== undefined || error.serverRetryable === false) {
       return false;
     }
-    if (error.outcome === "rejected") return error.isTemporary();
-    if (!this.config.retry.retryUnknown) return false;
+    if (error.outcome === "failed") return error.isTemporary();
+    if (!this.config.retry.retryAmbiguous) return false;
     const status = error.httpStatus ?? 0;
     return status === 0 || (status >= 200 && status < 300) ||
       status === 408 || status === 429 || status >= 500;
@@ -1093,13 +1093,13 @@ export class AppendStream<Policy extends AppendFailurePolicy = "stop"> {
     }
 
     let result = this.interval.committedBatches === 0 ? null : {
-      status: "committed" as const,
+      status: "succeeded" as const,
       num_rows_inserted: this.interval.committedRows,
     };
     for (const { output } of previous) {
       const committed = output as AppendRowsResult | null;
       if (committed !== null) {
-        result ??= { status: "committed", num_rows_inserted: 0 };
+        result ??= { status: "succeeded", num_rows_inserted: 0 };
         result.num_rows_inserted += committed.num_rows_inserted;
       }
     }
@@ -1121,14 +1121,14 @@ export class AppendStream<Policy extends AppendFailurePolicy = "stop"> {
       this.reportedDroppedRows,
       droppedRowsAtBarrier,
     );
-    const errorRows = counters.failedRows + counters.unknownRows;
+    const errorRows = counters.failedRows + counters.ambiguousRows;
     const lostRows = errorRows + droppedRows;
     const outcome: AppendDeliveryReport["outcome"] = lostRows === 0
-      ? "ok"
+      ? "succeeded"
       : counters.committedRows > 0
       ? "partial"
-      : counters.unknownRows > 0
-      ? "unknown"
+      : counters.ambiguousRows > 0
+      ? "ambiguous"
       : "failed";
     const report: AppendDeliveryReport = {
       outcome,
@@ -1161,11 +1161,11 @@ export class AppendStream<Policy extends AppendFailurePolicy = "stop"> {
   }
 
   private recordBatchFailure(rows: number, error: ScopeDBError): void {
-    const unknown = appendOutcome(error) === "unknown";
+    const unknown = appendOutcome(error) === "ambiguous";
     if (unknown) {
-      this.lifetime.unknownRows += rows;
-      this.interval.unknownRows += rows;
-      this.interval.unknownBatches += 1;
+      this.lifetime.ambiguousRows += rows;
+      this.interval.ambiguousRows += rows;
+      this.interval.ambiguousBatches += 1;
     } else {
       this.lifetime.failedRows += rows;
       this.interval.failedRows += rows;
@@ -1264,10 +1264,10 @@ export class AppendStream<Policy extends AppendFailurePolicy = "stop"> {
   private setFatal(error: ScopeDBError): void {
     if (this.fatal !== null) {
       if (
-        appendOutcome(this.fatal) === "rejected" &&
-        appendOutcome(error) === "unknown"
+        appendOutcome(this.fatal) === "failed" &&
+        appendOutcome(error) === "ambiguous"
       ) {
-        error.withContext("prior_status", "rejected");
+        error.withContext("prior_status", "failed");
         this.fatal = error;
       }
       return;
@@ -1292,8 +1292,8 @@ export class AppendStream<Policy extends AppendFailurePolicy = "stop"> {
     if (this.interval.failedRows > 0) {
       this.fatal.withContext("failed_rows", this.interval.failedRows);
     }
-    if (this.interval.unknownRows > 0) {
-      this.fatal.withContext("unknown_rows", this.interval.unknownRows);
+    if (this.interval.ambiguousRows > 0) {
+      this.fatal.withContext("ambiguous_rows", this.interval.ambiguousRows);
     }
   }
 
@@ -1418,10 +1418,10 @@ function releaseRows(rows: BufferedRecord[]): void {
 /** A bounded retry policy exhausted its attempt or elapsed-time budget. */
 export class AppendRetryExhaustedError extends AppendRowsError {}
 
-function unknownError(cause: ScopeDBError): AppendRowsError {
+function ambiguousError(cause: ScopeDBError): AppendRowsError {
   const payload = {
     message: cause.message,
-    status: "unknown" as const,
+    status: "ambiguous" as const,
     row_errors: cause instanceof AppendRowsError ? [...cause.rowErrors] : [],
     row_errors_truncated: cause instanceof AppendRowsError &&
       cause.rowErrorsTruncated,
@@ -1478,7 +1478,7 @@ function rowCountMismatchError(
   return new AppendRowsError(
     {
       message: "append response row count does not match the request",
-      status: "unknown",
+      status: "ambiguous",
       row_errors: [],
       row_errors_truncated: false,
     },
@@ -1486,14 +1486,14 @@ function rowCountMismatchError(
   ).setPersistent();
 }
 
-function appendOutcome(error: ScopeDBError): "rejected" | "unknown" {
-  return error instanceof AppendRowsError && error.outcome === "rejected"
-    ? "rejected"
-    : "unknown";
+function appendOutcome(error: ScopeDBError): "failed" | "ambiguous" {
+  return error instanceof AppendRowsError && error.outcome === "failed"
+    ? "failed"
+    : "ambiguous";
 }
 
 function isAvailabilityFailure(error: ScopeDBError): boolean {
-  return appendOutcome(error) === "unknown" ||
+  return appendOutcome(error) === "ambiguous" ||
     error.isTemporary() ||
     error.isPersistent();
 }
@@ -1503,10 +1503,10 @@ function newIntervalCounters(): IntervalCounters {
     acceptedRows: 0,
     committedRows: 0,
     failedRows: 0,
-    unknownRows: 0,
+    ambiguousRows: 0,
     committedBatches: 0,
     failedBatches: 0,
-    unknownBatches: 0,
+    ambiguousBatches: 0,
     retries: 0,
   };
 }

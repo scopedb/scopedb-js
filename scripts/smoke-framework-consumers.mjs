@@ -218,7 +218,7 @@ async function handleRequest(request, response) {
       assert.equal(request.url, "/v1/catalog/databases/scopedb/schemas/public/tables/events/ingest");
       const rows = body.trim().split("\n").map((line) => JSON.parse(line));
       appendedRows.push(...rows);
-      result = { status: "committed", num_rows_inserted: rows.length };
+      result = { num_rows_inserted: rows.length };
     }
     response.writeHead(200, { "Content-Type": "application/json" });
     response.end(JSON.stringify(result));
