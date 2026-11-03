@@ -68,6 +68,10 @@ try {
     join(repositoryRoot, "examples/frameworks/cloudflare-worker/worker.ts"),
     join(consumerRoot, "worker/worker.ts"),
   );
+  await copyFile(
+    join(repositoryRoot, "examples/frameworks/cloudflare-worker/tail-worker.ts"),
+    join(consumerRoot, "worker/tail-worker.ts"),
+  );
   await run("npm", [
     "install", "--no-package-lock", "--no-audit", "--no-fund", "--no-save", "--include=dev",
     join(temporaryRoot, packed[0].filename),
@@ -91,11 +95,24 @@ try {
     "dev", "--local", "--ip", "127.0.0.1",
     ...Object.entries(bindings).flatMap(([key, value]) => ["--var", `${key}:${value}`]),
   ], join(consumerRoot, "worker"), "/");
-  assert.deepEqual(appendedRows.map((row) => row.name), ["Next.js", "Workers", "stream-first", "stream-last"]);
+  assert.deepEqual(
+    appendedRows.map((row) => row.name),
+    ["Next.js", "Workers", "stream-first", "stream-last", "worker.invocation", "worker.log"],
+  );
   assert.equal(
     appendedPayloads[2],
     '{"id":9007199254740993,"name":"stream-first"}\n{"id":9223372036854775807,"name":"stream-last"}',
     "Workers stream preserves exact integers through encoding, batching, compression, and delivery",
+  );
+  assert.equal(
+    appendedPayloads[3]?.includes('"id":9007199254740993'),
+    true,
+    "Workers tail template preserves exact bigint values in console logs",
+  );
+  assert.equal(
+    appendedPayloads[3]?.includes("redacted"),
+    false,
+    "Workers tail template omits request query strings",
   );
   console.log("packed framework consumer smoke passed");
 } finally {
@@ -158,6 +175,12 @@ async function smoke(name, command, args, cwd, path) {
       });
       assert.equal(streamed.status, 200);
       assert.deepEqual(await streamed.json(), { insertedRows: 2 });
+      const tailed = await fetch(new URL("/tail", url), {
+        method: "POST",
+        signal: AbortSignal.timeout(10_000),
+      });
+      assert.equal(tailed.status, 200);
+      assert.deepEqual(await tailed.json(), { ok: true });
     }
     console.log(`${name} packed consumer passed`);
   } finally {

@@ -11,5 +11,5 @@
     "target": "ES2022",
     "types": []
   },
-  "include": ["worker.ts", "entry.mjs"]
+  "include": ["worker.ts", "tail-worker.ts", "entry.mjs"]
 }

@@ -45,6 +45,7 @@ export function createServerlessTelemetryHandler(
       schema: config.schema ?? "public",
     })
     .appendStream({ failurePolicy: "continue" })
+    .maxConcurrentBatches(1)
     .attemptTimeoutMs(500)
     .maxRetries(1)
     .circuitBreaker(false)

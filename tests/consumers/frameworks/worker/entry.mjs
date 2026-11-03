@@ -15,6 +15,7 @@
  */
 
 import { Client } from "scopedb";
+import tailTemplate from "./tail-worker.js";
 import template from "./worker.js";
 
 export default {
@@ -23,7 +24,27 @@ export default {
    * @param {Parameters<typeof template.fetch>[1]} env
    */
   async fetch(request, env) {
-    if (new URL(request.url).pathname !== "/stream") {
+    const pathname = new URL(request.url).pathname;
+    if (pathname === "/tail") {
+      await tailTemplate.tail([
+        {
+          scriptName: "smoke-producer",
+          outcome: "ok",
+          eventTimestamp: 1762041600000,
+          event: {
+            request: {
+              url: "https://example.com/orders?secret=redacted",
+              method: "GET",
+            },
+            response: { status: 200 },
+          },
+          logs: [{ timestamp: 1762041600001, level: "info", message: ["order_checked", { id: 9007199254740993n }] }],
+          exceptions: [],
+        },
+      ], env);
+      return Response.json({ ok: true });
+    }
+    if (pathname !== "/stream") {
       return template.fetch(request, env);
     }
 
