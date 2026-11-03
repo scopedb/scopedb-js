@@ -126,6 +126,159 @@ for (const [kind, sourcePath] of [
   });
 }
 
+it("Cloudflare Tail Worker template normalizes traces, redacts credentials, and sanitizes logs", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "scopedb-tail-template-test-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const originalFetch = globalThis.fetch;
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  const source = await readFile(
+    new URL("../../examples/frameworks/cloudflare-worker/tail-worker.ts", import.meta.url),
+    "utf8",
+  );
+  const compiled = ts.transpileModule(source, {
+    compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ES2022 },
+  }).outputText;
+  const entry = join(directory, "tail-worker.mjs");
+  await writeFile(entry, compiled);
+  const moduleDirectory = join(directory, "node_modules", "scopedb");
+  await mkdir(moduleDirectory, { recursive: true });
+  await writeFile(
+    join(moduleDirectory, "package.json"),
+    JSON.stringify({ type: "module", exports: "./index.js" }),
+  );
+  await writeFile(
+    join(moduleDirectory, "index.js"),
+    `export * from ${JSON.stringify(new URL("../src/index.js", import.meta.url).href)};`,
+  );
+
+  const appendedTexts: string[] = [];
+  globalThis.fetch = async (_input, init) => {
+    const text = requestBodyText(init);
+    appendedTexts.push(text);
+    const rowCount = text.trim().split("\n").length;
+    return Response.json({ num_rows_inserted: rowCount });
+  };
+
+  const template = await import(pathToFileURL(entry).href) as {
+    default: {
+      tail(events: readonly unknown[], env: typeof environment): Promise<void>;
+    };
+  };
+
+  await template.default.tail([], environment);
+  assert.equal(appendedTexts.length, 0);
+
+  const cyclic: Record<string, unknown> = { ok: true };
+  cyclic["self"] = cyclic;
+  // eslint-disable-next-line no-sparse-arrays
+  const sparse = [1, , 3];
+
+  await template.default.tail([
+    {
+      scriptName: "checkout-worker",
+      outcome: "exception",
+      eventTimestamp: 1762041600000,
+      wallTime: 42.5,
+      cpuTime: 3.25,
+      event: {
+        request: {
+          url: "https://shop.example.com/api/checkout?token=secret-query-token#frag",
+          method: "POST",
+          headers: {
+            Authorization: "Bearer secret-header-token",
+            Cookie: "session=secret-cookie",
+            "CF-Ray": "8db1234567890abc-SJC",
+          },
+          cf: {
+            colo: "SJC",
+            country: "US",
+          },
+        },
+        response: {
+          status: 502,
+        },
+      },
+      logs: [
+        {
+          timestamp: 1762041600100,
+          level: "error",
+          message: [
+            "gateway failed",
+            {
+              order_id: 9007199254740993n,
+              unsafe_int: 9007199254740992,
+              not_finite: Number.NaN,
+              err: new Error("upstream timeout"),
+              cyclic,
+              sparse,
+            },
+          ],
+        },
+      ],
+      exceptions: [
+        {
+          timestamp: 1762041600200,
+          name: "GatewayTimeoutError",
+          message: "Credit card gateway timed out",
+          stack: "GatewayTimeoutError: Credit card gateway timed out\n    at fetch",
+        },
+      ],
+    },
+  ], environment);
+
+  assert.equal(appendedTexts.length, 1);
+  const rawPayload = appendedTexts[0]!;
+  assert.equal(rawPayload.includes("secret-query-token"), false);
+  assert.equal(rawPayload.includes("secret-header-token"), false);
+  assert.equal(rawPayload.includes("secret-cookie"), false);
+  assert.equal(rawPayload.includes('"order_id":9007199254740993'), true);
+  assert.equal(rawPayload.includes('"unsafe_int":"9007199254740992"'), true);
+
+  const rows = rawPayload.trim().split("\n").map((line) => JSON.parse(line) as Record<string, unknown>);
+  assert.equal(rows.length, 3);
+  assert.deepEqual(rows.map((row) => row["name"]), [
+    "worker.invocation",
+    "worker.log",
+    "worker.exception",
+  ]);
+  for (const row of rows) {
+    assert.equal(row["path"], "/api/checkout");
+    assert.equal(row["status"], 502);
+  }
+
+  const invocationAttrs = rows[0]!["attributes"] as Record<string, unknown>;
+  const logAttrs = rows[1]!["attributes"] as Record<string, unknown>;
+  const exceptionAttrs = rows[2]!["attributes"] as Record<string, unknown>;
+
+  assert.equal(invocationAttrs["invocation_id"], rows[0]!["event_id"]);
+  assert.equal(logAttrs["invocation_id"], rows[0]!["event_id"]);
+  assert.equal(exceptionAttrs["invocation_id"], rows[0]!["event_id"]);
+  assert.equal(invocationAttrs["script_name"], "checkout-worker");
+  assert.equal(invocationAttrs["outcome"], "exception");
+  assert.equal(invocationAttrs["method"], "POST");
+  assert.equal(invocationAttrs["ray_id"], "8db1234567890abc-SJC");
+  assert.equal(invocationAttrs["colo"], "SJC");
+  assert.equal(invocationAttrs["country"], "US");
+  assert.equal(invocationAttrs["wall_time_ms"], 42.5);
+  assert.equal(invocationAttrs["cpu_time_ms"], 3.25);
+  assert.equal(invocationAttrs["log_count"], 1);
+  assert.equal(invocationAttrs["exception_count"], 1);
+
+  const logMessage = logAttrs["message"] as unknown[];
+  assert.equal(logMessage[0], "gateway failed");
+  const logDetails = logMessage[1] as Record<string, unknown>;
+  assert.equal(logDetails["not_finite"], "NaN");
+  assert.deepEqual(logDetails["cyclic"], { ok: true, self: "[Circular]" });
+  assert.deepEqual(logDetails["sparse"], [1, null, 3]);
+  assert.equal((logDetails["err"] as Record<string, unknown>)["message"], "upstream timeout");
+
+  assert.equal(exceptionAttrs["exception_name"], "GatewayTimeoutError");
+  assert.equal(exceptionAttrs["message"], "Credit card gateway timed out");
+});
+
 function request(body: BodyInit): Request {
   const options: RequestInit & { duplex: "half" } = {
     method: "POST",
