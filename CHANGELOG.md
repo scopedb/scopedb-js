@@ -4,6 +4,11 @@ All significant changes to the ScopeDB JavaScript SDK are documented in this fil
 
 ## Unreleased
 
+### Bug Fixes
+
+* Send `withMaxElapsedSeconds()` as the supported `timeout_seconds` server deadline. Deprecate `withMaxEstimatedSeconds()`, which now throws `ConfigInvalid` before submission instead of silently sending an unsupported limit; remove it or use a total deadline as described in [query configuration](docs/usage.md#track-or-cancel-a-query).
+* Treat every HTTP 5xx statement submission response as an unknown execution outcome, including structured error responses. Such failures are not retryable by resubmitting the statement; inspect the existing statement ID when available.
+
 ## v0.4.0 (2026-11-02)
 
 ### Breaking Changes

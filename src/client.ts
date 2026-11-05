@@ -347,14 +347,14 @@ export class Client {
       );
     } catch (cause) {
       if (options.signal?.aborted) throw cause;
-      // A transport failure or an unstructured gateway response cannot prove
+      // A transport failure or a gateway response cannot prove
       // that submission was rejected. Replaying a mutating statement may run it twice.
       if (
         cause instanceof ScopeDBError &&
         ((cause.httpStatus === undefined && cause.isTemporary()) ||
-          (cause.code === undefined && cause.httpStatus !== undefined &&
-            (cause.httpStatus === 408 || cause.httpStatus === 429 ||
-              cause.httpStatus >= 500)))
+          (cause.httpStatus !== undefined &&
+            (cause.httpStatus >= 500 ||
+              (cause.code === undefined && (cause.httpStatus === 408 || cause.httpStatus === 429)))))
       ) {
         throw new ScopeDBError("Unexpected", "statement submission outcome is unknown", {
           cause,
