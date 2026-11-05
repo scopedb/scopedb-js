@@ -81,7 +81,6 @@ For long-running or non-idempotent statements, build a `Statement` with `client.
 ```ts
 const handle = await client.statement("SELECT 1 AS ready")
   .withMaxElapsedSeconds(60)
-  .withMaxEstimatedSeconds(5)
   .submit();
 
 // Inspect the last known state without a request.
@@ -95,7 +94,7 @@ console.log(latest.status);
 const result = await handle.wait();
 ```
 
-- `withMaxElapsedSeconds(seconds)` bounds total execution time including queueing; `withMaxEstimatedSeconds(seconds)` rejects queries whose estimated runtime exceeds the threshold.
+- `withMaxElapsedSeconds(seconds)` sets the server's `timeout_seconds` deadline, covering queueing, preparation, and execution. Estimated execution limits are unsupported: deprecated `withMaxEstimatedSeconds()` throws `ConfigInvalid` before submission. Remove that call, or use `withMaxElapsedSeconds()` if a total deadline is intended.
 - `refresh()` and `cancel()` return the cached snapshot without making a network request once the handle reaches a terminal state (`finished`, `failed`, or `cancelled`).
 - Passing an `AbortSignal` to `wait()`, `query()`, or `execute()` stops local waiting without cancelling the server statement; call `handle.cancel()` to request server-side cancellation.
 - `cancel()` returns the observed state, which may still be running or may already have finished. Inspect that state or call `wait()` for the final result; a cancellation request is not confirmation that a write was rolled back.
