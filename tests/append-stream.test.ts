@@ -28,6 +28,8 @@ import { Deferred } from "../src/stream-internals.js";
 import type { FetchCall } from "./helpers.js";
 import { jsonResponse, makeFetchStub, requestBodyText } from "./helpers.js";
 
+const realNow = performance.now.bind(performance);
+
 function appendOk(numRows = 1): Response {
   return jsonResponse(200, {
     status: "committed",
@@ -469,7 +471,9 @@ describe("AppendStream retry safety", () => {
     assert.equal(calls.length, 1);
   });
 
-  it("honors Retry-After before safely retrying a rejected batch", async () => {
+  it("honors Retry-After before safely retrying a rejected batch", async (t) => {
+    t.mock.timers.enable({ apis: ["setTimeout", "Date"] });
+    t.mock.method(performance, "now", () => Date.now());
     const rejected = appendRejected(429);
     rejected.headers.set("Retry-After", "0.02");
     const { table, calls } = makeTable([rejected, appendOk(1)]);
@@ -480,14 +484,20 @@ describe("AppendStream retry safety", () => {
       .build();
 
     await stream.send({ id: 1 });
-    const startedAt = Date.now();
-    assert.equal((await stream.shutdown())?.num_rows_inserted, 1);
-
-    assert.ok(Date.now() - startedAt >= 15);
+    const shutdown = stream.shutdown();
+    await waitForCallCount(calls, 1);
+    await nextTurn();
+    t.mock.timers.tick(19);
+    await nextTurn();
+    assert.equal(calls.length, 1);
+    t.mock.timers.tick(1);
+    assert.equal((await shutdown)?.num_rows_inserted, 1);
     assert.equal(calls.length, 2);
   });
 
-  it("cancels another batch's retry delay when the stream becomes fatal", async () => {
+  it("cancels another batch's retry delay when the stream becomes fatal", async (t) => {
+    t.mock.timers.enable({ apis: ["setTimeout", "Date"] });
+    t.mock.method(performance, "now", () => Date.now());
     const { table, calls } = makeTable([appendRejected(), appendRejected(422)]);
     const stream = table.appendStream()
       .targetBatchBytes(1)
@@ -499,16 +509,17 @@ describe("AppendStream retry safety", () => {
 
     await stream.send({ id: 1 });
     await waitForCallCount(calls, 1);
-    await delay(10);
+    await nextTurn();
     await stream.send({ id: 2 });
     await waitForCallCount(calls, 2);
 
-    const startedAt = Date.now();
-    await assert.rejects(() => stream.flush(), AppendRowsError);
-    assert.ok(
-      Date.now() - startedAt < 500,
-      "fatal append should interrupt another batch's retry backoff",
-    );
+    let settled = false;
+    const flushing = assert.rejects(() => stream.flush(), AppendRowsError).then(() => {
+      settled = true;
+    });
+    await nextTurn();
+    assert.equal(settled, true, "fatal append must settle without advancing the retry timer");
+    await flushing;
     assert.equal(calls.length, 2);
     assert.equal(stream.stats().failedRows, 2);
     assert.equal(stream.stats().ambiguousRows, 0);
@@ -1033,27 +1044,21 @@ describe("AppendStream best-effort delivery", () => {
     await stream.shutdown();
   });
 
-  it("classifies an attempt timeout as unknown and emits a batch failure", async () => {
+  it("classifies an attempt timeout as unknown and emits a batch failure", async (t) => {
+    t.mock.timers.enable({ apis: ["setTimeout", "Date"] });
+    t.mock.method(performance, "now", () => Date.now());
     const calls: FetchCall[] = [];
     const errors: ScopeDBError[] = [];
     let receivedSignal = false;
     const fetch: typeof globalThis.fetch = (input, init) => {
       calls.push({ url: input.toString(), init });
       return new Promise<Response>((_resolve, reject) => {
-        const fallback = setTimeout(
-          () =>
-            reject(
-              new Error("append request did not receive a timeout signal"),
-            ),
-          250,
-        );
         const signal = init?.signal;
         if (signal === undefined || signal === null) {
           return;
         }
         receivedSignal = true;
         const rejectAborted = () => {
-          clearTimeout(fallback);
           reject(signal.reason);
         };
         if (signal.aborted) {
@@ -1075,14 +1080,15 @@ describe("AppendStream best-effort delivery", () => {
       .build();
 
     await stream.send({ id: 1 });
-    const startedAt = Date.now();
-    const report = await stream.flush();
-
+    const flushing = stream.flush();
+    await waitForCallCount(calls, 1);
     assert.equal(receivedSignal, true);
-    assert.ok(
-      Date.now() - startedAt < 200,
-      "attempt timeout should bound the append",
-    );
+    t.mock.timers.tick(9);
+    await nextTurn();
+    assert.equal(calls[0]!.init?.signal?.aborted, false);
+    t.mock.timers.tick(1);
+    assert.equal(calls[0]!.init?.signal?.aborted, true);
+    const report = await flushing;
     assert.equal(report.outcome, "ambiguous");
     assert.equal(report.acceptedRows, 1);
     assert.equal(report.committedRows, 0);
@@ -1165,7 +1171,9 @@ describe("AppendStream best-effort delivery", () => {
     await stream.shutdown();
   });
 
-  it("opens the circuit after repeated availability failures and probes after cooldown", async () => {
+  it("opens the circuit after repeated availability failures and probes after cooldown", async (t) => {
+    t.mock.timers.enable({ apis: ["setTimeout", "Date"] });
+    t.mock.method(performance, "now", () => Date.now());
     const { table, calls } = makeTable([appendUnknown(), appendOk(1)]);
     const stream = table.appendStream({ failurePolicy: "continue" })
       .circuitBreaker({ failureThreshold: 1, cooldownMs: 20 })
@@ -1179,12 +1187,15 @@ describe("AppendStream best-effort delivery", () => {
     await stream.send({ id: 2 });
     const flushing = stream.flush();
 
-    await delay(5);
+    await nextTurn();
+    t.mock.timers.tick(19);
+    await nextTurn();
     assert.equal(calls.length, 1);
     assert.equal(stream.stats().circuitState, "open");
     assert.equal(stream.trySend({ id: 3 }), false);
     assert.equal(stream.stats().droppedByReason.circuitOpen, 1);
 
+    t.mock.timers.tick(1);
     const report = await flushing;
     assert.equal(report.outcome, "partial");
     assert.equal(report.ambiguousRows, 1);
@@ -1194,7 +1205,9 @@ describe("AppendStream best-effort delivery", () => {
     await stream.shutdown();
   });
 
-  it("allows one trySend probe after an idle circuit cooldown", async () => {
+  it("allows one trySend probe after an idle circuit cooldown", async (t) => {
+    t.mock.timers.enable({ apis: ["setTimeout", "Date"] });
+    t.mock.method(performance, "now", () => Date.now());
     const { table, calls } = makeTable([appendUnknown(), appendOk(1)]);
     const stream = table.appendStream({ failurePolicy: "continue" })
       .circuitBreaker({ failureThreshold: 1, cooldownMs: 10 })
@@ -1206,9 +1219,9 @@ describe("AppendStream best-effort delivery", () => {
     const failed = await stream.flush();
     assert.equal(failed.ambiguousRows, 1);
     assert.equal(stream.stats().circuitState, "open");
+    t.mock.timers.tick(9);
     assert.equal(stream.trySend({ id: 2 }), false);
-
-    await delay(15);
+    t.mock.timers.tick(1);
     assert.equal(stream.trySend({ id: 3 }), true);
     assert.equal(stream.trySend({ id: 4 }), false);
     const recovered = await stream.flush();
@@ -1220,7 +1233,9 @@ describe("AppendStream best-effort delivery", () => {
     await stream.shutdown();
   });
 
-  it("settles pre-open requests before allowing one half-open probe", async () => {
+  it("settles pre-open requests before allowing one half-open probe", async (t) => {
+    t.mock.timers.enable({ apis: ["setTimeout", "Date"] });
+    t.mock.method(performance, "now", () => Date.now());
     const calls: FetchCall[] = [];
     const firstFailure = new Deferred<void>();
     const lateOldFailure = new Deferred<void>();
@@ -1259,12 +1274,17 @@ describe("AppendStream best-effort delivery", () => {
     const flushing = stream.flush();
 
     firstFailure.resolve();
-    await delay(20);
+    await nextTurn();
+    t.mock.timers.tick(20);
+    await nextTurn();
     assert.equal(calls.length, 2, "old in-flight request must settle first");
 
     lateOldFailure.resolve();
+    await nextTurn();
+    t.mock.timers.tick(20);
     await waitForCallCount(calls, 3);
-    await delay(20);
+    t.mock.timers.tick(20);
+    await nextTurn();
     assert.equal(calls.length, 3, "only one half-open probe may run");
 
     probe.resolve();
@@ -1527,13 +1547,13 @@ async function waitForCallCount(
   calls: FetchCall[],
   expected: number,
 ): Promise<void> {
-  const deadline = Date.now() + 1_000;
+  const deadline = realNow() + 1_000;
   while (calls.length < expected) {
-    if (Date.now() >= deadline) {
+    if (realNow() >= deadline) {
       assert.fail(
         `timed out waiting for ${expected} fetch call(s), got ${calls.length}`,
       );
     }
-    await delay(1);
+    await nextTurn();
   }
 }
