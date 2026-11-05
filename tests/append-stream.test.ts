@@ -547,44 +547,30 @@ describe("AppendStream retry safety", () => {
     assert.equal(stream.stats().retries, 1);
   });
 
-  it("treats an invalid success response as unknown when retries are disabled", async () => {
-    const { table, calls } = makeTable([jsonResponse(200, {})]);
-    const stream = table.appendStream()
-      .maxRetries(0)
-      .initialBackoff(0)
-      .build();
+  for (const entry of [
+    { name: "an invalid success response", responses: [jsonResponse(200, {})], persistent: false },
+    { name: "a transport failure", responses: [], persistent: true },
+  ]) {
+    it(`treats ${entry.name} as unknown when retries are disabled`, async () => {
+      const { table, calls } = makeTable(entry.responses);
+      const stream = table.appendStream()
+        .maxRetries(0)
+        .initialBackoff(0)
+        .build();
 
-    await stream.send({ id: 1 });
-    await assert.rejects(
-      () => stream.flush(),
-      (error: unknown) => {
-        assert.ok(error instanceof AppendRowsError);
-        assert.equal(error.outcome, "ambiguous");
-        return true;
-      },
-    );
-    assert.equal(calls.length, 1);
-  });
-
-  it("treats a transport failure as unknown when retries are disabled", async () => {
-    const { table, calls } = makeTable([]);
-    const stream = table.appendStream()
-      .maxRetries(0)
-      .initialBackoff(0)
-      .build();
-
-    await stream.send({ id: 1 });
-    await assert.rejects(
-      () => stream.flush(),
-      (error: unknown) => {
-        assert.ok(error instanceof AppendRowsError);
-        assert.equal(error.outcome, "ambiguous");
-        assert.ok(error.isPersistent());
-        return true;
-      },
-    );
-    assert.equal(calls.length, 1);
-  });
+      await stream.send({ id: 1 });
+      await assert.rejects(
+        () => stream.flush(),
+        (error: unknown) => {
+          assert.ok(error instanceof AppendRowsError, entry.name);
+          assert.equal(error.outcome, "ambiguous", entry.name);
+          if (entry.persistent) assert.ok(error.isPersistent(), entry.name);
+          return true;
+        },
+      );
+      assert.equal(calls.length, 1, entry.name);
+    });
+  }
 
   it("preserves the append error after exhausting safe retries", async () => {
     const finalResponse = appendRejected();
