@@ -35,6 +35,7 @@ const sdkApiKey = "packed-smoke-sdk-key";
 const applicationWriteToken = "packed-smoke-write-token";
 const appendedRows = [];
 const appendedPayloads = [];
+const appendWaiters = new Set();
 const backend = createServer(handleRequest).listen(0, "127.0.0.1");
 await once(backend, "listening");
 const bindings = {
@@ -68,10 +69,6 @@ try {
     join(repositoryRoot, "examples/frameworks/cloudflare-worker/worker.ts"),
     join(consumerRoot, "worker/worker.ts"),
   );
-  await copyFile(
-    join(repositoryRoot, "examples/frameworks/cloudflare-worker/tail-worker.ts"),
-    join(consumerRoot, "worker/tail-worker.ts"),
-  );
   await run("npm", [
     "install", "--no-package-lock", "--no-audit", "--no-fund", "--no-save", "--include=dev",
     join(temporaryRoot, packed[0].filename),
@@ -97,22 +94,12 @@ try {
   ], join(consumerRoot, "worker"), "/");
   assert.deepEqual(
     appendedRows.map((row) => row.name),
-    ["Next.js", "Workers", "stream-first", "stream-last", "worker.invocation", "worker.log"],
+    ["Next.js", "Workers", "stream-first", "stream-last"],
   );
   assert.equal(
     appendedPayloads[2],
     '{"id":9007199254740993,"name":"stream-first"}\n{"id":9223372036854775807,"name":"stream-last"}',
     "Workers stream preserves exact integers through encoding, batching, compression, and delivery",
-  );
-  assert.equal(
-    appendedPayloads[3]?.includes('"id":9007199254740993'),
-    true,
-    "Workers tail template preserves exact bigint values in console logs",
-  );
-  assert.equal(
-    appendedPayloads[3]?.includes("redacted"),
-    false,
-    "Workers tail template omits request query strings",
   );
   console.log("packed framework consumer smoke passed");
 } finally {
@@ -157,6 +144,7 @@ async function smoke(name, command, args, cwd, path) {
     }
     assert.equal(response.status, 200);
     assert.deepEqual(await response.json(), { ready: 1 });
+    const rowsBeforeWrite = appendedRows.length;
     response = await fetch(url, {
       method: "POST",
       headers: {
@@ -166,21 +154,24 @@ async function smoke(name, command, args, cwd, path) {
       body: JSON.stringify({ name, attributes: { source: "packed-sdk" } }),
       signal: AbortSignal.timeout(10_000),
     });
-    assert.equal(response.status, 201);
-    assert.deepEqual(await response.json(), { insertedRows: 1 });
     if (name === "Workers") {
+      assert.equal(response.status, 202);
+      const body = await response.json();
+      assert.equal(body.accepted, true);
+      assert.equal(typeof body.eventId, "string");
+      assert.ok(body.eventId.length > 0);
+      await waitForAppendedRowCount(rowsBeforeWrite + 1);
+      assert.equal(appendedRows[rowsBeforeWrite]?.event_id, body.eventId);
+
       const streamed = await fetch(new URL("/stream", url), {
         method: "POST",
         signal: AbortSignal.timeout(10_000),
       });
       assert.equal(streamed.status, 200);
       assert.deepEqual(await streamed.json(), { insertedRows: 2 });
-      const tailed = await fetch(new URL("/tail", url), {
-        method: "POST",
-        signal: AbortSignal.timeout(10_000),
-      });
-      assert.equal(tailed.status, 200);
-      assert.deepEqual(await tailed.json(), { ok: true });
+    } else {
+      assert.equal(response.status, 201);
+      assert.deepEqual(await response.json(), { insertedRows: 1 });
     }
     console.log(`${name} packed consumer passed`);
   } finally {
@@ -206,6 +197,26 @@ async function smoke(name, command, args, cwd, path) {
       clearTimeout(timeout);
     }
   }
+}
+
+function waitForAppendedRowCount(expectedCount) {
+  if (appendedRows.length >= expectedCount) {
+    return Promise.resolve();
+  }
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      appendWaiters.delete(check);
+      reject(new Error(`timed out waiting for ${expectedCount} appended row(s), got ${appendedRows.length}`));
+    }, 10_000);
+    function check() {
+      if (appendedRows.length >= expectedCount) {
+        clearTimeout(timer);
+        appendWaiters.delete(check);
+        resolve();
+      }
+    }
+    appendWaiters.add(check);
+  });
 }
 
 async function run(command, args, cwd = consumerRoot) {
@@ -268,6 +279,9 @@ async function handleRequest(request, response) {
       const rows = body.trim().split("\n").map((line) => JSON.parse(line));
       appendedRows.push(...rows);
       appendedPayloads.push(body);
+      for (const notify of [...appendWaiters]) {
+        notify();
+      }
       result = { num_rows_inserted: rows.length };
     }
     response.writeHead(200, { "Content-Type": "application/json" });

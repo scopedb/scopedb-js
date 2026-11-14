@@ -14,11 +14,23 @@
  * limitations under the License.
  */
 
-import { Client, encodeAppendRecord } from "scopedb";
+import {
+  AppendRowsError,
+  Client,
+  encodeAppendRecord,
+  ScopeDBError,
+  type Table,
+} from "scopedb";
 
-// ScopeDB uses standard Fetch APIs and does not require the Workers
-// `nodejs_compat` flag. Store both keys below as Worker secrets. Replace the
-// example bearer check with your application's normal authentication.
+// ScopeDB uses standard Web APIs (`fetch`, `CompressionStream`, `TextEncoder`,
+// `crypto.randomUUID()`) and does not require the Workers `nodejs_compat` flag.
+// Store `SCOPEDB_ENDPOINT`, `SCOPEDB_API_KEY`, and `APP_WRITE_TOKEN` as Worker
+// secrets, and replace the example bearer check with your application's auth.
+//
+// To collect Worker invocations, `console.*` logs, and uncaught exceptions
+// across a Cloudflare account without modifying application handlers, deploy
+// https://github.com/scopedb/cloudflare-tail-worker (guide:
+// https://www.scopedb.io/docs/guides/analyze-cloudflare-worker-traffic).
 interface Env {
   SCOPEDB_ENDPOINT: string;
   SCOPEDB_API_KEY: string;
@@ -28,24 +40,31 @@ interface Env {
   SCOPEDB_SCHEMA?: string;
 }
 
+export interface WorkerExecutionContext {
+  waitUntil(promise: Promise<unknown>): void;
+}
+
 const MAX_EVENT_BYTES = 64 * 1024;
 
 export default {
-  async fetch(request: Request, env: Env): Promise<Response> {
+  async fetch(
+    request: Request,
+    env: Env,
+    ctx: WorkerExecutionContext,
+  ): Promise<Response> {
     // Generate this binding type from your Wrangler config in a real project.
     // Runtime checks keep missing secrets fail-closed despite TypeScript types.
     const endpoint = requiredBinding(env.SCOPEDB_ENDPOINT, "SCOPEDB_ENDPOINT");
     const apiKey = requiredBinding(env.SCOPEDB_API_KEY, "SCOPEDB_API_KEY");
     const tableName = requiredBinding(env.SCOPEDB_TABLE, "SCOPEDB_TABLE");
     const writeToken = requiredBinding(env.APP_WRITE_TOKEN, "APP_WRITE_TOKEN");
-    const client = new Client(endpoint, {
-      apiKey,
-    });
+    const client = new Client(endpoint, { apiKey });
 
     if (request.method === "GET") {
       const result = await client.query("SELECT 1 AS ready", {
         signal: AbortSignal.timeout(10_000),
       });
+      // Use `integerMode: "string"` when returning arbitrary 64-bit integer columns as JSON.
       return Response.json(result.first({ integerMode: "number" }));
     }
 
@@ -60,31 +79,61 @@ export default {
       });
     }
 
-    const record = await readEventRecord(request);
-    if (record instanceof Response) {
-      return record;
+    // Validate and encode synchronously before returning 202 so malformed JSON,
+    // oversized bodies, and unsafe numbers fail closed on the request path.
+    const prepared = await readEventRecord(request);
+    if (prepared instanceof Response) {
+      return prepared;
     }
 
     const table = client.table(tableName, {
       database: env.SCOPEDB_DATABASE ?? "scopedb",
       schema: env.SCOPEDB_SCHEMA ?? "public",
     });
-    const result = await table.append(record, {
-      signal: AbortSignal.timeout(30_000),
-    });
+    ctx.waitUntil(appendEventInBackground(table, prepared.ndjson));
     return Response.json(
-      { insertedRows: result.num_rows_inserted },
-      { status: 201 },
+      { accepted: true, eventId: prepared.eventId },
+      { status: 202 },
     );
   },
 };
+
+async function appendEventInBackground(
+  table: Table,
+  ndjson: string,
+): Promise<void> {
+  try {
+    await table.append(ndjson, {
+      signal: AbortSignal.timeout(25_000),
+    });
+  } catch (error) {
+    if (error instanceof ScopeDBError) {
+      console.error("background event append failed", {
+        kind: error.kind,
+        code: error.code,
+        httpStatus: error.httpStatus,
+        requestId: error.requestId,
+        outcome: error instanceof AppendRowsError ? error.outcome : undefined,
+      });
+      return;
+    }
+    console.error("background event append failed", error);
+  }
+}
 
 interface EventInput {
   name: string;
   attributes?: Record<string, unknown>;
 }
 
-async function readEventRecord(request: Request): Promise<string | Response> {
+interface PreparedEventRecord {
+  eventId: string;
+  ndjson: string;
+}
+
+async function readEventRecord(
+  request: Request,
+): Promise<PreparedEventRecord | Response> {
   const declaredBytes = Number(request.headers.get("Content-Length"));
   if (Number.isFinite(declaredBytes) && declaredBytes > MAX_EVENT_BYTES) {
     return Response.json({ error: "request body is too large" }, { status: 413 });
@@ -105,13 +154,17 @@ async function readEventRecord(request: Request): Promise<string | Response> {
       { status: 400 },
     );
   }
+  const eventId = crypto.randomUUID();
   try {
-    return encodeAppendRecord({
-      event_id: crypto.randomUUID(),
-      occurred_at: new Date().toISOString(),
-      name: value.name,
-      attributes: value.attributes ?? {},
-    });
+    return {
+      eventId,
+      ndjson: encodeAppendRecord({
+        event_id: eventId,
+        occurred_at: new Date().toISOString(),
+        name: value.name,
+        attributes: value.attributes ?? {},
+      }),
+    };
   } catch {
     return Response.json(
       { error: "attributes contain a number that cannot be represented safely" },

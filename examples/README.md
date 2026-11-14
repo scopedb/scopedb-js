@@ -63,11 +63,11 @@ Copy a template into your application and supply the host integration described 
 
 ## Framework and runtime templates
 
-| Runtime                 | Template                                                                                     | Notes                                                                                                     |
-| ----------------------- | -------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------- |
-| Next.js                 | [`frameworks/nextjs-route-handler/route.ts`](frameworks/nextjs-route-handler/route.ts)       | App Router Route Handler with `server-only`, bearer write authentication (`APP_WRITE_TOKEN`), and limits  |
-| Cloudflare Workers      | [`frameworks/cloudflare-worker/worker.ts`](frameworks/cloudflare-worker/worker.ts)           | Standard Web Fetch APIs without `nodejs_compat`; store `SCOPEDB_API_KEY` and `APP_WRITE_TOKEN` as secrets |
-| Cloudflare Tail Workers | [`frameworks/cloudflare-worker/tail-worker.ts`](frameworks/cloudflare-worker/tail-worker.ts) | Appends Worker invocation summaries, console logs, and uncaught exceptions without `nodejs_compat`        |
-| Bun                     | Any runnable ESM example                                                                     | Install with `bun add scopedb`; uses standard Web Fetch and CompressionStream APIs                        |
+| Runtime                 | Template                                                                               | Notes                                                                                                                                                                              |
+| ----------------------- | -------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Next.js                 | [`frameworks/nextjs-route-handler/route.ts`](frameworks/nextjs-route-handler/route.ts) | App Router Route Handler with `server-only`, bearer write authentication (`APP_WRITE_TOKEN`), and limits                                                                           |
+| Cloudflare Workers      | [`frameworks/cloudflare-worker/worker.ts`](frameworks/cloudflare-worker/worker.ts)     | Edge `fetch(request, env, ctx)` query and `ctx.waitUntil()` event ingestion without `nodejs_compat`; store `SCOPEDB_API_KEY` and `APP_WRITE_TOKEN` as secrets                      |
+| Cloudflare Tail Workers | [`scopedb/cloudflare-tail-worker`](https://github.com/scopedb/cloudflare-tail-worker)  | Account-wide Worker invocation, log, and exception collector with Catalog views; see the [Tail Worker guide](https://www.scopedb.io/docs/guides/analyze-cloudflare-worker-traffic) |
+| Bun                     | Any runnable ESM example                                                               | Install with `bun add scopedb`; uses standard Web Fetch and CompressionStream APIs                                                                                                 |
 
 For SDK development and example validation, see [Contributing](../CONTRIBUTING.md).

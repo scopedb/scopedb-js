@@ -1,6 +1,6 @@
 # ScopeDB SDK for JavaScript and TypeScript
 
-[![Version](https://img.shields.io/npm/v/scopedb)](https://www.npmjs.com/package/scopedb) [![Docs](https://img.shields.io/badge/docs-scopedb.io-blue)](https://www.scopedb.io/docs/developer/nodejs) [![CI](https://img.shields.io/github/actions/workflow/status/scopedb/scopedb-js/ci.yml?branch=main&label=CI)](https://github.com/scopedb/scopedb-js/actions/workflows/ci.yml) [![License](https://img.shields.io/badge/license-Apache--2.0-blue)](https://www.apache.org/licenses/LICENSE-2.0)
+[![Version](https://img.shields.io/npm/v/scopedb)](https://www.npmjs.com/package/scopedb) [![Docs](https://img.shields.io/badge/docs-scopedb.io-blue)](https://www.scopedb.io/docs/guides/sdks/nodejs) [![CI](https://img.shields.io/github/actions/workflow/status/scopedb/scopedb-js/ci.yml?branch=main&label=CI)](https://github.com/scopedb/scopedb-js/actions/workflows/ci.yml) [![License](https://img.shields.io/badge/license-Apache--2.0-blue)](https://www.apache.org/licenses/LICENSE-2.0)
 
 The official JavaScript and TypeScript SDK for [ScopeDB](https://www.scopedb.io). Query event data, ingest records in batches, and manage table definitions from your server application.
 
@@ -52,21 +52,22 @@ console.log("Written rows:", result?.num_rows_inserted ?? 0);
 
 ## Find what you need
 
-| Task                         | Documentation                                                           |
-| ---------------------------- | ----------------------------------------------------------------------- |
-| Configure a connection       | [Connection options](docs/usage.md#connect-to-scopedb)                  |
-| Read query results           | [Result conversion](docs/usage.md#read-query-results)                   |
-| Track or cancel a query      | [Statement handles](docs/usage.md#track-or-cancel-a-query)              |
-| Read or change table schemas | [Catalog](docs/usage.md#read-or-change-table-schemas)                   |
-| Encode rows for Append       | [JSON encodings](docs/usage.md#json-encoding-for-append)                |
-| Tune batching and retries    | [Append streams](docs/usage.md#append-rows)                             |
-| Write logs or telemetry      | [Telemetry](docs/usage.md#long-lived-telemetry-and-rate-limiting)       |
-| Set timeouts or HTTP options | [Client configuration](docs/usage.md#timeouts-and-http-options)         |
-| Inspect a failure            | [Errors](docs/usage.md#errors)                                          |
-| Use Next.js, Workers, or Bun | [Runtime templates](examples/README.md#framework-and-runtime-templates) |
-| Load from CommonJS           | [Dynamic import](docs/usage.md#commonjs-applications)                   |
+| Task                              | Documentation                                                                                                                                                |
+| --------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Configure a connection            | [Connection options](docs/usage.md#connect-to-scopedb)                                                                                                       |
+| Read query results                | [Result conversion](docs/usage.md#read-query-results)                                                                                                        |
+| Track or cancel a query           | [Statement handles](docs/usage.md#track-or-cancel-a-query)                                                                                                   |
+| Read or change table schemas      | [Catalog](docs/usage.md#read-or-change-table-schemas)                                                                                                        |
+| Encode rows for Append            | [JSON encodings](docs/usage.md#json-encoding-for-append)                                                                                                     |
+| Tune batching and retries         | [Append streams](docs/usage.md#append-rows)                                                                                                                  |
+| Write logs or telemetry           | [Telemetry](docs/usage.md#long-lived-telemetry-and-rate-limiting)                                                                                            |
+| Set timeouts or HTTP options      | [Client configuration](docs/usage.md#timeouts-and-http-options)                                                                                              |
+| Inspect a failure                 | [Errors](docs/usage.md#errors)                                                                                                                               |
+| Use Next.js, Workers, or Bun      | [Runtime templates](examples/README.md#framework-and-runtime-templates)                                                                                      |
+| Observe Cloudflare Worker traffic | [Tail Worker guide](https://www.scopedb.io/docs/guides/analyze-cloudflare-worker-traffic) and [collector](https://github.com/scopedb/cloudflare-tail-worker) |
+| Load from CommonJS                | [Dynamic import](docs/usage.md#commonjs-applications)                                                                                                        |
 
-For complete programs, see the [examples](examples/README.md). For ScopeQL syntax, see the [query guide](https://www.scopedb.io/docs/guides/query-events) and [language reference](https://www.scopedb.io/docs/reference). The [SDK guide](https://www.scopedb.io/docs/developer/nodejs) and [changelog](CHANGELOG.md) provide additional context.
+For complete programs, see the [examples](examples/README.md). For ScopeQL syntax, see the [query guide](https://www.scopedb.io/docs/guides/query-events) and [language reference](https://www.scopedb.io/docs/reference). The [SDK guide](https://www.scopedb.io/docs/guides/sdks/nodejs) and [changelog](CHANGELOG.md) provide additional context.
 
 For version upgrades, see the [release notes and migration guides](CHANGELOG.md).
 
