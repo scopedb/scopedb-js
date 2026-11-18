@@ -33,6 +33,18 @@ import {
 const noDelay = { initialDelayMs: 0, maxDelayMs: 0 };
 
 describe("Statement.submit", () => {
+  it("rejects unsupported estimated execution limits before sending", () => {
+    const { fn, calls } = makeFetchStub([]);
+    const client = new Client("https://example.com", { fetch: fn });
+    assert.throws(() => client.statement("SELECT 1").withMaxEstimatedSeconds(3), (error) => {
+      assert.ok(error instanceof ScopeDBError);
+      assert.equal(error.kind, "ConfigInvalid");
+      assert.match(error.message, /estimated execution limits are not supported/);
+      return true;
+    });
+    assert.equal(calls.length, 0);
+  });
+
   it("sends POST /v1/statements with gzip compression and optional fields", async () => {
     const status = pendingStatus("custom-id");
     const { fn, calls } = makeFetchStub([jsonResponse(200, status)]);
@@ -42,7 +54,6 @@ describe("Statement.submit", () => {
       .statement("SELECT 1")
       .withStatementId("custom-id")
       .withMaxElapsedSeconds(60)
-      .withMaxEstimatedSeconds(3)
       .submit();
 
     assert.equal(handle.statementId, "custom-id");
@@ -58,8 +69,9 @@ describe("Statement.submit", () => {
     const body = parseJsonRequestBody(call.init) as Record<string, unknown>;
     assert.equal(body["statement"], "SELECT 1");
     assert.equal(body["statement_id"], "custom-id");
-    assert.equal(body["max_elapsed_seconds"], 60);
-    assert.equal(body["max_estimated_seconds"], 3);
+    assert.equal(body["timeout_seconds"], 60);
+    assert.equal(body["max_elapsed_seconds"], undefined);
+    assert.equal(body["max_estimated_seconds"], undefined);
     assert.equal(body["format"], "json");
   });
 
@@ -397,7 +409,7 @@ describe("Statement recovery and cancellation signals", () => {
     });
   }
 
-  it("keeps a confirmed temporary submission rejection retryable through submit and query", async () => {
+  it("keeps structured HTTP 503 submissions ambiguous through submit and query", async () => {
     const { fn, calls } = makeFetchStub([
       jsonResponse(503, { code: "unavailable", message: "draining" }),
       jsonResponse(503, { code: "unavailable", message: "draining" }),
@@ -406,8 +418,10 @@ describe("Statement recovery and cancellation signals", () => {
     for (const op of [() => client.statement("SELECT 1").submit(), () => client.query("SELECT 1")]) {
       await assert.rejects(op, (error) => {
         assert.ok(error instanceof ScopeDBError);
-        assert.equal(error.code, "unavailable");
-        assert.equal(error.retryable, true);
+        assert.equal(error.code, "statement_submission_outcome_unknown");
+        assert.equal(error.retryable, false);
+        assert.ok(error.cause instanceof ScopeDBError);
+        assert.equal(error.cause.code, "unavailable");
         assert.equal(error.statementId, undefined);
         return true;
       });

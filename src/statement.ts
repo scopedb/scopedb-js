@@ -35,7 +35,6 @@ export interface WaitOptions extends RequestOptions {
 export class Statement {
   private statementIdValue?: string;
   private maxElapsedSeconds?: number;
-  private maxEstimatedSeconds?: number;
 
   private constructor(
     private readonly client: Client,
@@ -57,9 +56,9 @@ export class Statement {
     return this;
   }
 
-  withMaxEstimatedSeconds(seconds: number): this {
-    this.maxEstimatedSeconds = durationLimit(seconds);
-    return this;
+  /** @deprecated Estimated execution limits are unsupported. Use withMaxElapsedSeconds for a total deadline. */
+  withMaxEstimatedSeconds(_seconds: number): this {
+    throw new ScopeDBError("ConfigInvalid", "estimated execution limits are not supported; use withMaxElapsedSeconds");
   }
 
   async submit(options: RequestOptions = {}): Promise<StatementHandle> {
@@ -68,8 +67,7 @@ export class Statement {
       const snapshot = await this.client.submitStatement({
         statement: this.statementText,
         statement_id: statementId,
-        max_elapsed_seconds: this.maxElapsedSeconds,
-        max_estimated_seconds: this.maxEstimatedSeconds,
+        timeout_seconds: this.maxElapsedSeconds,
         format: "json",
       }, options);
       return StatementHandle.create(

@@ -77,7 +77,7 @@ Definitions now use snake_case fields and preserve extension fields. An `apply()
 | `StatementStatus*`                  | `StatementSnapshot*`                  |
 | `FetchOptions`                      | `WaitOptions`                         |
 
-Execution limits now use positive seconds instead of duration strings. `withMaxElapsedSeconds()` includes queueing time. The separate `withMaxEstimatedSeconds()` option rejects queries whose estimated duration exceeds a limit; it does not control parallelism. Omitted limits use service defaults.
+Execution limits use positive seconds instead of duration strings. `withMaxElapsedSeconds()` includes queueing time and sends the server's `timeout_seconds` deadline. Estimated limits are no longer supported: remove `withMaxEstimatedSeconds()` calls, which now throw `ConfigInvalid` before submission. Use a total deadline only if that matches the intended limit. Omitted limits use service defaults.
 
 ```ts
 const handle = await client.statement("SELECT 1 AS ready")

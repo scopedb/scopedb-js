@@ -116,8 +116,7 @@ export type StatementSnapshot =
 export interface StatementRequest {
   statement: string;
   statement_id?: string;
-  max_elapsed_seconds?: number;
-  max_estimated_seconds?: number;
+  timeout_seconds?: number;
   format: ResultFormat;
 }
 
